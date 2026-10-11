@@ -25,14 +25,13 @@ The plugin is `elgarashaders`: `build\<preset>\daolib\plugins\elgarashaders\` is
 
 ## DAOLib
 
-What is general belongs in DAOLib and is DAOLib's own session's (lib-agent's) to integrate: the pure, tested parts the baker stands on (`dao/core/Erf.h`, `Dds.h`, `Level.h`, `RayCast.h`, `LightProbes.h`, the GFF4 reader's floats and raw lists), `CCArea::Scene`, and the address rows. **Until DAOLib's master has them, build against the branch they are on:** set `DAOLIB_DIR` to `C:\project\DAOLib\.claude\worktrees\gh-65-post-effects` (the environment variable; `CMakeLists.txt` reads it). The submodule is at DAOLib's published master, which does not yet build this. When master has them, move the submodule there and drop this paragraph.
+What is general belongs in DAOLib and is DAOLib's own session's (lib-agent's) to integrate: the pure, tested parts the baker stands on (`dao/core/Erf.h`, `Dds.h`, `Level.h`, `RayCast.h`, `LightProbes.h`, the GFF4 reader's floats and raw lists), `CCArea::Scene`, and the address rows. They are on DAOLib's branch `gh-76-level-readers` (its issue 76), which the submodule is at (b725782, 2026-10-11) until DAOLib's master has them; move the submodule to master when lib-agent says so. `DAOLIB_DIR` (the environment's, or CMake's) builds against another checkout of DAOLib instead.
 
 A change DAOLib needs is asked of lib-agent, not made from here (one agent, one repo). An engine address is read in the GOG exe and named through the address library's session (addr-lib-agent), as DAOLib's `CLAUDE.md` says.
 
 ## Building and playing
 
 ```powershell
-$env:DAOLIB_DIR = 'C:\project\DAOLib\.claude\worktrees\gh-65-post-effects'   # until DAOLib's master has the baker's parts
 .\tools\build.ps1 -Preset release -Test
 .\tools\deploy.ps1 -Preset release     # the game closed
 .\tools\deploy.ps1 -Remove
