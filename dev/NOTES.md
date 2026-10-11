@@ -1,6 +1,6 @@
 # Notes
 
-What was learned about the game's lighting while this was DAOLib's `examples/graphics` (DAOLib issue 65, until 2026-10-11). Addresses are GOG's 1.05; the IDs are the address library's.
+What was learned about the game's lighting while this was DAOLib's `examples/graphics` (issue 1 here, which was DAOLib's 65, until 2026-10-11). Addresses are GOG's 1.05; the IDs are the address library's.
 
 ## What lights a figure
 

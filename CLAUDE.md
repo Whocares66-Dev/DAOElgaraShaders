@@ -1,6 +1,6 @@
 # DAOElgaraShaders -- project context
 
-A graphics plugin for Dragon Age: Origins built on DAOLib (the native plugin loader and library, `C:\project\DAOLib`): better lighting, shadows, colours and materials through the game's own Direct3D 9 pipeline. It began as DAOLib's `examples/graphics` on the branch `gh-65-post-effects`; DAOLib's issue 65 is the record of everything found and tried until 2026-10-11, with pictures. `dev/NOTES.md` is what was learned that the code's comments do not say in one place.
+A graphics plugin for Dragon Age: Origins built on DAOLib (the native plugin loader and library, `C:\project\DAOLib`): better lighting, shadows, colours and materials through the game's own Direct3D 9 pipeline. It began as DAOLib's `examples/graphics` on the branch `gh-65-post-effects`; Issue 1 here (it was DAOLib's 65, and the code's comments call it #65) is the record of everything found and tried until 2026-10-11, with pictures. `dev/NOTES.md` is what was learned that the code's comments do not say in one place.
 
 Markdown here is not hard-wrapped: one line per paragraph or list item.
 
