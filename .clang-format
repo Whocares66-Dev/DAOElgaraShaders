@@ -1,0 +1,7 @@
+# Stock clang-format preset, no bespoke overrides.
+#
+# "Microsoft" is one of clang-format's built-in styles and matches the toolchain
+# we build with. Run `clang-format --style=Microsoft --dump-config` to see every
+# value it implies. Deliberately one line: a style nobody has to argue about is
+# worth more than one tuned to current habits.
+BasedOnStyle: Microsoft

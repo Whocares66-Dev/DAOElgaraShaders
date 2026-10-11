@@ -1,0 +1,9 @@
+# gersemi: the CMake formatter, run by the build's format and format-check
+# targets (cmake/Quality.cmake). Its stock style, for the reason .clang-format
+# is a stock preset. The definitions teach it the commands we define, so it
+# lays out their arguments by keyword; Catch2's catch_discover_tests lives in
+# vcpkg's tree, so the warning about an unknown command is off.
+definitions:
+  - CMakeLists.txt
+  - cmake/DAOLib.cmake
+warn_about_unknown_commands: false

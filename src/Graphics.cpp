@@ -1,0 +1,1853 @@
+// Elgara Shaders: the game's own picture drawn better, with no renderer of our own.
+//
+// Nearly all of it is not code here. The build makes the game's own shaders
+// again, changed (build_shaders.py), into this plugin's override folder,
+// where the game finds a file before its own archives':
+//
+// - The shaders that receive the sun's shadows filter the shadow maps with
+//   sixteen taps on a turned disc, not the game's four or five (shadow.hlsl).
+// - A character is lit by the sun the shadows are cast by, and shaded by
+//   them: the game lights it from another side and reads no shadow map.
+// - The last pass over the picture, the game's colour grade, also sharpens
+//   it, gives its colours and middle tones more, and dithers it (grade.hlsl).
+// - Before that pass, in the same chain of the game's, three passes of
+//   anti-aliasing (smaa.py) and three of ambient occlusion (occlusion.hlsl,
+//   occlusion_blur.hlsl), from the depth the game keeps beside the picture.
+//
+// What is code here:
+//
+// - The look is chosen in the game and made in a file. graphics.ini, beside
+//   the DLL, has named looks, each how much of every change there is
+//   (Sharpen, Vibrance, Contrast, Occlusion, OcclusionRadius, Sun: how much
+//   stronger the area's sun is on its ground and buildings, and Relief,
+//   Materials and ShadowOnFigures, which the level's and the figures' shaders
+//   read from registers this sets on the game's Direct3D device), and the
+//   options screen has a slider with a stop for each, under a dropdown that
+//   turns the chain's anti-aliasing on. The shaders read those
+//   as values of the game's own colour-grade chain, as it keeps an area's hue
+//   and saturation, and this sets them there; it reads the file again when
+//   it changes, so a look is tuned with the game running.
+// - The sun's shadow maps are drawn at kMapSize a side, not the 512 or 1024
+//   the game's shadow quality gives them: the engine is asked for its two
+//   maps through one function, and this changes the size on the way in.
+// - The scene's lights and its sunlight go to the log when they change.
+//
+// What it does goes to elgarashaders.log.
+#include "ProbeBaker.h"
+
+#include "dao/Addresses.h"
+#include "dao/Atmosphere.h"
+#include "dao/ClientExoApp.h"
+#include "dao/Frame.h"
+#include "dao/Framebuffer.h"
+#include "dao/Hook.h"
+#include "dao/Log.h"
+#include "dao/Module.h"
+#include "dao/Options.h"
+#include "dao/Plugin.h"
+#include "dao/World.h"
+#include "dao/core/LightProbes.h"
+#include "dao/core/Msvc8.h"
+#include "dao/generated/ScriptApi.h"
+
+#include <spdlog/spdlog.h>
+
+#include <d3d9.h>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <charconv>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <cwctype>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <ios>
+#include <iterator>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+namespace
+{
+
+constexpr std::int32_t kMapSize = 2048; // texels a side; build_shaders.py is told the same
+
+// One of the sun's shadow maps as the engine is asked for it.
+// Notes on Partition: read 2026-10-10 in the function that asks (0x00455580):
+// two of them on its stack, {10.0, size, format} and {sqrt of the 900 at
+// 0x00BF20B4, size, format}, the size the global at 0x00BF20C4 that the
+// shadow quality sets to 512 or 1024, the format 9 or 0x20 by a capability of
+// the device. The function that takes them (0x00455420) copies each 12 bytes.
+struct Partition
+{
+    float distance;      // how far from the camera the map reaches, in metres
+    std::int32_t size;   // the map's width and height
+    std::int32_t format; // the engine's texture format
+};
+
+using SetPartitionsFn = void(__cdecl *)(const Partition *, std::uint32_t);
+dao::Detour<SetPartitionsFn> g_setPartitions;
+
+void __cdecl SetPartitions(const Partition *partitions, std::uint32_t count)
+{
+    std::vector<Partition> ours(partitions, partitions + count);
+    for (Partition &partition : ours)
+    {
+        spdlog::info("shadow map to {} m: {} a side (the game's {}), format {}", partition.distance, kMapSize,
+                     partition.size, partition.format);
+        partition.size = kMapSize;
+    }
+    g_setPartitions.Original()(ours.data(), count);
+}
+
+// The numbers the build's shaders read that are not the engine's to give:
+// kLookRegisters float registers of the pixel shader from kLookRegister up,
+// which none of the game's shaders reaches (their constants end under c70), so
+// the engine never writes them and what is put there stays for every draw.
+// build_shaders.py declares them as `daoLook` in each shader it rebuilds.
+// Notes on the look's registers: the level's and the figures' shaders are
+// handed what the engine has for them and nothing else. A number was first
+// carried in the fourth of the sun's colour; an area with no sun (the Circle,
+// the Dead Trenches) is given no sun's colour at all, so nothing arrived
+// there (seen 2026-10-11: a build that paints the level green where the
+// number is absent painted the Circle green). So they are set on the game's
+// Direct3D device, taken as the game creates it, at the start of every
+// scene, on the thread that draws.
+constexpr UINT kLookRegister = 220;
+constexpr std::size_t kLookRegisters = 2;
+std::array<std::atomic<float>, kLookRegisters * 4> g_look{};
+
+using CreateFn = IDirect3D9 *(__stdcall *)(UINT);
+using CreateDeviceFn = HRESULT(__stdcall *)(IDirect3D9 *, UINT, D3DDEVTYPE, HWND, DWORD, D3DPRESENT_PARAMETERS *,
+                                            IDirect3DDevice9 **);
+using BeginSceneFn = HRESULT(__stdcall *)(IDirect3DDevice9 *);
+dao::Detour<CreateFn> g_create;
+dao::Detour<CreateDeviceFn> g_createDevice;
+dao::Detour<BeginSceneFn> g_beginScene;
+
+// A COM object's method by its place in the vtable.
+template <class Fn> Fn Method(void *object, std::size_t slot)
+{
+    return reinterpret_cast<Fn>((*static_cast<void ***>(object))[slot]);
+}
+
+constexpr std::size_t kCreateDeviceSlot = 16; // IDirect3D9::CreateDevice
+constexpr std::size_t kBeginSceneSlot = 41;   // IDirect3DDevice9::BeginScene
+
+// What the game draws into, logged as it is created, for a session that has a
+// file named kLogTargetsFile beside the DLL: every texture made to be drawn
+// into and every render target, its size, format (a D3DFORMAT's number: 21
+// is A8R8G8B8, 113 A16B16G16R16F, 114 R32F) and anti-aliasing. It is how the
+// question of a wider scene target is read, and changes nothing.
+constexpr std::string_view kLogTargetsFile = "log-targets";
+constexpr std::size_t kCreateTextureSlot = 23;      // IDirect3DDevice9::CreateTexture
+constexpr std::size_t kCreateRenderTargetSlot = 28; // IDirect3DDevice9::CreateRenderTarget
+using CreateTextureFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL,
+                                             IDirect3DTexture9 **, HANDLE *);
+using CreateRenderTargetFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, UINT, UINT, D3DFORMAT, D3DMULTISAMPLE_TYPE, DWORD,
+                                                  BOOL, IDirect3DSurface9 **, HANDLE *);
+dao::Detour<CreateTextureFn> g_createTexture;
+dao::Detour<CreateRenderTargetFn> g_createRenderTarget;
+
+// The drawing thread's own: whether targets are logged, the format our scene
+// target has in place of the back buffer's (D3DFMT_UNKNOWN for the back
+// buffer's own), and the back buffer's size.
+bool g_logTargets = false;
+D3DFORMAT g_wideFormat = D3DFMT_UNKNOWN;
+UINT g_backWidth = 0;
+UINT g_backHeight = 0;
+
+// Whether a texture the game asks for is one the scene passes through on its
+// way to the screen: one to draw into, of the back buffer's format, and of
+// its size (the copies the effects read) or half of it (the bloom's).
+bool CarriesTheScene(UINT width, UINT height, DWORD usage, D3DFORMAT format)
+{
+    const bool whole = width == g_backWidth && height == g_backHeight;
+    const bool half = width == g_backWidth / 2 && height == g_backHeight / 2;
+    return (usage & D3DUSAGE_RENDERTARGET) != 0 && format == D3DFMT_A8R8G8B8 && (whole || half);
+}
+
+HRESULT __stdcall CreateTexture(IDirect3DDevice9 *device, UINT width, UINT height, UINT levels, DWORD usage,
+                                D3DFORMAT format, D3DPOOL pool, IDirect3DTexture9 **texture, HANDLE *shared)
+{
+    // With a wide scene target, what the scene is copied into is as wide, or
+    // the first copy would cut it back to eight bits. The depth the game
+    // packs into a colour's bytes goes the same way and loses nothing: what
+    // its shader writes are whole 256ths, which a 16-bit float holds exactly,
+    // and unrounded they average truly where a pixel holds two surfaces.
+    if (g_wideFormat != D3DFMT_UNKNOWN && CarriesTheScene(width, height, usage, format))
+    {
+        format = g_wideFormat;
+    }
+    if (g_logTargets && (usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL)) != 0)
+    {
+        spdlog::info("a texture to draw into: {} by {}, format {}, {} levels, usage {:#x}", width, height,
+                     static_cast<int>(format), levels, usage);
+    }
+    return g_createTexture.Original()(device, width, height, levels, usage, format, pool, texture, shared);
+}
+
+HRESULT __stdcall CreateRenderTarget(IDirect3DDevice9 *device, UINT width, UINT height, D3DFORMAT format,
+                                     D3DMULTISAMPLE_TYPE samples, DWORD quality, BOOL lockable,
+                                     IDirect3DSurface9 **surface, HANDLE *shared)
+{
+    if (g_logTargets)
+    {
+        spdlog::info("a render target: {} by {}, format {}, {} samples of quality {}", width, height,
+                     static_cast<int>(format), static_cast<int>(samples), quality);
+    }
+    return g_createRenderTarget.Original()(device, width, height, format, samples, quality, lockable, surface, shared);
+}
+
+// One frame's drawing, target by target, for a session that has a file named
+// kLogFrameFile beside the DLL: each change of render target with what the
+// target is, each copy from one surface to another, each clear, and how many
+// draws went to a target before the next change. One frame in kTraceEvery is
+// logged, counted from the device's first Present. It is the map a scene
+// target of our own has to follow, and changes nothing.
+constexpr std::string_view kLogFrameFile = "log-frame";
+constexpr int kTraceEvery = 600; // frames from one logged frame to the next
+constexpr int kTraceFirst = 300;
+constexpr std::size_t kPresentSlot = 17;         // IDirect3DDevice9::Present
+constexpr std::size_t kStretchRectSlot = 34;     // IDirect3DDevice9::StretchRect
+constexpr std::size_t kSetRenderTargetSlot = 37; // IDirect3DDevice9::SetRenderTarget
+constexpr std::size_t kClearSlot = 43;           // IDirect3DDevice9::Clear
+constexpr std::size_t kDrawSlot = 81;            // IDirect3DDevice9::DrawPrimitive
+constexpr std::size_t kDrawIndexedSlot = 82;     // IDirect3DDevice9::DrawIndexedPrimitive
+using PresentFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, const RECT *, const RECT *, HWND, const RGNDATA *);
+using StretchRectFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, IDirect3DSurface9 *, const RECT *, IDirect3DSurface9 *,
+                                           const RECT *, D3DTEXTUREFILTERTYPE);
+using SetRenderTargetFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, DWORD, IDirect3DSurface9 *);
+using ClearFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, DWORD, const D3DRECT *, DWORD, D3DCOLOR, float, DWORD);
+using DrawFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, D3DPRIMITIVETYPE, UINT, UINT);
+using DrawIndexedFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, D3DPRIMITIVETYPE, INT, UINT, UINT, UINT, UINT);
+dao::Detour<PresentFn> g_present;
+dao::Detour<StretchRectFn> g_stretchRect;
+dao::Detour<SetRenderTargetFn> g_setRenderTarget;
+dao::Detour<ClearFn> g_clear;
+dao::Detour<DrawFn> g_draw;
+dao::Detour<DrawIndexedFn> g_drawIndexed;
+// The drawing thread's own: the frames presented, whether this one is logged,
+// and the draws since the last line.
+int g_presented = 0;
+bool g_tracing = false;
+int g_draws = 0;
+
+// The scene drawn into a render target of our own, 16-bit float. The game
+// draws its depth pre-pass, its scene, its effects and its interface straight
+// into the swap chain's back buffer, which is eight bits a channel and can be
+// nothing else; a scene that holds more than white has to be drawn somewhere
+// else. So wherever the game names the back buffer as a target, or as either
+// end of a copy, it is given ours, of the same size and anti-aliasing, and as
+// a frame is shown ours is resolved and drawn onto the real one.
+// Notes on the scene target: seen in ten areas 2026-10-11, the Vanilla look
+// in it matching the picture without it, and across two Resets of the device
+// (the anti-aliasing changed in the options screen and changed back), ours
+// made again each time. A file named kOwnSceneFile beside the DLL says
+// otherwise: holding `off` the scene stays in the back buffer, holding
+// `8bit` ours is made in the back buffer's own format.
+constexpr std::string_view kOwnSceneFile = "own-scene";
+constexpr std::size_t kResetSlot = 16;           // IDirect3DDevice9::Reset
+constexpr std::size_t kGetRenderTargetSlot = 38; // IDirect3DDevice9::GetRenderTarget
+using ResetFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, D3DPRESENT_PARAMETERS *);
+using GetRenderTargetFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, DWORD, IDirect3DSurface9 **);
+dao::Detour<ResetFn> g_reset;
+dao::Detour<GetRenderTargetFn> g_getRenderTarget;
+
+// The drawing thread's own.
+struct Scene
+{
+    IDirect3DSurface9 *back = nullptr;       // the swap chain's, which the game takes for its target
+    IDirect3DSurface9 *own = nullptr;        // ours, which it is given instead
+    IDirect3DTexture9 *shown = nullptr;      // ours resolved, to be drawn onto the back buffer
+    IDirect3DSurface9 *shownLevel = nullptr; // that texture's one level
+    IDirect3DStateBlock9 *states = nullptr;  // the device's state, kept across our own draw
+    UINT width = 0;
+    UINT height = 0;
+};
+Scene g_scene;
+IDirect3DDevice9 *g_device = nullptr; // the game's, for the swap chain's Present, which is handed none
+
+template <class T> void Released(T *&object)
+{
+    if (object != nullptr)
+    {
+        object->Release();
+        object = nullptr;
+    }
+}
+
+// Lets go of everything of ours the device holds, as a Reset of it requires.
+void DropScene()
+{
+    Released(g_scene.states);
+    Released(g_scene.shownLevel);
+    Released(g_scene.shown);
+    Released(g_scene.own);
+    Released(g_scene.back);
+}
+
+// Makes our target beside the back buffer and makes it the device's target,
+// as the back buffer is of a new or a reset device.
+void MakeScene(IDirect3DDevice9 *device)
+{
+    DropScene();
+    if (FAILED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &g_scene.back)))
+    {
+        return;
+    }
+    D3DSURFACE_DESC is{D3DFMT_UNKNOWN, D3DRTYPE_SURFACE, 0, D3DPOOL_DEFAULT, D3DMULTISAMPLE_NONE, 0, 0, 0};
+    g_scene.back->GetDesc(&is);
+    g_scene.width = g_backWidth = is.Width;
+    g_scene.height = g_backHeight = is.Height;
+    const D3DFORMAT format = g_wideFormat != D3DFMT_UNKNOWN ? g_wideFormat : is.Format;
+    const bool made = SUCCEEDED(device->CreateRenderTarget(is.Width, is.Height, format, is.MultiSampleType,
+                                                           is.MultiSampleQuality, FALSE, &g_scene.own, nullptr)) &&
+                      SUCCEEDED(device->CreateTexture(is.Width, is.Height, 1, D3DUSAGE_RENDERTARGET, format,
+                                                      D3DPOOL_DEFAULT, &g_scene.shown, nullptr)) &&
+                      SUCCEEDED(g_scene.shown->GetSurfaceLevel(0, &g_scene.shownLevel)) &&
+                      SUCCEEDED(device->CreateStateBlock(D3DSBT_ALL, &g_scene.states));
+    if (!made)
+    {
+        DropScene();
+        spdlog::warn("the scene stays in the back buffer: a target of our own was not made");
+        return;
+    }
+    g_setRenderTarget.Original()(device, 0, g_scene.own);
+    spdlog::info("the scene is drawn into a target of our own: {} by {}, format {}, {} samples", is.Width, is.Height,
+                 static_cast<int>(format), static_cast<int>(is.MultiSampleType));
+}
+
+// The surface the device is to have where the game names `surface`.
+IDirect3DSurface9 *Swapped(IDirect3DSurface9 *surface)
+{
+    return g_scene.own != nullptr && surface == g_scene.back ? g_scene.own : surface;
+}
+
+// Resolves our target and draws it over the whole of the back buffer, with
+// the fixed pipeline and a state of our own, the device's state put back
+// after. Called as a frame is shown.
+void ShowScene(IDirect3DDevice9 *device)
+{
+    if (g_scene.own == nullptr)
+    {
+        return;
+    }
+    g_stretchRect.Original()(device, g_scene.own, nullptr, g_scene.shownLevel, nullptr, D3DTEXF_NONE);
+    IDirect3DSurface9 *was = nullptr;
+    g_getRenderTarget.Original()(device, 0, &was);
+    g_scene.states->Capture();
+    g_setRenderTarget.Original()(device, 0, g_scene.back);
+    device->SetVertexShader(nullptr);
+    device->SetPixelShader(nullptr);
+    device->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);
+    constexpr std::array<std::pair<D3DRENDERSTATETYPE, DWORD>, 13> kStates{{
+        {D3DRS_ZENABLE, FALSE},
+        {D3DRS_ZWRITEENABLE, FALSE},
+        {D3DRS_ALPHABLENDENABLE, FALSE},
+        {D3DRS_ALPHATESTENABLE, FALSE},
+        {D3DRS_STENCILENABLE, FALSE},
+        {D3DRS_SCISSORTESTENABLE, FALSE},
+        {D3DRS_FOGENABLE, FALSE},
+        {D3DRS_LIGHTING, FALSE},
+        {D3DRS_CLIPPLANEENABLE, 0},
+        {D3DRS_SRGBWRITEENABLE, FALSE},
+        {D3DRS_CULLMODE, D3DCULL_NONE},
+        {D3DRS_FILLMODE, D3DFILL_SOLID},
+        {D3DRS_COLORWRITEENABLE, 0xF},
+    }};
+    for (const auto &[state, value] : kStates)
+    {
+        device->SetRenderState(state, value);
+    }
+    device->SetTexture(0, g_scene.shown);
+    device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+    device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+    device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+    device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+    device->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+    device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+    device->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+    device->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, FALSE);
+    const D3DVIEWPORT9 whole{0, 0, g_scene.width, g_scene.height, 0.0F, 1.0F};
+    device->SetViewport(&whole);
+    // A pixel's centre is half a pixel in from its corner, and a texel's is
+    // read at its own: the quad's corners stand half a pixel out.
+    struct Corner
+    {
+        float x, y, z, w, u, v;
+    };
+    const float right = static_cast<float>(g_scene.width) - 0.5F;
+    const float bottom = static_cast<float>(g_scene.height) - 0.5F;
+    const std::array<Corner, 4> corners{{
+        {-0.5F, -0.5F, 0, 1, 0, 0},
+        {right, -0.5F, 0, 1, 1, 0},
+        {-0.5F, bottom, 0, 1, 0, 1},
+        {right, bottom, 0, 1, 1, 1},
+    }};
+    if (SUCCEEDED(device->BeginScene()))
+    {
+        device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, corners.data(), sizeof(Corner));
+        device->EndScene();
+    }
+    g_scene.states->Apply();
+    g_setRenderTarget.Original()(device, 0, was);
+    Released(was);
+}
+
+// The game is never shown our target: where the device would hand it back,
+// the game gets the back buffer it named.
+HRESULT __stdcall GetRenderTarget(IDirect3DDevice9 *device, DWORD index, IDirect3DSurface9 **target)
+{
+    const HRESULT result = g_getRenderTarget.Original()(device, index, target);
+    if (SUCCEEDED(result) && target != nullptr && g_scene.own != nullptr && *target == g_scene.own)
+    {
+        (*target)->Release();
+        *target = g_scene.back;
+        g_scene.back->AddRef();
+    }
+    return result;
+}
+
+HRESULT __stdcall Reset(IDirect3DDevice9 *device, D3DPRESENT_PARAMETERS *parameters)
+{
+    DropScene();
+    const HRESULT result = g_reset.Original()(device, parameters);
+    if (SUCCEEDED(result))
+    {
+        MakeScene(device);
+    }
+    return result;
+}
+
+// What a surface is, for a line of the trace.
+std::string Described(IDirect3DDevice9 *device, IDirect3DSurface9 *surface)
+{
+    if (surface == nullptr)
+    {
+        return "none";
+    }
+    D3DSURFACE_DESC is{D3DFMT_UNKNOWN, D3DRTYPE_SURFACE, 0, D3DPOOL_DEFAULT, D3DMULTISAMPLE_NONE, 0, 0, 0};
+    surface->GetDesc(&is);
+    IDirect3DSurface9 *back = nullptr;
+    const bool isBack = SUCCEEDED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back)) && back == surface;
+    if (back != nullptr)
+    {
+        back->Release();
+    }
+    const std::string_view which =
+        isBack ? "the back buffer, " : surface == g_scene.own ? "our scene target, " : "";
+    return fmt::format("{}{} by {}, format {}, {} samples, at {}", which, is.Width, is.Height,
+                       static_cast<int>(is.Format), static_cast<int>(is.MultiSampleType),
+                       static_cast<const void *>(surface));
+}
+
+// The lights the frame's draws were handed, for the trace: the pixel
+// shader's first twelve float registers and first four switches as each draw
+// finds them, which in a figure's or a building's shader are g_vLightParams
+// (a point light's place and reach in [0] and colour in [1], the sun's way
+// and colour in [2] and [3], three more point lights in [5] to [11]) and the
+// switches for the three and the sun. Each distinct set is counted, and the
+// commonest are printed as the frame ends.
+constexpr std::size_t kSetPixelFloatsSlot = 109; // IDirect3DDevice9::SetPixelShaderConstantF
+constexpr std::size_t kSetPixelBoolsSlot = 113;  // IDirect3DDevice9::SetPixelShaderConstantB
+using SetPixelFloatsFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, UINT, const float *, UINT);
+using SetPixelBoolsFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, UINT, const BOOL *, UINT);
+dao::Detour<SetPixelFloatsFn> g_setPixelFloats;
+dao::Detour<SetPixelBoolsFn> g_setPixelBools;
+struct LightsHanded
+{
+    std::array<float, 48> registers{};
+    std::array<bool, 4> switches{};
+    auto operator<=>(const LightsHanded &) const = default;
+};
+LightsHanded g_handed;                // as the device has them now
+std::map<LightsHanded, int> g_lights; // each set a draw found, and how many draws
+
+// The level's lamps, on figures. The engine lights a room's walls and floor
+// by the lamps placed in it and a figure by three wide fill lights standing a
+// long way off, and by no lamp: a figure a step from a brazier is as lit as
+// one across the hall. That is its own choice of lights, and here a lamp is
+// put where that choice finds it.
+// Notes on the choice, read in the executable 2026-10-11 after the user's
+// "did you investigate the code? if we need to, we can detour it":
+// - Renderer::LightManagerDefault keeps six lists of lights, each with the
+//   most an object takes from it (set at 0x00462210). As it takes a node's
+//   lights in (0x00464E30), a point light goes by its ILight's kind (the
+//   ILight's +0xC, the node's +0x18C) to one of two pairs of lists: kind 1
+//   to +0x6C or +0x84, any other to +0x24 or +0xC, the first of each pair
+//   for a light whose blueprint has a flag (0x0053C8D0), three for an
+//   object, the second for one without, two.
+// - A node is given its lights (0x004654E0) by one of two choosers by a bit
+//   of its own (its +0x24, 0x4000): with the bit 0x00464560, from the first
+//   pair; without it 0x00464310, from the second. Each has every light of a
+//   list score itself against the object, sorts, and takes the best up to
+//   the list's most (0x00463E40), fading a light in and out as it comes and
+//   goes. A figure's shader has the flagged three in g_vLightParams [0], [5]
+//   and [7] and one unflagged in [9].
+// - A light's score (its virtual at +0x84, 0x0053D280) is its strength times
+//   what is left of its reach at the object, and nothing for an object in a
+//   room the light is not of (0x0053D210).
+// - So a light lights either the things that move, the first pair, or the
+//   level's own pieces, the second, by its kind, and never both. Seen as the
+//   Circle loads: its lamps, 3 to 10 m, all go to +0x24, and the fills, 160
+//   to 1000 m, to +0x6C; the unflagged lists get nothing. No figure is ever
+//   offered a lamp, and the place its shader keeps in [9] is empty.
+// Here a lamp, a point light of the level's lists with a lamp's reach, is put
+// in both of the figures' lists as well, beside the fills in the flagged one
+// (+0x6C) and alone in the unflagged (+0x84), by the list's own insert as the
+// manager takes it in, and taken out as the manager lets it go. Left at that the fills would still take all three places: a
+// score is strength times what is left of the reach, and a fill's reach is a
+// thousand metres. So while the figures' chooser runs, a fill's score is made
+// next to nothing (kFillScore), and a lamp's too where the figure is past
+// the part of its reach that lights it (kLampNear). The engine then takes a
+// figure's best three with the lamps that light it first and the fills for
+// whatever places are left: beside three lamps no fill at all, away from
+// every lamp the three fills as in vanilla. A lamp past that part of its
+// reach still lights the figure a little, and the best of those takes the
+// one unflagged place, which is scored for them alone (the user, 2026-10-11: "no fills but being affected by
+// all the lights in the environment would be a more natural look"; without
+// the fills a figure no lamp reaches is black, since the walls about it are
+// lit by a baked map it has no part of). The engine fades each light in and
+// out as it comes and goes. With the look's Lamps at 0 the fills' scores are
+// left alone, and the choice is vanilla's.
+// Seen first with the lamp in the unflagged list, one for a figure: in the
+// Circle, a figure's draws with the wall lamp in [9] beside the three fills,
+// the hero by it 153, 111, 87 for 83, 50, 47.
+// Notes on what did not work, each measured as changing nothing on a figure:
+// answering "no flag" for a lamp, or for every light (the figures then lost
+// their fills and went dark); scoring the unflagged list without its test of
+// a light's owner; putting a lamp in the flagged list of the wrong pair. And
+// before those, the lamps were read from the lights the draws were handed
+// and given to the figures' shaders in registers of our own, which guessed
+// what a light was from what passed: it left ghosts of spells' lights, read
+// values that were no lights, and knew only the lamps in view (the user,
+// 2026-10-11: "are we hacking ourselves into a corner w/ the lamps?"). All
+// of that is gone.
+constexpr std::size_t kLevelsFlagged = 0x24;         // the manager's lists
+constexpr std::size_t kLevelsUnflagged = 0xC;
+constexpr std::size_t kFiguresFlagged = 0x6C;
+constexpr std::size_t kFiguresUnflagged = 0x84;
+constexpr std::size_t kLightNodeScore = 0x184; // a float, what the light's Score leaves
+// What a fill's score is multiplied by as a figure's lights are chosen: any
+// lamp that reaches the figure then comes before any fill.
+constexpr float kFillScore = 1.0e-6F;
+// The part of its reach within which a lamp comes before the fills. Past it
+// the lamp gives a figure a third of its light or less (the engine's fall-off
+// is the square of a cosine), and a fill it took the place of would be
+// missed: with every lamp that reached at all put first, a figure of the
+// Arl's dungeon stood black, three far torches for its three fills (seen
+// 2026-10-11). A judgement.
+constexpr float kLampNear = 0.6F;
+using NodePlaceFn = void(__fastcall *)(void *, int, float *);
+constexpr std::size_t kNodePlaceSlot = 3; // the node's virtual that says where it is in the world
+constexpr std::size_t kLightNodeReach = 0x1B0; // a float, metres
+constexpr float kLampReachMost = 100.0F;       // metres; a light that reaches further is a fill
+// Metres; a light that reaches less is a glow on a thing, not a lamp in a
+// room. A judgement (2026-10-11): Wynne's aura in Redcliffe is a violet
+// light of 1.5 m at the middle of a body, made to tint the ground about it,
+// and on figures it turned the faces beside her lavender for as long as the
+// aura was up. The Circle's wall lamps reach 4 m.
+constexpr float kLampReachLeast = 2.0F;
+// Whatever these return is passed on as it came.
+using ManagerLightsFn = std::uintptr_t(__fastcall *)(void *, int, void *);
+using LightListFn = std::uintptr_t(__fastcall *)(void *, int, void *);
+using ManagerChangedFn = void(__fastcall *)(void *, int);
+dao::Detour<ManagerLightsFn> g_managerAdd;
+dao::Detour<ManagerLightsFn> g_managerRemove;
+dao::Detour<LightListFn> g_lightListInsert;
+dao::Detour<LightListFn> g_lightListErase;
+thread_local void *t_lightManager = nullptr; // the manager taking lights in or letting them go, on this thread
+// The lamps put in the figures' lists, by their nodes: what tells them from
+// the lights an area has for its figures already, some of a lamp's reach.
+std::mutex g_ourLampsLock;
+std::unordered_set<void *> g_ourLamps;
+// And the lights the engine itself put in the figures' lists. A node can
+// have a light of each kind, and be in the level's lists and the figures'
+// both: Redcliffe's tavern lights its figures so, and with those taken for
+// lamps of ours its figures stood dark in the Vanilla look (seen
+// 2026-10-11). Such a light is the area's and is left alone.
+std::unordered_set<void *> g_areasOwn;
+thread_local bool t_lampsMoved = false;
+
+void *ListOf(void *manager, std::size_t offset)
+{
+    return static_cast<std::byte *>(manager) + offset;
+}
+
+bool IsLevelsList(void *list)
+{
+    return t_lightManager != nullptr &&
+           (list == ListOf(t_lightManager, kLevelsFlagged) || list == ListOf(t_lightManager, kLevelsUnflagged));
+}
+
+bool IsFiguresList(void *list)
+{
+    return t_lightManager != nullptr &&
+           (list == ListOf(t_lightManager, kFiguresFlagged) || list == ListOf(t_lightManager, kFiguresUnflagged));
+}
+
+std::uintptr_t __fastcall LightListInsert(void *list, int unused, void *node)
+{
+    const std::uintptr_t result = g_lightListInsert.Original()(list, unused, node);
+    if (node != nullptr && IsFiguresList(list))
+    {
+        const std::scoped_lock lock(g_ourLampsLock);
+        g_areasOwn.insert(node);
+    }
+    if (node != nullptr && IsLevelsList(list))
+    {
+        float reach = 0;
+        std::memcpy(&reach, static_cast<const std::byte *>(node) + kLightNodeReach, sizeof reach);
+        if (reach >= kLampReachLeast && reach <= kLampReachMost)
+        {
+            g_lightListInsert.Original()(ListOf(t_lightManager, kFiguresFlagged), unused, node);
+            g_lightListInsert.Original()(ListOf(t_lightManager, kFiguresUnflagged), unused, node);
+            const std::scoped_lock lock(g_ourLampsLock);
+            g_ourLamps.insert(node);
+            t_lampsMoved = true;
+        }
+    }
+    return result;
+}
+
+std::uintptr_t __fastcall LightListErase(void *list, int unused, void *node)
+{
+    const std::uintptr_t result = g_lightListErase.Original()(list, unused, node);
+    if (node != nullptr && IsFiguresList(list))
+    {
+        const std::scoped_lock lock(g_ourLampsLock);
+        g_areasOwn.erase(node);
+    }
+    if (node != nullptr && IsLevelsList(list))
+    {
+        // Whatever its reach is now: a light's reach can be moved, and one
+        // left in the list after its node is gone would be read.
+        g_lightListErase.Original()(ListOf(t_lightManager, kFiguresFlagged), unused, node);
+        g_lightListErase.Original()(ListOf(t_lightManager, kFiguresUnflagged), unused, node);
+        const std::scoped_lock lock(g_ourLampsLock);
+        g_ourLamps.erase(node);
+        t_lampsMoved = true;
+    }
+    return result;
+}
+
+// The manager takes a node's lights in, or lets them go, with `call`.
+std::uintptr_t ManagerLights(dao::Detour<ManagerLightsFn> &call, void *manager, int unused, void *object)
+{
+    t_lightManager = manager;
+    t_lampsMoved = false;
+    const std::uintptr_t result = call.Original()(manager, unused, object);
+    t_lightManager = nullptr;
+    if (t_lampsMoved)
+    {
+        // The figures choose again, as they do when the manager changes their lists itself.
+        reinterpret_cast<ManagerChangedFn>(dao::Module::Address(dao::addr::kLightManager_MarkChanged))(manager, 0);
+    }
+    return result;
+}
+
+// The figures' chooser, the choice from one list within it, and a point
+// light's score. Whatever they return is passed on as it came.
+using ChooseForMovingFn = std::uintptr_t(__fastcall *)(void *, int, void *, void *, void *, std::uintptr_t);
+using ChooseFromListFn = std::uintptr_t(__fastcall *)(void *, int, void *, float, void *, std::uintptr_t,
+                                                      std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t,
+                                                      void *);
+using LightScoreFn = std::uintptr_t(__fastcall *)(void *, int, const float *, float, std::uintptr_t, std::uintptr_t);
+dao::Detour<ChooseForMovingFn> g_chooseForMoving;
+dao::Detour<ChooseFromListFn> g_chooseFromList;
+dao::Detour<LightScoreFn> g_lightScore;
+std::atomic<float> g_lampStrength{0}; // the game thread's word: the look's Lamps, 0 for no lamps
+std::atomic<float> g_fillsLess{0};    // and its FillsLess, 0 for the fills as they are
+// The scene the current area is drawn as, the game thread's word each frame,
+// and where a light manager keeps the scene it is of: its base's constructor
+// (0x0046C4F0, read 2026-10-11) stores it there.
+std::atomic<void *> g_areasScene{nullptr};
+constexpr std::size_t kManagerScene = 0x8;
+// The least a fill's strength is written as: two of the game's face shaders
+// test the sign of a light's fourth component, and none at all is not a sign.
+constexpr float kFillLeast = 1e-3F;
+// The fourth component of a light's colour, which the engine hands a shader
+// with the rest and no shader of the game's reads as a number (two faces'
+// test its sign): a lamp of ours carries the look's strength there.
+constexpr std::size_t kLightNodeStrength = 0x1AC;
+// This thread's: the manager choosing a figure's lights, and which of its
+// two lists of them is being scored.
+enum class FiguresList : std::uint8_t
+{
+    None,
+    Flagged,
+    Unflagged,
+};
+thread_local void *t_figuresManager = nullptr;
+thread_local FiguresList t_figuresList = FiguresList::None;
+
+// Light probes, blended, and more of them. A light probe is the light of a
+// place in a level as its makers baked it: three matrices, one for each of
+// red, green and blue, that give the light arriving on a surface by the way
+// it faces. The engine chooses a figure one, the nearest of its room (the
+// probe's score is one over its distance, nothing for a probe of another
+// room), and a level has one to a room at most: 150 of the campaign's 232
+// areas have one or none at all. So a figure's ambient light is its room's,
+// the same in the room's darkest corner as under its lamps.
+//
+// With a look's ProbeBlend a figure is given a mix of the nearest few
+// instead, each by the square of how far its score is above the next one's
+// beyond them, so a probe has no part as it comes into the nearest few or
+// leaves them and a figure's light never steps. That it steps without the
+// mix was seen: a room given 43 probes of plain red, green and blue five
+// metres apart had each figure one flat colour and another a step later
+// (the user walked it, 2026-10-11). The mix is linear in the matrices, as
+// light is.
+//
+// The probes mixed are the plugin's own where it has any: baked from the
+// level's lightmaps on a thread of its own as the player comes into a level
+// (ProbeBaker.h), a room the place of the probe the level itself has there
+// and the probes baked for it, and had here once the whole level is done.
+// The engine's choice says which rooms: a probe of the level's that scores
+// for a figure is of the figure's room or the next, and the baked room with
+// that probe's place is the one. Where there is no such room the level's own
+// probes are mixed. Nothing of the game's is replaced, and with ProbeBlend
+// at 0 a figure's light is vanilla's.
+//
+// Where it goes, read 2026-10-11: a figure's lights are chosen into its
+// light state (the groups at +0, +0x10, +0x20 for probes, +0x30), and the
+// state's own function (0x0046B260, __thiscall with one argument, `ret 4`)
+// fills from them what the shaders are handed when a material first asks in
+// a frame: the point lights at +0x40 (g_vLightParams, 0xD0 bytes), the
+// probe's cube map at +0x114, and its three matrices at +0x130, +0x170 and
+// +0x1B0 (g_mLightParams), copied from the probe's blueprint (the node's
+// +0x174, there at +0x160, +0x1A0 and +0x1E0) only when the probe chosen is
+// not the one of last time, which the state keeps at +0x110 and nothing
+// reads but to compare. So the mix is written over the three after that
+// function has run, each time, and to give a state its probe's own light
+// back the kept probe is made one no probe is, and the function copies
+// again.
+constexpr std::size_t kLightsProbes = 0x3C;     // the manager's list of light probes
+constexpr std::size_t kStateProbes = 0x20;      // in a light state: the group of probes chosen
+constexpr std::size_t kStateProbeKept = 0x110;  // the probe its matrices were last copied from
+constexpr std::size_t kStateIrradiance = 0x130; // the three matrices
+constexpr std::size_t kProbeBlueprint = 0x174;  // in a probe's node
+constexpr std::size_t kBlueprintIrradiance = 0x160;
+constexpr std::uintptr_t kNoProbe = 1; // kept in a state to have its probe's light copied again
+constexpr float kProbeKeyWithin = 0.05F; // metres: how near a level's probe is to a room's key to be it
+// Where a light is, as its score asks: the second virtual of the light the
+// node has at +0x180 (0x0053D423 in the probe's score). The node's own
+// virtual that the lamps are placed by answers nothing for a probe: every
+// probe of a level was at 0, 0, 0 by it (logged 2026-10-11).
+constexpr std::size_t kNodeLight = 0x180;
+constexpr std::size_t kLightPlaceSlot = 2;
+using LightPlaceFn = void(__fastcall *)(void *, int, float *);
+using dao::core::probes::Irradiance;
+using StateFillFn = std::uintptr_t(__fastcall *)(void *, int, std::uintptr_t);
+dao::Detour<LightScoreFn> g_probeScore;
+dao::Detour<StateFillFn> g_stateFill;
+std::atomic<float> g_probeBlend{0}; // the game thread's word: the look's ProbeBlend
+using ProbeRoom = dao::core::probes::Room;
+using ProbeRooms = std::shared_ptr<const std::vector<ProbeRoom>>;
+struct ScoredProbe
+{
+    void *node;
+    float score;
+};
+struct Blend
+{
+    Irradiance light;
+    bool wanted; // or the state is to have its own probe's light back
+    bool own;    // the mix is of the table's probes
+};
+thread_local std::vector<ScoredProbe> *t_probesScored = nullptr;
+std::mutex g_blendsLock;
+std::unordered_map<void *, Blend> g_blends; // by light state
+std::unordered_set<void *> g_statesWritten; // the light states whose matrices are ours now
+// The look's Ambient, the game thread's word: how much more of its ambient
+// light a figure takes where its area has no sun, 1 for twice. A level's own
+// probe is the light that comes off the surfaces about it, as a camera
+// there took it, and has none of the lamps' own: with the fills turned down
+// it is lifted to stand for both. A probe of the table's is baked as all
+// the light a surface there receives and is taken as it is. The lift was the
+// shaders' until the table came (a multiplication where the ambient light
+// joins a figure's lights), which could not tell the two apart.
+std::atomic<float> g_ambient{0};
+// In a light state: the colour of the area's sun on this figure, the fourth
+// register of the lights' block (+0x40), which the chooser writes before the
+// state fills the rest (0x0046BB80).
+constexpr std::size_t kStateSun = 0x70;
+
+float Distance(const float *a, const float *b)
+{
+    return std::hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+}
+
+// The baked room whose key is where this probe of the level's is, or null.
+std::array<float, 4> PlaceOfLight(void *node)
+{
+    alignas(16) std::array<float, 4> at{};
+    void *light = static_cast<std::byte *>(node) + kNodeLight;
+    (*static_cast<LightPlaceFn **>(light))[kLightPlaceSlot](light, 0, at.data());
+    return at;
+}
+
+const ProbeRoom *RoomOf(const ProbeRooms &rooms, void *node)
+{
+    const std::array<float, 4> at = PlaceOfLight(node);
+    for (const ProbeRoom &room : *rooms)
+    {
+        if (Distance(room.key.data(), at.data()) <= kProbeKeyWithin)
+        {
+            return &room;
+        }
+    }
+    return nullptr;
+}
+
+std::uintptr_t __fastcall ProbeScore(void *node, int unused, const float *place, float size, std::uintptr_t room,
+                                     std::uintptr_t other)
+{
+    const std::uintptr_t result = g_probeScore.Original()(node, unused, place, size, room, other);
+    if (t_probesScored != nullptr)
+    {
+        float score = 0;
+        std::memcpy(&score, static_cast<const std::byte *>(node) + kLightNodeScore, sizeof score);
+        if (score > 0)
+        {
+            t_probesScored->push_back({node, score});
+        }
+    }
+    return result;
+}
+
+// The probes there are to mix for a figure at `place`, of the level's own
+// that scored for it: the baked ones for each room there are any for, else
+// the level's. `own` says whether any is a baked one.
+void LightsToMix(const ProbeRooms &rooms, const std::vector<ScoredProbe> &scored, const float *place,
+                 std::vector<dao::core::probes::Near> &lights, bool &own)
+{
+    lights.clear();
+    own = false;
+    for (const ScoredProbe &probe : scored)
+    {
+        if (const ProbeRoom *room = RoomOf(rooms, probe.node); room != nullptr)
+        {
+            own = own || !room->probes.empty();
+            for (const dao::core::probes::Probe &baked : room->probes)
+            {
+                lights.push_back({1.0F / std::max(Distance(baked.at.data(), place), 1e-3F), baked.light.data()});
+            }
+            continue;
+        }
+        const std::byte *blueprint = nullptr;
+        std::memcpy(&blueprint, static_cast<const std::byte *>(probe.node) + kProbeBlueprint, sizeof blueprint);
+        if (blueprint != nullptr)
+        {
+            lights.push_back({probe.score, reinterpret_cast<const float *>(blueprint + kBlueprintIrradiance)});
+        }
+    }
+}
+
+// Keeps the mix for the light state whose probes were just chosen into
+// `group`, for a figure at `place`. With none scored and a probe chosen all
+// the same, the choice was not made again and what was kept stands. One
+// probe of the level's alone is no mix: the state has that probe's light
+// from the engine.
+void KeepBlend(void *group, const std::vector<ScoredProbe> &scored, const float *place)
+{
+    std::array<const std::byte *, 2> chosen{}; // the group's vector: its first and its end
+    std::memcpy(chosen.data(), static_cast<const std::byte *>(group) + sizeof(void *), sizeof chosen);
+    if (scored.empty() && chosen[0] != chosen[1])
+    {
+        return;
+    }
+    thread_local std::vector<dao::core::probes::Near> lights;
+    bool own = false;
+    // The rooms as they are now, held while their probes' light is pointed at.
+    const ProbeRooms rooms = probebaker::Rooms();
+    LightsToMix(rooms, scored, place, lights, own);
+    const std::optional<Irradiance> mix = own || lights.size() > 1 ? dao::core::probes::Mix(lights) : std::nullopt;
+    void *state = static_cast<std::byte *>(group) - kStateProbes;
+    const std::scoped_lock lock(g_blendsLock);
+    if (mix)
+    {
+        g_blends[state] = {*mix, true, own};
+    }
+    else if (const auto found = g_blends.find(state); found != g_blends.end())
+    {
+        found->second.wanted = false;
+    }
+}
+
+// The engine making a source of a level's archive (ECResMan::ResMan::
+// MakeSource): what tells the baker which level the player has come into. A level's rooms are in <level>\<level>.rim, the archive of
+// a level's folder that has the folder's name. Read 2026-10-11: __thiscall,
+// the archive's path as the engine's wide string, the source's kind, its
+// priority and two more, `ret 0x14`;
+// what it returns, the source made or nothing, is passed on. Whichever
+// thread opens it; the baker only notes the path.
+using OpenArchiveFn = std::uintptr_t(__fastcall *)(void *, int, const dao::core::WStringRep *, std::uintptr_t,
+                                                   std::uintptr_t, std::uintptr_t, std::uintptr_t);
+dao::Detour<OpenArchiveFn> g_openArchive;
+
+std::uintptr_t __fastcall OpenArchive(void *self, int unused, const dao::core::WStringRep *path, std::uintptr_t a2,
+                                      std::uintptr_t a3, std::uintptr_t a4, std::uintptr_t a5)
+{
+    const std::uintptr_t result = g_openArchive.Original()(self, unused, path, a2, a3, a4, a5);
+    // The engine names a level's archives by its own name for the levels'
+    // folder: ENV:lak303d\lak303d.rim (logged 2026-10-11). Another name's
+    // levels, an add-in's, are not baked yet.
+    constexpr std::wstring_view kLevels = L"ENV:";
+    if (path != nullptr && path->size > kLevels.size() && path->size < 1024 && path->View().starts_with(kLevels))
+    {
+        const std::filesystem::path file(path->View().substr(kLevels.size()));
+        std::wstring extension = file.extension().wstring();
+        std::ranges::transform(extension, extension.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+        if (extension == L".rim" && _wcsicmp(file.stem().c_str(), file.parent_path().c_str()) == 0)
+        {
+            probebaker::Want(dao::Module::Path().parent_path().parent_path() / "packages" / "core" / "env" / file);
+        }
+    }
+    return result;
+}
+
+// What a level's own probe's light is multiplied by for the figure of this
+// light state: more by the look's Ambient where its area has no sun.
+float AmbientLift(const void *state)
+{
+    const float ambient = g_ambient.load(std::memory_order_relaxed);
+    if (ambient <= 0)
+    {
+        return 1.0F;
+    }
+    std::array<float, 3> sun{};
+    std::memcpy(sun.data(), static_cast<const std::byte *>(state) + kStateSun, sizeof sun);
+    const float indoors = 1.0F - std::clamp(20.0F * std::max({sun[0], sun[1], sun[2]}), 0.0F, 1.0F);
+    return 1.0F + ambient * indoors;
+}
+
+// The mix kept for a light state, if the look asks for mixes and it has one
+// that is wanted; one no longer wanted is forgotten.
+std::optional<Blend> BlendOf(void *state)
+{
+    const std::scoped_lock lock(g_blendsLock);
+    const auto found = g_blends.find(state);
+    if (found == g_blends.end())
+    {
+        return std::nullopt;
+    }
+    if (g_probeBlend.load(std::memory_order_relaxed) > 0 && found->second.wanted)
+    {
+        return found->second;
+    }
+    g_blends.erase(found);
+    return std::nullopt;
+}
+
+// The light of the level's own probe a state was last filled from, or
+// nothing if it has none.
+std::optional<Irradiance> OwnProbesLight(const void *state)
+{
+    const std::byte *node = nullptr;
+    std::memcpy(&node, static_cast<const std::byte *>(state) + kStateProbeKept, sizeof node);
+    if (reinterpret_cast<std::uintptr_t>(node) <= kNoProbe)
+    {
+        return std::nullopt;
+    }
+    const std::byte *blueprint = nullptr;
+    std::memcpy(&blueprint, node + kProbeBlueprint, sizeof blueprint);
+    if (blueprint == nullptr)
+    {
+        return std::nullopt;
+    }
+    Irradiance light{};
+    std::memcpy(light.data(), blueprint + kBlueprintIrradiance, sizeof light);
+    return light;
+}
+
+std::uintptr_t __fastcall StateFill(void *state, int unused, std::uintptr_t argument)
+{
+    const std::optional<Blend> mix = BlendOf(state);
+    const float lift = AmbientLift(state);
+    const bool ours = mix.has_value() || lift != 1.0F;
+    if (!ours)
+    {
+        // Matrices of ours left in the state are the engine's to write again.
+        const std::scoped_lock lock(g_blendsLock);
+        if (g_statesWritten.erase(state) != 0)
+        {
+            std::memcpy(static_cast<std::byte *>(state) + kStateProbeKept, &kNoProbe, sizeof kNoProbe);
+        }
+    }
+    const std::uintptr_t result = g_stateFill.Original()(state, unused, argument);
+    if (!ours)
+    {
+        return result;
+    }
+    std::optional<Irradiance> light = mix ? std::optional<Irradiance>(mix->light) : OwnProbesLight(state);
+    if (!light)
+    {
+        return result;
+    }
+    if (!mix || !mix->own)
+    {
+        for (float &value : *light)
+        {
+            value *= lift;
+        }
+    }
+    std::memcpy(static_cast<std::byte *>(state) + kStateIrradiance, light->data(), sizeof *light);
+    const std::scoped_lock lock(g_blendsLock);
+    g_statesWritten.insert(state);
+    return result;
+}
+
+std::uintptr_t __fastcall ChooseForMoving(void *manager, int unused, void *node, void *sun, void *colour,
+                                          std::uintptr_t more)
+{
+    t_figuresManager = manager;
+    const std::uintptr_t result = g_chooseForMoving.Original()(manager, unused, node, sun, colour, more);
+    t_figuresManager = nullptr;
+    return result;
+}
+
+std::uintptr_t __fastcall ChooseFromList(void *list, int unused, void *place, float size, void *group,
+                                         std::uintptr_t changed, std::uintptr_t owned, std::uintptr_t a7,
+                                         std::uintptr_t a8, std::uintptr_t a9, void *only)
+{
+    if (t_figuresManager != nullptr)
+    {
+        t_figuresList = list == ListOf(t_figuresManager, kFiguresFlagged)     ? FiguresList::Flagged
+                        : list == ListOf(t_figuresManager, kFiguresUnflagged) ? FiguresList::Unflagged
+                                                                              : FiguresList::None;
+    }
+    const bool probes = t_figuresManager != nullptr && list == ListOf(t_figuresManager, kLightsProbes) &&
+                        g_probeBlend.load(std::memory_order_relaxed) > 0;
+    thread_local std::vector<ScoredProbe> scored;
+    if (probes)
+    {
+        scored.clear();
+        t_probesScored = &scored;
+    }
+    const std::uintptr_t result =
+        g_chooseFromList.Original()(list, unused, place, size, group, changed, owned, a7, a8, a9, only);
+    t_figuresList = FiguresList::None;
+    if (probes)
+    {
+        t_probesScored = nullptr;
+        KeepBlend(group, scored, static_cast<const float *>(place));
+    }
+    return result;
+}
+
+// What a light's score is multiplied by as a figure's lights are chosen from
+// `list`. A light the area has for its figures is left as it is, but that
+// with lamps asked for a fill of the flagged list goes behind them, and that
+// a fill is given what the look's FillsLess leaves of it, for the shaders to
+// read. A fill is a light of the current area's scene that reaches further
+// than a lamp. Of the area's scene, and not any far light: a portrait and
+// the inventory's figure are each a scene of their own, with a manager of
+// its own and three lights for figures of some 200 m, a warm key of 1.25
+// and two lesser, which are all the light that scene has (logged
+// 2026-10-11, beside the Circle's three fills of 1000 m and a fifth of
+// that). The shaders took every far light of a sunless scene for a fill
+// until then, by reach alone, and the look's FillsLess of a half took 40%
+// off every portrait and the inventory's figure; at 1 they were black (the
+// user saw it, 2026-10-11). A lamp
+// of ours, with none asked for, is not chosen at all: the choice is then
+// vanilla's. Asked for, it is chosen from the flagged list, three for a
+// figure, if it lights the figure, and from the unflagged, one, if it is too
+// far to: so no lamp is taken twice.
+float ScoreScale(FiguresList list, void *node, const float *place)
+{
+    const float strength = g_lampStrength.load(std::memory_order_relaxed);
+    const bool lamps = strength > 0;
+    float reach = 0;
+    std::memcpy(&reach, static_cast<const std::byte *>(node) + kLightNodeReach, sizeof reach);
+    bool ours = false;
+    {
+        const std::scoped_lock lock(g_ourLampsLock);
+        ours = g_ourLamps.contains(node) && !g_areasOwn.contains(node);
+    }
+    if (!ours)
+    {
+        void *scene = nullptr;
+        std::memcpy(&scene, static_cast<const std::byte *>(t_figuresManager) + kManagerScene, sizeof scene);
+        const bool fill = reach > kLampReachMost && scene == g_areasScene.load(std::memory_order_relaxed);
+        if (fill)
+        {
+            const float kept = std::max(1.0F - g_fillsLess.load(std::memory_order_relaxed), kFillLeast);
+            std::memcpy(static_cast<std::byte *>(node) + kLightNodeStrength, &kept, sizeof kept);
+        }
+        return lamps && fill && list == FiguresList::Flagged ? kFillScore : 1.0F;
+    }
+    if (!lamps)
+    {
+        return 0.0F;
+    }
+    std::memcpy(static_cast<std::byte *>(node) + kLightNodeStrength, &strength, sizeof strength);
+    std::array<float, 4> at{};
+    (*static_cast<NodePlaceFn **>(node))[kNodePlaceSlot](node, 0, at.data());
+    const bool lights = std::hypot(at[0] - place[0], at[1] - place[1], at[2] - place[2]) <= kLampNear * reach;
+    return lights == (list == FiguresList::Flagged) ? 1.0F : 0.0F;
+}
+
+std::uintptr_t __fastcall LightScore(void *node, int unused, const float *place, float size, std::uintptr_t room,
+                                     std::uintptr_t other)
+{
+    const std::uintptr_t result = g_lightScore.Original()(node, unused, place, size, room, other);
+    if (t_figuresList != FiguresList::None)
+    {
+        auto *at = static_cast<std::byte *>(node) + kLightNodeScore;
+        float score = 0;
+        std::memcpy(&score, at, sizeof score);
+        score *= ScoreScale(t_figuresList, node, place);
+        std::memcpy(at, &score, sizeof score);
+    }
+    return result;
+}
+
+std::uintptr_t __fastcall ManagerAdd(void *manager, int unused, void *object)
+{
+    return ManagerLights(g_managerAdd, manager, unused, object);
+}
+
+std::uintptr_t __fastcall ManagerRemove(void *manager, int unused, void *object)
+{
+    return ManagerLights(g_managerRemove, manager, unused, object);
+}
+
+HRESULT __stdcall SetPixelFloats(IDirect3DDevice9 *device, UINT first, const float *values, UINT count)
+{
+    for (UINT i = 0; i < count && first + i < 12; ++i)
+    {
+        std::copy_n(values + (4 * static_cast<std::size_t>(i)), 4,
+                    g_handed.registers.begin() + (4 * static_cast<std::size_t>(first + i)));
+    }
+    return g_setPixelFloats.Original()(device, first, values, count);
+}
+
+HRESULT __stdcall SetPixelBools(IDirect3DDevice9 *device, UINT first, const BOOL *values, UINT count)
+{
+    for (UINT i = 0; i < count && first + i < 4; ++i)
+    {
+        g_handed.switches.at(first + i) = values[i] != FALSE;
+    }
+    return g_setPixelBools.Original()(device, first, values, count);
+}
+
+void LogLightsHanded()
+{
+    std::vector<std::pair<int, LightsHanded>> sets;
+    for (const auto &[handed, draws] : g_lights)
+    {
+        sets.emplace_back(draws, handed);
+    }
+    std::ranges::sort(sets, [](const auto &a, const auto &b) { return a.first > b.first; });
+    spdlog::info("  {} distinct sets of the first twelve registers; the commonest:", sets.size());
+    for (std::size_t i = 0; i < sets.size() && i < 14; ++i)
+    {
+        const auto &r = sets[i].second.registers;
+        const auto &s = sets[i].second.switches;
+        const auto four = [&r](std::size_t at) {
+            return fmt::format("({:.2f} {:.2f} {:.2f} {:.2f})", r.at(4 * at), r.at((4 * at) + 1), r.at((4 * at) + 2),
+                               r.at((4 * at) + 3));
+        };
+        spdlog::info("    {:4} draws: switches {}{}{}{} [0]{} [1]{} [2]{} [3]{} [5]{} [6]{} [7]{} [8]{} [9]{} [11]{}",
+                     sets[i].first, s[0] ? 1 : 0, s[1] ? 1 : 0, s[2] ? 1 : 0, s[3] ? 1 : 0, four(0), four(1), four(2),
+                     four(3), four(5), four(6), four(7), four(8), four(9), four(11));
+    }
+    g_lights.clear();
+}
+
+// The draws gathered since the last line, as a line of their own.
+void LogDraws()
+{
+    if (g_draws != 0)
+    {
+        spdlog::info("    {} draws", g_draws);
+        g_draws = 0;
+    }
+}
+
+// A frame is shown: the end of one frame's lines and, at the frames to log,
+// the start of the next's.
+void FramePresented(std::string_view by)
+{
+    if (g_tracing)
+    {
+        LogDraws();
+        spdlog::info("  Present by {}: the end of frame {}", by, g_presented);
+        LogLightsHanded();
+    }
+    ++g_presented;
+    g_tracing = g_presented % kTraceEvery == kTraceFirst;
+    if (g_tracing)
+    {
+        spdlog::info("frame {}, as it is drawn:", g_presented);
+    }
+}
+
+HRESULT __stdcall Present(IDirect3DDevice9 *device, const RECT *from, const RECT *to, HWND window, const RGNDATA *dirty)
+{
+    ShowScene(device);
+    FramePresented("the device");
+    return g_present.Original()(device, from, to, window, dirty);
+}
+
+// The game shows its frames by its swap chain, not the device (seen
+// 2026-10-11: with the device's Present alone detoured no frame was counted).
+constexpr std::size_t kChainPresentSlot = 3; // IDirect3DSwapChain9::Present
+using ChainPresentFn = HRESULT(__stdcall *)(IDirect3DSwapChain9 *, const RECT *, const RECT *, HWND, const RGNDATA *,
+                                            DWORD);
+dao::Detour<ChainPresentFn> g_chainPresent;
+
+HRESULT __stdcall ChainPresent(IDirect3DSwapChain9 *chain, const RECT *from, const RECT *to, HWND window,
+                               const RGNDATA *dirty, DWORD flags)
+{
+    if (g_device != nullptr)
+    {
+        ShowScene(g_device);
+    }
+    FramePresented("the swap chain");
+    return g_chainPresent.Original()(chain, from, to, window, dirty, flags);
+}
+
+HRESULT __stdcall StretchRect(IDirect3DDevice9 *device, IDirect3DSurface9 *from, const RECT *part,
+                              IDirect3DSurface9 *to, const RECT *place, D3DTEXTUREFILTERTYPE filter)
+{
+    from = Swapped(from);
+    to = Swapped(to);
+    if (g_tracing)
+    {
+        LogDraws();
+        spdlog::info("  copy [{}] to [{}]", Described(device, from), Described(device, to));
+    }
+    return g_stretchRect.Original()(device, from, part, to, place, filter);
+}
+
+HRESULT __stdcall SetRenderTarget(IDirect3DDevice9 *device, DWORD index, IDirect3DSurface9 *target)
+{
+    target = index == 0 ? Swapped(target) : target;
+    if (g_tracing)
+    {
+        LogDraws();
+        spdlog::info("  target {}: [{}]", index, Described(device, target));
+    }
+    return g_setRenderTarget.Original()(device, index, target);
+}
+
+HRESULT __stdcall Clear(IDirect3DDevice9 *device, DWORD count, const D3DRECT *rects, DWORD flags, D3DCOLOR colour,
+                        float depth, DWORD stencil)
+{
+    if (g_tracing)
+    {
+        LogDraws();
+        spdlog::info("  clear, flags {:#x}, colour {:#010x}", flags, colour);
+    }
+    return g_clear.Original()(device, count, rects, flags, colour, depth, stencil);
+}
+
+HRESULT __stdcall Draw(IDirect3DDevice9 *device, D3DPRIMITIVETYPE type, UINT first, UINT count)
+{
+    g_draws += g_tracing ? 1 : 0;
+    if (g_tracing)
+    {
+        ++g_lights[g_handed];
+    }
+    return g_draw.Original()(device, type, first, count);
+}
+
+HRESULT __stdcall DrawIndexed(IDirect3DDevice9 *device, D3DPRIMITIVETYPE type, INT base, UINT least, UINT vertices,
+                              UINT first, UINT count)
+{
+    g_draws += g_tracing ? 1 : 0;
+    if (g_tracing)
+    {
+        ++g_lights[g_handed];
+    }
+    return g_drawIndexed.Original()(device, type, base, least, vertices, first, count);
+}
+
+// Places the detours the frame's trace and our own scene target both stand
+// on, and makes that target if it is asked for.
+void WatchFramesOf(IDirect3DDevice9 *device)
+{
+    std::string word;
+    std::ifstream(dao::Module::OwnFolder() / kOwnSceneFile) >> word;
+    const bool ownScene = word != "off";
+    std::error_code error;
+    if (!ownScene && !std::filesystem::exists(dao::Module::OwnFolder() / kLogFrameFile, error))
+    {
+        return;
+    }
+    g_device = device;
+    if (ownScene)
+    {
+        g_wideFormat = word == "8bit" ? D3DFMT_UNKNOWN : D3DFMT_A16B16G16R16F;
+        g_createTexture.AttachTo(Method<CreateTextureFn>(device, kCreateTextureSlot), &CreateTexture);
+    }
+    g_present.AttachTo(Method<PresentFn>(device, kPresentSlot), &Present);
+    IDirect3DSwapChain9 *chain = nullptr;
+    if (SUCCEEDED(device->GetSwapChain(0, &chain)) && chain != nullptr)
+    {
+        g_chainPresent.AttachTo(Method<ChainPresentFn>(chain, kChainPresentSlot), &ChainPresent);
+        chain->Release();
+    }
+    g_stretchRect.AttachTo(Method<StretchRectFn>(device, kStretchRectSlot), &StretchRect);
+    g_setRenderTarget.AttachTo(Method<SetRenderTargetFn>(device, kSetRenderTargetSlot), &SetRenderTarget);
+    g_clear.AttachTo(Method<ClearFn>(device, kClearSlot), &Clear);
+    g_draw.AttachTo(Method<DrawFn>(device, kDrawSlot), &Draw);
+    g_drawIndexed.AttachTo(Method<DrawIndexedFn>(device, kDrawIndexedSlot), &DrawIndexed);
+    if (std::filesystem::exists(dao::Module::OwnFolder() / kLogFrameFile, error))
+    {
+        g_setPixelFloats.AttachTo(Method<SetPixelFloatsFn>(device, kSetPixelFloatsSlot), &SetPixelFloats);
+        g_setPixelBools.AttachTo(Method<SetPixelBoolsFn>(device, kSetPixelBoolsSlot), &SetPixelBools);
+    }
+    if (ownScene)
+    {
+        g_getRenderTarget.AttachTo(Method<GetRenderTargetFn>(device, kGetRenderTargetSlot), &GetRenderTarget);
+        g_reset.AttachTo(Method<ResetFn>(device, kResetSlot), &Reset);
+        MakeScene(device);
+    }
+}
+
+void LogTargetsOf(IDirect3DDevice9 *device, const D3DPRESENT_PARAMETERS *parameters)
+{
+    std::error_code error;
+    if (!std::filesystem::exists(dao::Module::OwnFolder() / kLogTargetsFile, error))
+    {
+        return;
+    }
+    if (parameters != nullptr)
+    {
+        spdlog::info("the back buffer: {} by {}, format {}, {} samples of quality {}", parameters->BackBufferWidth,
+                     parameters->BackBufferHeight, static_cast<int>(parameters->BackBufferFormat),
+                     static_cast<int>(parameters->MultiSampleType), parameters->MultiSampleQuality);
+    }
+    g_logTargets = true;
+    g_createTexture.AttachTo(Method<CreateTextureFn>(device, kCreateTextureSlot), &CreateTexture);
+    g_createRenderTarget.AttachTo(Method<CreateRenderTargetFn>(device, kCreateRenderTargetSlot), &CreateRenderTarget);
+}
+
+// Anisotropic filtering, which the game has no setting for: a texture seen at
+// a slant (the ground ahead, a wall along a street) is read through a
+// stretched footprint instead of a square one, and keeps its detail. The game
+// asks for plain linear filtering; where it asks that of a sampler whose
+// texture has mipmaps, it is given anisotropic filtering of the look's
+// degree instead. A sampler with no mipmaps is a render target, a shadow map
+// or a lookup, and is left as asked. The game's own asking is remembered for
+// each sampler, so the degree can change, or go, while the game runs.
+constexpr std::size_t kSamplers = 16;            // the pixel shader's
+constexpr std::size_t kSetSamplerStateSlot = 69; // IDirect3DDevice9::SetSamplerState
+using SetSamplerStateFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, DWORD, D3DSAMPLERSTATETYPE, DWORD);
+dao::Detour<SetSamplerStateFn> g_setSamplerState;
+std::atomic<int> g_anisotropy{0}; // the look's degree, 0 or 1 for the game's own filtering
+// The drawing thread's own: what the game last asked of each sampler
+// (Direct3D's defaults until it does), and the degree in force.
+std::array<DWORD, kSamplers> g_askedMin = [] {
+    std::array<DWORD, kSamplers> all{};
+    all.fill(D3DTEXF_POINT);
+    return all;
+}();
+std::array<DWORD, kSamplers> g_askedMip{}; // D3DTEXF_NONE
+int g_anisotropyInForce = 0;
+
+// Gives one sampler the minification filter it is to have.
+void FilterSampler(IDirect3DDevice9 *device, std::size_t sampler)
+{
+    const auto index = static_cast<DWORD>(sampler);
+    const bool stretched =
+        g_anisotropyInForce > 1 && g_askedMin.at(sampler) == D3DTEXF_LINEAR && g_askedMip.at(sampler) != D3DTEXF_NONE;
+    if (stretched)
+    {
+        g_setSamplerState.Original()(device, index, D3DSAMP_MAXANISOTROPY, static_cast<DWORD>(g_anisotropyInForce));
+    }
+    g_setSamplerState.Original()(device, index, D3DSAMP_MINFILTER,
+                                 stretched ? D3DTEXF_ANISOTROPIC : g_askedMin.at(sampler));
+}
+
+HRESULT __stdcall SetSamplerState(IDirect3DDevice9 *device, DWORD sampler, D3DSAMPLERSTATETYPE type, DWORD value)
+{
+    if (sampler >= kSamplers || (type != D3DSAMP_MINFILTER && type != D3DSAMP_MIPFILTER))
+    {
+        return g_setSamplerState.Original()(device, sampler, type, value);
+    }
+    (type == D3DSAMP_MINFILTER ? g_askedMin : g_askedMip).at(sampler) = value;
+    const HRESULT result =
+        type == D3DSAMP_MIPFILTER ? g_setSamplerState.Original()(device, sampler, type, value) : D3D_OK;
+    FilterSampler(device, sampler);
+    return result;
+}
+
+HRESULT __stdcall BeginScene(IDirect3DDevice9 *device)
+{
+    if (const int wanted = g_anisotropy.load(std::memory_order_relaxed);
+        wanted != g_anisotropyInForce && g_setSamplerState.IsAttached())
+    {
+        g_anisotropyInForce = wanted;
+        for (std::size_t sampler = 0; sampler < kSamplers; ++sampler)
+        {
+            FilterSampler(device, sampler);
+        }
+    }
+    std::array<float, kLookRegisters * 4> values{};
+    for (std::size_t i = 0; i < values.size(); ++i)
+    {
+        values.at(i) = g_look.at(i).load(std::memory_order_relaxed);
+    }
+    device->SetPixelShaderConstantF(kLookRegister, values.data(), kLookRegisters);
+    return g_beginScene.Original()(device);
+}
+
+HRESULT __stdcall CreateDevice(IDirect3D9 *direct3d, UINT adapter, D3DDEVTYPE type, HWND window, DWORD behaviour,
+                               D3DPRESENT_PARAMETERS *parameters, IDirect3DDevice9 **device)
+{
+    const HRESULT result = g_createDevice.Original()(direct3d, adapter, type, window, behaviour, parameters, device);
+    if (SUCCEEDED(result) && device != nullptr && *device != nullptr && !g_beginScene.IsAttached())
+    {
+        const bool placed = g_beginScene.AttachTo(Method<BeginSceneFn>(*device, kBeginSceneSlot), &BeginScene);
+        spdlog::info("the game's Direct3D device: {}",
+                     placed ? "the look's registers are set every scene" : "no detour, the look's registers stay 0");
+        g_setSamplerState.AttachTo(Method<SetSamplerStateFn>(*device, kSetSamplerStateSlot), &SetSamplerState);
+        LogTargetsOf(*device, parameters);
+        WatchFramesOf(*device);
+    }
+    return result;
+}
+
+IDirect3D9 *__stdcall Create(UINT version)
+{
+    IDirect3D9 *direct3d = g_create.Original()(version);
+    if (direct3d != nullptr && !g_createDevice.IsAttached() &&
+        !g_createDevice.AttachTo(Method<CreateDeviceFn>(direct3d, kCreateDeviceSlot), &CreateDevice))
+    {
+        spdlog::warn("Direct3D's CreateDevice: no detour, the look's registers stay 0");
+    }
+    return direct3d;
+}
+
+// Watches for the game's Direct3D device from Direct3DCreate9 on; called at
+// load, before the game has made it.
+void WatchForDevice()
+{
+    const HMODULE d3d9 = LoadLibraryW(L"d3d9.dll");
+    if (d3d9 == nullptr ||
+        !g_create.AttachTo(reinterpret_cast<CreateFn>(GetProcAddress(d3d9, "Direct3DCreate9")), &Create))
+    {
+        spdlog::warn("Direct3DCreate9: no detour, the look's registers stay 0");
+    }
+}
+
+// The lights the scene holds, logged when their counts change: what an area
+// has for the shaders to be given, which indoors is the question (a room's
+// torches may be lights, or only light baked into its lightmap).
+void LogLights()
+{
+    static std::array<std::int32_t, 4> last{-1, -1, -1, -1};
+    const std::array<std::int32_t, 4> now{dao::Global<std::int32_t>(dao::addr::kLightManager_PointLights),
+                                          dao::Global<std::int32_t>(dao::addr::kLightManager_PointLightsOther),
+                                          dao::Global<std::int32_t>(dao::addr::kLightManager_LightsOfType2),
+                                          dao::Global<std::int32_t>(dao::addr::kLightManager_LightsOfType3)};
+    if (now != last)
+    {
+        last = now;
+        spdlog::info("lights in the scene: {} point, {} point of the other sort, {} of type 2, {} of type 3", now[0],
+                     now[1], now[2], now[3]);
+    }
+}
+
+// The sunlight as the area has it now, logged when it changes: its two
+// colours and the way it travels, to set beside the way the shadows fall.
+void LogSunlight()
+{
+    static std::optional<dao::atmosphere::Sunlight> last;
+    const std::optional<dao::atmosphere::Sunlight> now = dao::atmosphere::CurrentSunlight();
+    if (now && now != last)
+    {
+        last = now;
+        spdlog::info("sunlight: travels ({:.2f}, {:.2f}, {:.2f}), colour ({:.2f}, {:.2f}, {:.2f}), on creatures "
+                     "({:.2f}, {:.2f}, {:.2f})",
+                     now->direction[0], now->direction[1], now->direction[2], now->color[0], now->color[1],
+                     now->color[2], now->characterColor[0], now->characterColor[1], now->characterColor[2]);
+    }
+}
+
+// One value of a look: its name in graphics.ini and in the game's
+// colour-grade chain, and how much of it the look has.
+struct LookValue
+{
+    std::string key;   // as the file has it
+    std::wstring name; // as the chain has it: the same after "Dao"
+    float value;
+};
+
+// A look: a section of graphics.ini, and a stop of the options screen's slider.
+struct Look
+{
+    std::string name;
+    std::vector<LookValue> values;
+};
+
+constexpr std::wstring_view kChain = L"da_hsvmatrix"; // the chain build_shaders.py puts our values in
+constexpr int kLookEvery = 30;                        // frames between looks at the file and the chain
+constexpr const char *kLooksFile = "graphics.ini";
+constexpr const char *kChosenFile = "graphics.chosen"; // what is chosen, kept between sessions
+// The look a player who has chosen none starts with: the lighting, with no
+// sharpening and no change of saturation or contrast. Those are taste, and
+// are to get controls of their own; the named looks that carry them are
+// placeholders (the user, 2026-10-11).
+constexpr std::string_view kFirstLook = "Lighting only";
+constexpr std::wstring_view kSmaa = L"DaoSmaa"; // the chain's switch for its anti-aliasing (smaa.py)
+
+// The looks and the one chosen: the game thread's, as the options screen's
+// callbacks and the frame's are.
+std::vector<Look> g_looks;
+std::size_t g_chosen = 0;
+bool g_smaa = false; // SMAA beside the game's own anti-aliasing, or not
+
+std::string_view Trimmed(std::string_view text)
+{
+    constexpr std::string_view kSpace = " \t\r";
+    const std::size_t first = text.find_first_not_of(kSpace);
+    if (first == std::string_view::npos)
+    {
+        return {};
+    }
+    return text.substr(first, text.find_last_not_of(kSpace) - first + 1);
+}
+
+std::wstring Wide(std::string_view text)
+{
+    std::wstring wide;
+    for (const char letter : text)
+    {
+        wide.push_back(static_cast<wchar_t>(letter));
+    }
+    return wide;
+}
+
+// One line of a look, `Name = number`, or nothing if it is not one.
+std::optional<LookValue> ReadValue(std::string_view text)
+{
+    const std::size_t equals = text.find('=');
+    if (equals == std::string_view::npos)
+    {
+        return std::nullopt;
+    }
+    const std::string_view key = Trimmed(text.substr(0, equals));
+    const std::string_view number = Trimmed(text.substr(equals + 1));
+    float value = 0;
+    if (key.empty() || std::from_chars(number.data(), number.data() + number.size(), value).ec != std::errc{})
+    {
+        return std::nullopt;
+    }
+    return LookValue{std::string(key), L"Dao" + Wide(key), value};
+}
+
+// Reads graphics.ini: `[A look's name]` starts a look, a line under it is
+// `Name = number`, and what follows a ';' is a comment.
+std::vector<Look> ReadLooks(const std::filesystem::path &file)
+{
+    std::vector<Look> looks;
+    std::ifstream in(file);
+    for (std::string line; std::getline(in, line);)
+    {
+        const std::string_view text = Trimmed(std::string_view(line).substr(0, line.find(';')));
+        if (text.size() > 2 && text.front() == '[' && text.back() == ']')
+        {
+            looks.push_back({std::string(Trimmed(text.substr(1, text.size() - 2))), {}});
+        }
+        else if (std::optional<LookValue> value = ReadValue(text); value && !looks.empty())
+        {
+            looks.back().values.push_back(std::move(*value));
+        }
+        else if (!text.empty())
+        {
+            spdlog::warn("{}: not a look's name or a value under one: {}", kLooksFile, line);
+        }
+    }
+    return looks;
+}
+
+// The place of the look of a name among the looks, or nothing.
+std::optional<std::size_t> LookNamed(std::string_view name)
+{
+    for (std::size_t index = 0; index < g_looks.size(); ++index)
+    {
+        if (g_looks[index].name == name)
+        {
+            return index;
+        }
+    }
+    return std::nullopt;
+}
+
+// What was chosen last session: the look by its name (kFirstLook, if there
+// was none or the file no longer has it), and the anti-aliasing.
+void ReadChosen(const std::filesystem::path &folder)
+{
+    g_chosen = LookNamed(kFirstLook).value_or(0);
+    std::ifstream in(folder / kChosenFile);
+    for (std::string line; std::getline(in, line);)
+    {
+        const std::size_t equals = line.find('=');
+        if (equals == std::string::npos)
+        {
+            continue;
+        }
+        const std::string_view key = Trimmed(std::string_view(line).substr(0, equals));
+        const std::string_view value = Trimmed(std::string_view(line).substr(equals + 1));
+        if (key == "AntiAliasing")
+        {
+            g_smaa = value == "SMAA";
+        }
+        if (key == "Look")
+        {
+            g_chosen = LookNamed(value).value_or(g_chosen);
+        }
+    }
+}
+
+// Keeps what is chosen for the next session.
+void KeepChosen()
+{
+    std::ofstream out(dao::Module::OwnFolder() / kChosenFile, std::ios::trunc);
+    out << "Look = " << g_looks[g_chosen].name << "\nAntiAliasing = " << (g_smaa ? "SMAA" : "Off") << '\n';
+    if (!out)
+    {
+        spdlog::warn("{} was not written: the choice lasts this session", kChosenFile);
+    }
+}
+
+std::int32_t ChooseLook(std::int32_t wanted)
+{
+    g_chosen = static_cast<std::size_t>(wanted);
+    spdlog::info("the look: {}", g_looks[g_chosen].name);
+    KeepChosen();
+    return wanted;
+}
+
+std::int32_t ChooseAntiAliasing(std::int32_t wanted)
+{
+    g_smaa = wanted == 1;
+    spdlog::info("extra anti-aliasing: {}", g_smaa ? "SMAA" : "off");
+    KeepChosen();
+    return wanted;
+}
+
+// Sets one value of the chain if it is not that already. A chain that has no
+// such value (a build without the pass that reads it) is left alone.
+void Keep(std::wstring_view name, float value, std::string_view key)
+{
+    const std::optional<float> now = dao::framebuffer::Value(kChain, name);
+    if (now && std::abs(*now - value) > 0.0001F)
+    {
+        dao::framebuffer::SetValue(kChain, name, value);
+        spdlog::info("the chain's {} is {}", key, value);
+    }
+}
+
+// The chosen look's value of a name, or `otherwise` if it has none: for the
+// values the plugin acts on itself, which are no value of the chain.
+float ChosenValue(std::string_view key, float otherwise = 0)
+{
+    for (const LookValue &value : g_looks[g_chosen].values)
+    {
+        if (value.key == key)
+        {
+            return value.value;
+        }
+    }
+    return otherwise;
+}
+
+// Keeps the sun on the world at the look's strength. An area's sunlight has
+// a colour for its ground and buildings, which their shaders add to the
+// baked light by the surface's normal map, its gloss and the shadow maps,
+// and another for its creatures. The first is kept at the area's own times
+// 1 + `sun`; an area with no sun of its own (Orzammar's Commons has the
+// level's colour black, seen 2026-10-11) is given none.
+void KeepSun(float sun)
+{
+    static float logged = -1;
+    const std::optional<dao::atmosphere::Sunlight> own = dao::atmosphere::AreaOwnSunlight();
+    const std::optional<dao::atmosphere::Sunlight> now = dao::atmosphere::CurrentSunlight();
+    if (!own || !now)
+    {
+        return;
+    }
+    dao::atmosphere::Sunlight wanted = *now;
+    for (std::size_t channel = 0; channel < 3; ++channel)
+    {
+        wanted.color.at(channel) = own->color.at(channel) * (1 + sun);
+    }
+    wanted.color.at(3) = own->color.at(3);
+    if (wanted != *now && dao::atmosphere::SetSunlight(wanted) && sun != logged)
+    {
+        logged = sun;
+        spdlog::info("the world: its sun {} times the area's own", 1 + sun);
+    }
+}
+
+// Hands the build's shaders the chosen look's numbers that are theirs
+// (look.hlsl): how strongly a level's baked light is shaped by its normal
+// maps, how far the figures' highlights are corrected, and how much of the
+// sun's shadow falls on figures.
+void KeepLookRegisters()
+{
+    constexpr std::array<std::string_view, 6> kKeys{"Relief", "Materials", "ShadowOnFigures",
+                                                    "Lamps",  "FillsLess", "Ambient"};
+    for (std::size_t i = 0; i < kKeys.size(); ++i)
+    {
+        // The materials want a scene that holds more than white (materials.hlsl).
+        const bool idle = kKeys.at(i) == "Materials" && g_wideFormat == D3DFMT_UNKNOWN;
+        g_look.at(i).store(idle ? 0.0F : ChosenValue(kKeys.at(i)), std::memory_order_relaxed);
+    }
+    g_anisotropy.store(static_cast<int>(ChosenValue("Anisotropy")), std::memory_order_relaxed);
+    g_lampStrength.store(ChosenValue("Lamps"), std::memory_order_relaxed);
+    g_fillsLess.store(ChosenValue("FillsLess"), std::memory_order_relaxed);
+    g_probeBlend.store(ChosenValue("ProbeBlend"), std::memory_order_relaxed);
+    g_ambient.store(ChosenValue("Ambient"), std::memory_order_relaxed);
+}
+
+// The current area's scene for the lights' chooser, which may be on another thread.
+void KeepAreasScene()
+{
+    const dao::CCArea *area = dao::world::CurrentArea();
+    g_areasScene.store(area != nullptr ? area->Scene() : nullptr, std::memory_order_relaxed);
+}
+
+// Keeps the chain's values at the chosen look's, and its anti-aliasing on or
+// off. The file is read again when
+// it is written, so a look is tuned with the game running; the chain is asked
+// each time, since a new game or a reload of the chain would put its values
+// back to their own. The slider keeps the stops it was given at the start, so
+// a look added or taken out shows there from the next session.
+void ApplyLook()
+{
+    static std::filesystem::file_time_type read;
+    static int frames = 0;
+    if (++frames % kLookEvery != 0)
+    {
+        return;
+    }
+    const std::filesystem::path file = dao::Module::OwnFolder() / kLooksFile;
+    std::error_code error;
+    const std::filesystem::file_time_type written = std::filesystem::last_write_time(file, error);
+    if (!error && written != read)
+    {
+        const bool first = read == std::filesystem::file_time_type{};
+        read = written;
+        if (std::vector<Look> looks = ReadLooks(file); !first && looks.size() == g_looks.size())
+        {
+            g_looks = std::move(looks);
+            spdlog::info("{}: read again", kLooksFile);
+        }
+    }
+    if (g_chosen >= g_looks.size())
+    {
+        return;
+    }
+    for (const LookValue &value : g_looks[g_chosen].values)
+    {
+        // The highlights' roll-off is for a scene that holds more than white:
+        // in the back buffer's eight bits it would only dim what is nearly
+        // white.
+        const bool idle = value.key == "Highlights" && g_wideFormat == D3DFMT_UNKNOWN;
+        Keep(value.name, idle ? 0.0F : value.value, value.key);
+    }
+    Keep(kSmaa, g_smaa ? 1.0F : 0.0F, "Smaa");
+    KeepSun(ChosenValue("Sun"));
+    KeepLookRegisters();
+}
+
+// The options screen's section: the anti-aliasing, and under it the looks, a
+// stop each.
+void AddToOptions()
+{
+    if (g_looks.size() < 2)
+    {
+        spdlog::warn("{}: {} looks; the options screen's slider wants two or more", kLooksFile, g_looks.size());
+        return;
+    }
+    dao::options::Choice smaa;
+    smaa.name = L"GraphicsAntiAliasing";
+    smaa.label = L"Extra anti-aliasing";
+    smaa.tooltip = L"Smooths the edges the game's own anti-aliasing misses; works with it or without";
+    smaa.values = {L"Off", L"SMAA"};
+    smaa.style = dao::options::ChoiceStyle::Dropdown;
+    smaa.get = [] { return g_smaa ? 1 : 0; };
+    smaa.set = &ChooseAntiAliasing;
+    dao::options::Choice look;
+    look.name = L"GraphicsLook";
+    look.label = L"Look";
+    look.tooltip = L"Sharpening, colour and ambient occlusion; the looks are graphics.ini's";
+    for (const Look &each : g_looks)
+    {
+        look.values.push_back(Wide(each.name));
+    }
+    look.get = [] { return static_cast<std::int32_t>(g_chosen); };
+    look.set = &ChooseLook;
+    if (!dao::options::AddSection(L"Graphics", {}, {smaa, look}))
+    {
+        spdlog::warn("the options screen did not take the section");
+    }
+}
+
+} // namespace
+
+extern "C" __declspec(dllexport) bool __cdecl DAOLib_Load(const dao::LoaderInfo *info)
+{
+    dao::OpenLog("elgarashaders");
+    if (info == nullptr || info->apiVersion != dao::kPluginApiVersion || !info->knownExecutable)
+    {
+        spdlog::error("not the loader or the game this was built for");
+        return false;
+    }
+    if (!g_lightListInsert.Attach(dao::addr::kLightList_Insert, &LightListInsert) ||
+        !g_lightListErase.Attach(dao::addr::kLightList_Erase, &LightListErase) ||
+        !g_managerAdd.Attach(dao::addr::kLightManager_AddLights, &ManagerAdd) ||
+        !g_managerRemove.Attach(dao::addr::kLightManager_RemoveLights, &ManagerRemove) ||
+        !g_chooseForMoving.Attach(dao::addr::kLightManager_ChooseForMoving, &ChooseForMoving) ||
+        !g_chooseFromList.Attach(dao::addr::kLightList_ChooseFor, &ChooseFromList) ||
+        !g_lightScore.Attach(dao::addr::kObjectNodePointLight_Score, &LightScore))
+    {
+        spdlog::warn("the figures have no lamps: a detour is missing");
+    }
+    if (!g_probeScore.Attach(dao::addr::kObjectNodeLightProbe_Score, &ProbeScore) ||
+        !g_stateFill.Attach(dao::addr::kLightState_Fill, &StateFill))
+    {
+        spdlog::warn("the light probes are not blended: a detour is missing");
+    }
+    if (!g_setPartitions.Attach(dao::addr::kShadowMaps_SetPartitions, &SetPartitions))
+    {
+        spdlog::warn("the shadow maps keep the game's size: no detour");
+    }
+    if (!g_openArchive.Attach(dao::addr::kResMan_MakeSource, &OpenArchive))
+    {
+        spdlog::warn("no light probes are baked: no detour");
+    }
+    probebaker::Start(dao::LogDirectory() / "elgarashaders" / "probes", dao::Module::Path().parent_path().parent_path());
+    WatchForDevice();
+    g_looks = ReadLooks(dao::Module::OwnFolder() / kLooksFile);
+    ReadChosen(dao::Module::OwnFolder());
+    spdlog::info("{}: {} looks", kLooksFile, g_looks.size());
+    AddToOptions();
+    dao::OnFrame(&LogLights);
+    dao::OnFrame(&LogSunlight);
+    dao::OnFrame(&ApplyLook);
+    dao::OnFrame(&KeepAreasScene);
+    return true;
+}

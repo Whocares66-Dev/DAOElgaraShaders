@@ -1,0 +1,13 @@
+# ruff: the Python formatter and linter, over tools/.
+#
+#   python -m ruff format    rewrites in place
+#   python -m ruff check     lints
+#
+# The formatter is ruff's stock style, for the reason .clang-format is a
+# stock preset. The lint rules are chosen as .clang-tidy's are: a finding is
+# a plausible bug or a real cost, not a matter of taste -- pyflakes and
+# pycodestyle's errors, bugbear, perflint, pylint's errors and warnings.
+target-version = "py311"
+
+[lint]
+select = ["E4", "E7", "E9", "F", "B", "PERF", "PLE", "PLW"]

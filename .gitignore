@@ -1,0 +1,30 @@
+# Build output
+build/
+out/
+dist/
+vcpkg_installed/
+*.dll
+*.pdb
+*.lib
+*.obj
+*.exp
+
+# Machine-specific assistant settings
+/.claude/settings.local.json
+
+# IDE
+.vs/
+.idea/
+.vscode/settings.json
+CMakeUserPresets.json
+
+# Python
+__pycache__/
+.ruff_cache/
+
+# Claude Code runtime state
+/.claude/scheduled_tasks.lock
+# The guide's site as Jekyll builds it beside its pages (docs/README.md).
+docs/_site/
+docs/.jekyll-cache/
+docs/.sass-cache/

@@ -1,0 +1,113 @@
+# clang-tidy configuration.
+#
+# Correctness and performance checks, and since 2026-10-05 (the user: "style
+# & readability also matter. We want to write good clean code, avoid
+# complexity"; DAOLib #33) readability-* and modernize-* less the ones that
+# are taste alone. The bar for a check being here is that a finding is a
+# plausible bug, a real cost, or code that reads worse than it need; a check
+# that only prefers one spelling of the same thing to another is left out
+# below, with why. google-*, llvm-*, hicpp-* and the like stay off, and
+# formatting is clang-format's job with a stock style.
+#
+# Most of readability-* and modernize-* can rewrite what they find: run
+# clang-tidy with --fix and the two --extra-arg the tidy target passes
+# (cmake/Quality.cmake), or it sees compiler errors and applies nothing.
+# Read the diff it makes.
+#
+# Run:  cmake --build --preset debug --target tidy   (see cmake/Quality.cmake)
+Checks: >
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-throwing-static-initialization,
+  clang-analyzer-*,
+  -clang-analyzer-core.FixedAddressDereference,
+  -clang-analyzer-optin.core.EnumCastOutOfRange,
+  concurrency-*,
+  cppcoreguidelines-pro-type-member-init,
+  cppcoreguidelines-slicing,
+  cppcoreguidelines-virtual-class-destructor,
+  cppcoreguidelines-rvalue-reference-param-not-moved,
+  cppcoreguidelines-misleading-capture-default-by-value,
+  misc-*,
+  -misc-const-correctness,
+  -misc-include-cleaner,
+  -misc-non-private-member-variables-in-classes,
+  -misc-use-anonymous-namespace,
+  -misc-no-recursion,
+  -misc-unused-parameters,
+  performance-*,
+  -performance-no-int-to-ptr,
+  -performance-enum-size,
+  portability-*,
+  -portability-avoid-pragma-once,
+  readability-*,
+  -readability-magic-numbers,
+  -readability-identifier-length,
+  -readability-uppercase-literal-suffix,
+  modernize-*,
+  -modernize-use-trailing-return-type,
+  -modernize-use-nodiscard,
+  -modernize-use-designated-initializers,
+  -modernize-avoid-c-arrays,
+  -modernize-use-scoped-lock
+
+# A function harder to follow than this is split or simplified (the check's
+# own default, said here so it is seen).
+CheckOptions:
+  readability-function-cognitive-complexity.Threshold: 25
+
+# Excluded, and why:
+#   bugprone-easily-swappable-parameters   a design lint, fires on (int, int)
+#   bugprone-throwing-static-initialization   a static that can throw here is
+#                                          a standard container or Catch2's
+#                                          registration; nothing to recover to
+#   clang-analyzer-core.FixedAddressDereference   reading the game at an
+#                                          address from Addresses.h is what
+#                                          this library IS
+#   clang-analyzer-optin.core.EnumCastOutOfRange   fires inside MSVC's own
+#                                          <filesystem> and Catch2, out of
+#                                          reach of any NOLINT of ours
+#   performance-no-int-to-ptr              an address cast is what a hook or
+#                                          an offset read of an engine struct IS
+#   performance-enum-size                  "make the enum a byte": an engine
+#                                          enum's size is the engine's, and
+#                                          ours are too few to matter
+#   misc-const-correctness                 style; also very noisy
+#   misc-include-cleaner                   include hygiene, not correctness
+#   misc-non-private-member-variables-in-classes   style; engine layouts are
+#                                          public fields by nature
+#   misc-use-anonymous-namespace           style (static vs anonymous namespace)
+#   misc-no-recursion                      recursion is fine
+#   misc-unused-parameters                 the compiler already warns (C4100)
+#   portability-avoid-pragma-once          every header here uses #pragma once,
+#                                          and MSVC and clang-cl both keep it
+#   readability-magic-numbers              an offset, an address or a size read
+#                                          from the game IS a number; a name for
+#                                          each says nothing the comment beside
+#                                          it does not
+#   readability-identifier-length          taste: i, id and at are names
+#   readability-uppercase-literal-suffix   taste: 0x10u or 0x10U
+#   modernize-use-trailing-return-type     taste: rewrites every signature to
+#                                          `auto f() -> T` for nothing
+#   modernize-use-nodiscard                wants [[nodiscard]] on every const
+#                                          getter, hundreds of them; a result
+#                                          dropped where it matters is
+#                                          bugprone-unused-return-value's
+#   modernize-use-designated-initializers  good where a struct is spelled out
+#                                          by hand, but it also fires on every
+#                                          row of a table of them
+#   modernize-avoid-c-arrays               a struct that mirrors the game's
+#                                          memory has the game's arrays in it
+#   modernize-use-scoped-lock              std::lock_guard over one mutex is
+#                                          already the plain thing
+
+# Our headers anywhere under src. The lint target passes this checkout's src
+# as an absolute path instead (cmake/Quality.cmake), which is stricter; this
+# is for clang-tidy run from this file alone, an editor's.
+HeaderFilterRegex: 'src[/\\]'
+FormatStyle: file
+
+# A finding fails the run. Without this clang-tidy exits 0 on warnings, the
+# build's per-file stamp is touched, and the NEXT run reports nothing while
+# the findings are still there.
+WarningsAsErrors: '*'

@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "ghidra-dao": {
+      "type": "http",
+      "url": "http://127.0.0.1:8090/mcp"
+    },
+    "eluvian": {
+      "command": "python",
+      "args": [
+        "${ELUVIAN_DIR:-C:/project/DAOEluvianMCP}/tools/eluvian_bridge.py"
+      ]
+    }
+  }
+}
