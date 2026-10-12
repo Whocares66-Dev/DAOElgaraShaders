@@ -42,6 +42,8 @@ static const int kDaoAoSteps = 3;
 static const float kDaoAoMostOfScreen = 0.2;
 // Of the radius, the outer part over which a thing stops counting.
 static const float kDaoAoFalloff = 0.615;
+// The least of its light this pass leaves a point.
+static const float kDaoAoLeast = 0.45;
 static const float kDaoPi = 3.14159265;
 static const float kDaoHalfPi = 1.57079633;
 
@@ -70,11 +72,25 @@ float3 DaoAlong(float3 here, float3 before, float3 after)
 // is and whether it rises above the surface at all. `rise` is what a thing
 // must stand above the surface by to count: the depth has steps of its own,
 // and a floor seen aslant would shade itself by them.
+//
+// A thing that stands off towards the eye or away from it counts for less
+// than one beside the point: its distance along the view is taken for more
+// than it is (XeGTAO's compensation for thin occluders). The depth has only
+// the front of each thing, and a plume's cards a hand's breadth behind a
+// helm are, to this search, a wall as deep as the scene: the side of the
+// helm that faced them went black, with the cards' stepped outline (the
+// user, 2026-10-12: "cailan's helmet looks transparent for some reason";
+// found on a frozen frame, where the patch went with this pass off and with
+// nothing else, and the depth itself was sound: build_shaders.py's
+// show-depth).
+static const float kDaoAoThin = 2.0;
+
 float DaoHorizon(float3 to, float3 view, float3 normal, float low, float radius, float rise)
 {
     const float far = length(to);
+    const float along = dot(to, view);
     const float range = kDaoAoFalloff * radius;
-    float counts = saturate((radius - far) / range);
+    float counts = saturate((radius - length(to + view * (along * kDaoAoThin))) / range);
     counts = dot(to, normal) > rise ? counts : 0;
     return lerp(low, dot(to / max(far, 1e-5), view), counts);
 }
@@ -140,7 +156,10 @@ float4 main(float2 uv : TEXCOORD0, float2 pixel : VPOS) : COLOR0
         }
         open += share * (DaoArc(-acos(clamp(back, -1, 1)), n, cosN) + DaoArc(acos(clamp(on, -1, 1)), n, cosN));
     }
-    open = pow(saturate(open / kDaoAoSlices), 2 * fDaoOcclusion);
+    // And no point is darker by this pass than kDaoAoLeast: it shades the
+    // lights' own light with the ambient, which no real occlusion does, and
+    // where it is wrong it is not to be black.
+    open = max(pow(saturate(open / kDaoAoSlices), 2 * fDaoOcclusion), kDaoAoLeast);
     // Too far for the radius to span two pixels: nothing to tell there.
     open = reach < 2 * texel.y ? 1 : open;
     open = lerp(open, 1, saturate(here.z / kDaoAoFar));

@@ -201,79 +201,138 @@ def with_sun_shadow(shader):
 # c<K>.<n> a 3. The power they were raised to, the specular mask's alpha made
 # 1 to 256, is what every `pow <h>, <N.H>, <p>.w` names, set by the last
 # statement before the first of them that writes <p>.w.
-MATERIAL_POW = r"^pow r\d+\.\w, r\d+\.\w, (r\d+)\.w$"
-MATERIAL_JOIN = r"^mad(?:_pp)? (r\d+)\.xyz, \1, (c\d+)\.(\w), r\d+$"
+MATERIAL_POW = r"^pow (r\d+)\.\w, r\d+\.\w, (r\d+)\.w$"
+MATERIAL_JOIN = r"^mad(?:_pp)? (r\d+)\.xyz, (r\d+), (c\d+)\.(\w), (r\d+)$"
 # What the reflection is looked up by starts from how the surface faces the
 # eye: `dp3 <f>.x, -<view>, <normal>`, which is minus N.V.
 MATERIAL_FACING = r"^dp3 (r\d+)\.x, -r\d+(?:\.\w+)?, r\d+$"
+# The light a surface scatters: `mad <d>.xyz, <light>, <colour>, <rest>`, all
+# three registers.
+MATERIAL_SPREAD = r"^mad(?:_pp)? (r\d+)\.xyz, (r\d+)(?:\.\w+)?, (r\d+), (r\d+)$"
+
+# The shaders with_materials changed, for the build to say: for each its name,
+# and whether its scattered light and its vertex's falloff were found too.
+MATERIALS_REACHED = []
 
 
 def with_materials(shader):
-    """Scale a character's highlights by their sharpness and its mirror
-    colour by the angle it is seen at (materials.hlsl). Only a shader built
-    the common way is changed: 33 of the Character material's, bodies, armour
-    and one of the weapons' (read 2026-10-11). The rest are left as they
-    are."""
+    """Light a surface by one model whatever it is of (materials.hlsl): each
+    light's highlight a GGX lobe as wide as its gloss says and as bright as it
+    is narrow, the mirror colour by the angle it is seen at, at each pixel,
+    and a metal's scattered light less and its mirror colour more.
+
+    Vanilla builds the mirror light the same way in every shader of its
+    common block, bodies, weapons, props and level surfaces (read
+    2026-10-12): `pow(N.H, power)` for each light, the power the specular
+    mask's alpha; minus N.V for the reflection; the lights' sum times 3 plus
+    the reflection (the join); that times the mirror colour (the tint), times
+    a falloff of the vertex's; and the scattered light times the surface's
+    colour, before the tint or after it. A shader that has not all of the
+    first four is left as it is; the falloff and the scattered light are
+    changed where they are found."""
+    st = shader.statements
     try:
         raised = shader.find(MATERIAL_POW)
-        facing = shader.find(MATERIAL_FACING, raised)
+    except shader_hlsl.ShaderError:
+        return
+    held = re.match(MATERIAL_POW, st[raised].asm).group(2)
+    lobes = [
+        i
+        for i, each in enumerate(st)
+        if (m := re.match(MATERIAL_POW, each.asm)) and m.group(2) == held
+    ]
+    try:
+        facing = shader.find(MATERIAL_FACING, lobes[-1])
         join = shader.find(MATERIAL_JOIN, facing)
     except shader_hlsl.ShaderError:
         return
-    held = re.match(MATERIAL_POW, shader.statements[raised].asm).group(1)
     power = next(
-        (
-            i
-            for i in range(raised, -1, -1)
-            if re.match(rf"\w+ {held}\.w,", shader.statements[i].asm)
-        ),
+        (i for i in range(raised, -1, -1) if re.match(rf"\w+ {held}\.w,", st[i].asm)),
         None,
     )
-    if power is None:
-        return
-    total, constant, component = re.match(
-        MATERIAL_JOIN, shader.statements[join].asm
+    total, lights, constant, component, mirrored = re.match(
+        MATERIAL_JOIN, st[join].asm
     ).groups()
     tripled = shader.definitions.get(constant)
     if (
-        tripled is None
+        power is None
+        or st[power].depth != 0
+        or st[facing].depth != 0
+        or st[join].depth != 0
+        or tripled is None
         or float(tripled["xyzw".index(component)]) != 3
-        or shader.statements[power].depth != 0
     ):
         return
-    # The statement after the join's that multiplies the sum by the mirror
-    # colour, which is on either side: `mul <d>.xyz, <sum>, <colour>`; and
-    # after it the one that adds the light the surface scatters, its diffuse
-    # light times its own colour: `mad <d>.xyz, <light>, <colour>, <d>`.
     tinted = rf"^mul(?:_pp)? (r\d+)\.xyz, (?:{total}, (r\d+)|(r\d+), {total})$"
     try:
         tint = shader.find(tinted, join)
-        made, *colours = re.match(tinted, shader.statements[tint].asm).groups()
-        spread = shader.find(rf"^mad(?:_pp)? {made}\.xyz, r\d+, (r\d+), {made}$", tint)
     except shader_hlsl.ShaderError:
         return
+    made, *colours = re.match(tinted, st[tint].asm).groups()
     colour = next(g for g in colours if g)
-    mirrored = shader.statements[join].asm.rsplit(", ", 1)[1]
-    faces = re.match(MATERIAL_FACING, shader.statements[facing].asm).group(1)
-    into = shader.statements[tint].hlsl.partition(" = ")[0]
-    lit_into, _, lit = shader.statements[spread].hlsl.partition(" = ")
-    scattered, plus, rest = lit.rpartition(" + ")
-    if not plus:
-        return
-    # Last first, so the places found stay where they are.
-    shader.statements[
-        spread
-    ].hlsl = f"{lit_into} = ({scattered.rstrip(';')}) * DaoScattered(daoMetal) + {rest}"
-    shader.statements[
-        tint
-    ].hlsl = f"{into} = DaoSpecular({total}.xyz, daoEnv, {colour}.xyz, daoMetal, daoFacing, daoPower);"
-    shader.insert(
-        tint - 1,
-        [f"daoMetal = DaoMetal({colour}.xyz, daoPower);"],
+    # The vertex's falloff, on the tint's result: alone, or with the
+    # scattered light added in the same statement.
+    falloff = next(
+        (
+            i
+            for i in range(tint + 1, min(tint + 3, len(st)))
+            if re.match(rf"^mul(?:_pp)? {made}\.xyz, {made}, v\d+\.w$", st[i].asm)
+            or re.match(rf"^mad(?:_pp)? r\d+\.xyz, {made}, v\d+\.w, r\d+$", st[i].asm)
+        ),
+        None,
     )
-    shader.statements[
-        join
-    ].hlsl = f"{total}.xyz = {total}.xyz * DaoHighlight(daoPower);"
+    # The scattered light, by what it feeds: added to the tint's result after
+    # it (`mad <made>, <light>, <colour>, <made>`), or made before it and
+    # added by the falloff's own statement (`mad <d>, <made>, v.w, <rest>`:
+    # the last `mad <rest>, <light>, <colour>, ...` before the tint). By its
+    # shape alone the armour-tint shaders, which most suits are drawn by, gave
+    # up the statement that mixes the tint into the colour instead (found
+    # 2026-10-12: they had no scattered light changed and no colour told).
+    last = falloff if falloff is not None else tint
+    spread = next(
+        (
+            i
+            for i in range(tint + 1, min(last + 3, len(st)))
+            if re.match(rf"^mad(?:_pp)? {made}\.xyz, r\d+(?:\.\w+)?, r\d+, {made}$", st[i].asm)
+        ),
+        None,
+    )
+    if spread is None and falloff is not None:
+        fed = re.match(rf"^mad(?:_pp)? r\d+\.xyz, {made}, v\d+\.w, (r\d+)$", st[falloff].asm)
+        if fed:
+            spread = next(
+                (
+                    i
+                    for i in range(tint - 1, join, -1)
+                    if re.match(
+                        rf"^mad(?:_pp)? {fed.group(1)}\.xyz, r\d+(?:\.\w+)?, r\d+, r\d+$", st[i].asm
+                    )
+                ),
+                None,
+            )
+    if spread is not None and " + " not in st[spread].hlsl:
+        spread = None
+    # How much it is metal is told from the mirror colour, before whichever
+    # of the two reads it first; the mirror colour must be whole by then.
+    told = tint
+    if spread is not None and spread < tint:
+        if any(re.match(rf"\w+ {colour}[\.,]", st[i].asm) for i in range(spread, tint)):
+            spread = None
+        else:
+            told = spread
+    # The colour the surface scatters, which the telling and the mirror
+    # colour's hue read too: whole from the first that reads it to the last,
+    # or the mirror colour's own hue, dim, which says nothing.
+    own = f"({colour}.xyz * 0.5)"
+    if spread is not None:
+        albedo = re.match(MATERIAL_SPREAD, st[spread].asm).group(3)
+        if not any(
+            re.match(rf"\w+ {albedo}[\.,]", st[i].asm)
+            for i in range(min(told, tint), max(spread, tint))
+        ):
+            own = f"{albedo}.xyz"
+    faces = re.match(MATERIAL_FACING, st[facing].asm).group(1)
+    into = st[tint].hlsl.partition(" = ")[0]
     # The figure's ambient light, the first input declared a colour, is what
     # says how lit its place is (look.hlsl's DaoMirrored).
     ambient = next(
@@ -285,13 +344,65 @@ def with_materials(shader):
         None,
     )
     by_place = f" * DaoMirrored({ambient}.xyz)" if ambient else ""
-    shader.insert(join - 1, [f"daoEnv = {mirrored}.xyz{by_place};"])
-    shader.insert(facing, [f"const float daoFacing = -{faces}.x;"])
-    shader.insert(power, [f"const float daoPower = {held}.w;"])
+    # Each change with its place; made last place first, so the places stay.
+    changes = []
+    if spread is not None:
+        lit_into, _, lit = st[spread].hlsl.partition(" = ")
+        scattered, _, rest = lit.rpartition(" + ")
+        changes.append(
+            (spread, "set", f"{lit_into} = ({scattered}) * DaoScattered(daoMetal) + {rest}")
+        )
+    if falloff is not None:
+        changes.append(
+            (
+                falloff,
+                "set",
+                re.sub(r"(v\d+)\.www", r"DaoFalloff(\1.w)", st[falloff].hlsl, count=1),
+            )
+        )
+    changes.append(
+        (
+            tint,
+            "set",
+            f"{into} = DaoSpecular(daoLights, daoEnv, {colour}.xyz, daoMetal, daoFacing, daoPower, {own});",
+        )
+    )
+    changes.append((told - 1, "after", f"daoMetal = DaoMetal({colour}.xyz, daoPower, {own});"))
+    changes.append(
+        (
+            join,
+            "set",
+            f"daoLights = {lights}.xyz * DaoTripled(); daoEnv = {mirrored}.xyz{by_place}; "
+            f"{total}.xyz = daoLights + daoEnv;",
+        )
+    )
+    changes.append((facing, "after", f"daoFacing = -{faces}.x;"))
+    # The reflection's reading of the area's cube, between the two.
+    for i in range(facing, join):
+        cube = re.match(r"^(r\d+) = texCUBElod\((\w+), (r\d+)\.xyzw\);$", st[i].hlsl)
+        if cube and st[i].asm.startswith("texldl"):
+            changes.append(
+                (i, "set", f"{cube.group(1)} = DaoReflected({cube.group(2)}, {cube.group(3)}.xyzw, daoPower);")
+            )
+    for lobe in lobes:
+        written = re.match(r"^(\S+) = pow\((.+), \S+\);$", st[lobe].hlsl)
+        if written:
+            changes.append(
+                (lobe, "set", f"{written.group(1)} = DaoLobe({written.group(2)}, daoPower);")
+            )
+    changes.append((power, "after", f"const float daoPower = {held}.w;"))
+    # At one place, what is put in after it goes in first: it is then after
+    # what is set there.
+    for place, how, hlsl in sorted(changes, key=lambda c: (-c[0], c[1] != "after")):
+        if how == "set":
+            shader.statements[place].hlsl = hlsl
+        else:
+            shader.insert(place, [hlsl])
     shader.insert(
         -1,
-        ["float3 daoEnv = 0;", "float daoMetal = 0;"],
+        ["float3 daoEnv = 0;", "float3 daoLights = 0;", "float daoMetal = 0;", "float daoFacing = 1;"],
     )
+    shader.materials = (spread is not None, falloff is not None)
 
 
 # A figure's normal with its normal map is `nrm <normal>.xyz, <sum>`, the sum
@@ -487,6 +598,13 @@ def with_our_grade(shader, occlusion=False, show=False):
     if occlusion and show == "glow":
         # The glow as it is kept, the square root of its light, whatever the look's Bloom.
         last.append(f"if ({coordinate}.x > 0.5) oC0.xyz = tex2D(smpGlow, {coordinate}.xy).rgb;")
+    elif occlusion and show == "depth":
+        # The depth the occlusion reads, whole screen: metres in red (a wrap a
+        # metre) and green (a wrap every ten centimetres), the openness in blue.
+        last.append(
+            f"oC0.xyz = float3(frac(tex2D(smpMetres, {coordinate}.xy).r), "
+            f"frac(tex2D(smpMetres, {coordinate}.xy).r * 10), {open_});"
+        )
     elif occlusion and show:
         last.append(f"if ({coordinate}.x > 0.5) oC0.xyz = {open_};")
     shader.insert(len(shader.statements) - 1, last)
@@ -1038,6 +1156,8 @@ def build(fxc, name, listing, out, changes, preamble, work, named=None):
     shader = shader_hlsl.Shader(listing)
     for change in changes:
         change(shader)
+    if getattr(shader, "materials", None) is not None:
+        MATERIALS_REACHED.append((named or name, *shader.materials))
     source = os.path.join(work, (named or name) + ".hlsl")
     with open(source, "w", encoding="utf-8") as f:
         f.write(shader.render(preamble))
@@ -1145,6 +1265,11 @@ def changes_for(stem, listing, map_size, show):
         changes += [with_shaped_bake, with_level_lights, without_cut]
         if "daoLook" not in preamble:
             preamble += ours("look.hlsl") + ours("bake.hlsl")
+    # The materials, for a prop and a level's surface as for a figure: first,
+    # before another change rewrites a statement they are found by.
+    if (stem in PROPS or takes_baked_light(listing)) and with_materials not in changes:
+        changes.insert(0, with_materials)
+        preamble += ours("materials.hlsl")
     return changes, preamble
 
 
@@ -1154,7 +1279,7 @@ def main(argv):
         return 2
     out = argv[0]
     map_size = int(argv[1]) if len(argv) > 1 else 1024
-    show = "glow" if "show-glow" in argv else "show-occlusion" in argv
+    show = "glow" if "show-glow" in argv else "depth" if "show-depth" in argv else "show-occlusion" in argv
     antialias = "no-smaa" not in argv
     data = os.path.join(script_commands.GAME, "packages", "core", "data")
     archive = os.path.join(data, "shaders.erf")
@@ -1260,6 +1385,11 @@ def main(argv):
             failed += 1
             print(f"build_shaders: {name}: {e}", file=sys.stderr)
     print(f"build_shaders: {built} shaders in {out}, {failed} failed")
+    whole = sum(1 for _, spread, falloff in MATERIALS_REACHED if spread and falloff)
+    print(
+        f"build_shaders: materials in {len(MATERIALS_REACHED)} shaders, {whole} of them whole: "
+        + " ".join(sorted(name.split(".")[0] + ("" if s and f else "*") for name, s, f in MATERIALS_REACHED))
+    )
     return 1 if failed else 0
 
 
