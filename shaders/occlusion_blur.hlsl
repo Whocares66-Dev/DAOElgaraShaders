@@ -20,16 +20,16 @@ float4 main(float2 uv : TEXCOORD0) : COLOR0
     const float2 texel = float2(abs(ddx(uv.x)), abs(ddy(uv.y)));
     const float2 along = fAxis > 0.5 ? float2(0, texel.y) : float2(texel.x, 0);
     const float depth = tex2Dlod(smpDepth, float4(uv, 0, 0)).r;
-    float sum = 0;
+    float2 sum = 0; // the openness, and the ambient share beside it
     float weights = 0;
     for (int i = -kDaoBlurReach; i <= kDaoBlurReach; i++)
     {
         const float2 at = uv + along * i;
         const float apart = abs(tex2Dlod(smpDepth, float4(at, 0, 0)).r - depth) / depth;
         const float weight = exp(-0.18 * i * i - kDaoBlurSharpness * apart);
-        sum += tex2Dlod(smpOcclusion, float4(at, 0, 0)).r * weight;
+        sum += tex2Dlod(smpOcclusion, float4(at, 0, 0)).rg * weight;
         weights += weight;
     }
     // The centre always counts for 1, so there is always something to divide by.
-    return float4(sum / weights, 1, 0, 1);
+    return float4(sum / weights, 0, 1);
 }

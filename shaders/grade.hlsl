@@ -14,9 +14,13 @@
 // (occlusion.hlsl, occlusion_blur.hlsl): 1 where a point is open.
 sampler2D smpOcclusion;
 
+// What the picture is multiplied by: the openness, on the ambient share of
+// the pixel's light and no more (the pass's green: issue 8). A wall in the
+// sun keeps its creases' light; a corner in shade loses it.
 float DaoOcclusion(float2 uv)
 {
-    return tex2D(smpOcclusion, uv).r;
+    const float2 kept = tex2D(smpOcclusion, uv).rg;
+    return lerp(1, kept.r, kept.g);
 }
 
 // The glow the chain's passes before this one made of what is brighter than

@@ -21,6 +21,10 @@
 // 1, which the pass's state reads unfiltered.
 
 sampler2D smpDepth : register(s1);
+// The game's own distance target, for its alpha alone: how much of the
+// pixel's light is ambient, as its shader said (look.hlsl's DaoShare). It
+// goes on in this pass's green, beside the openness in its red.
+sampler2D smpScene : register(s2);
 
 // Values of the chain (build_shaders.py's LOOK), set from graphics.ini and by
 // the options screen's slider.
@@ -43,7 +47,7 @@ static const float kDaoAoMostOfScreen = 0.2;
 // Of the radius, the outer part over which a thing stops counting.
 static const float kDaoAoFalloff = 0.615;
 // The least of its light this pass leaves a point.
-static const float kDaoAoLeast = 0.45;
+static const float kDaoAoLeast = 0.3;
 static const float kDaoPi = 3.14159265;
 static const float kDaoHalfPi = 1.57079633;
 
@@ -156,12 +160,13 @@ float4 main(float2 uv : TEXCOORD0, float2 pixel : VPOS) : COLOR0
         }
         open += share * (DaoArc(-acos(clamp(back, -1, 1)), n, cosN) + DaoArc(acos(clamp(on, -1, 1)), n, cosN));
     }
-    // And no point is darker by this pass than kDaoAoLeast: it shades the
-    // lights' own light with the ambient, which no real occlusion does, and
-    // where it is wrong it is not to be black.
+    // And no point's ambient light is less by this pass than kDaoAoLeast:
+    // where the search is wrong it is not to be black. (0.45 while the pass
+    // shaded the lights' own light too; it shades the ambient share alone
+    // since issue 8, and a wrong answer costs a lit surface little.)
     open = max(pow(saturate(open / kDaoAoSlices), 2 * fDaoOcclusion), kDaoAoLeast);
     // Too far for the radius to span two pixels: nothing to tell there.
     open = reach < 2 * texel.y ? 1 : open;
     open = lerp(open, 1, saturate(here.z / kDaoAoFar));
-    return float4(open, 1, 0, 1);
+    return float4(open, tex2Dlod(smpScene, float4(uv, 0, 0)).a, 0, 1);
 }

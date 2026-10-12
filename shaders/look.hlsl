@@ -63,6 +63,18 @@ float DaoMirrored(float3 ambient)
 // How much of the light baked into a level is taken away, to see the level
 // by its real lights alone (bake.hlsl's DaoShapedBake): the look's BakedLess.
 #define DAO_BAKED_LESS daoLook[3].y
+// How much of a surface's light is ambient, 0 to 1: what the ambient
+// occlusion may shade (issue 8). `ambient` is the surface's ambient light
+// through its own colour (a figure's probe light, a level's baked light) and
+// `lit` all it sends to the eye. Written to the distance target's alpha,
+// which is a literal 1 in every one of vanilla's shaders and read by none of
+// them (its depth of field, soft particles and distortion take the three
+// bytes of the distance: read 2026-10-12).
+float DaoShare(float3 ambient, float3 lit)
+{
+    const float3 luma = float3(0.2126, 0.7152, 0.0722);
+    return saturate(dot(max(ambient, 0), luma) / max(dot(max(lit, 0), luma), 1e-4));
+}
 float DaoLevelLamp()
 {
     return 1 + DAO_LEVEL_LAMPS;

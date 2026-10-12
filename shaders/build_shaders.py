@@ -391,6 +391,16 @@ def with_materials(shader):
                 (lobe, "set", f"{written.group(1)} = DaoLobe({written.group(2)}, daoPower);")
             )
     changes.append((power, "after", f"const float daoPower = {held}.w;"))
+    # What the ambient share is made of (with_ambient_share): the surface's
+    # colour and all it sends to the eye, as they stand after the last of the
+    # three; and its ambient light, a figure's or a prop's first colour input.
+    if spread is not None:
+        albedo = re.match(MATERIAL_SPREAD, st[spread].asm).group(3)
+        after = max(spread, tint, falloff if falloff is not None else tint)
+        result = st[after].hlsl.partition(" = ")[0]
+        if not any(re.match(rf"\w+ {albedo}[\.,]", st[i].asm) for i in range(spread + 1, after + 1)):
+            changes.append((after, "after", f"daoAlbedo = {albedo}.xyz; daoLit = {result};"))
+            shader.share = f"{ambient}.xyz" if ambient else None
     # At one place, what is put in after it goes in first: it is then after
     # what is set there.
     for place, how, hlsl in sorted(changes, key=lambda c: (-c[0], c[1] != "after")):
@@ -400,7 +410,15 @@ def with_materials(shader):
             shader.insert(place, [hlsl])
     shader.insert(
         -1,
-        ["float3 daoEnv = 0;", "float3 daoLights = 0;", "float daoMetal = 0;", "float daoFacing = 1;"],
+        [
+            "float3 daoEnv = 0;",
+            "float3 daoLights = 0;",
+            "float daoMetal = 0;",
+            "float daoFacing = 1;",
+            "float3 daoAlbedo = 0;",
+            "float3 daoLit = 1;",
+            "float3 daoBaked = 0;",
+        ],
     )
     shader.materials = (spread is not None, falloff is not None)
 
@@ -700,6 +718,7 @@ CHAIN_FILTERS = """<filter id="Dao Depth" library="DAEffects" material="HSLMatri
 
             <filter id="Dao Occlusion" library="DAEffects" material="HSLMatrix">
                 Metres      = DaoDepthMetres
+                SceneDepth  = SceneDepthTexture
 {occlusion_look}
                 bind DaoOcclusionA at 0
                 run semantic DaoOcclusion
@@ -799,6 +818,7 @@ DEPTH_PARAMETERS = [
     '<Parameter Type="Float" Name="fFocalPlane" Default="1000.0"/>',
 ]
 METRES_PARAMETER = '<Parameter Type="Texture" Name="Metres" SamplerName="smpDepth" />'
+SCENE_PARAMETER = '<Parameter Type="Texture" Name="SceneDepth" SamplerName="smpScene" />'
 OCCLUSION_PARAMETER = (
     '<Parameter Type="Texture" Name="Occlusion" SamplerName="smpOcclusion" />'
 )
@@ -911,7 +931,10 @@ def with_our_passes(chain, material, antialias=True):
     material = picture_parameter.join(pieces)
     semantics = (
         semantic("DaoDepth", DEPTH_PARAMETERS)
-        + semantic("DaoOcclusion", [METRES_PARAMETER, *look_parameters("occlusion")])
+        + semantic(
+            "DaoOcclusion",
+            [METRES_PARAMETER, SCENE_PARAMETER, *look_parameters("occlusion")],
+        )
         + semantic(
             "DaoOcclusionBlur",
             [
@@ -1007,10 +1030,15 @@ def with_shaped_bake(shader):
         return
     read = shader.find(rf"^texld\w* r\d+, .*, s{lightmap.base}$")
     register = re.match(r"texld\w* (r\d+),", shader.statements[read].asm).group(1)
+    if hasattr(shader, "share"):
+        shader.share = "daoBaked"
     # Last first, so the places found stay where they are.
     shader.insert(
         read,
-        [f"{register}.xyz = DaoShapedBake({register}.xyz, daoRelief);"],
+        [
+            f"{register}.xyz = DaoShapedBake({register}.xyz, daoRelief);",
+            *([f"daoBaked = {register}.xyz;"] if hasattr(shader, "share") else []),
+        ],
     )
     shader.insert(
         made,
@@ -1219,6 +1247,22 @@ def with_hot_light(shader):
     shader.insert(len(shader.statements) - 1, ["oC0.xyz = DaoHot(oC0.xyz);"])
 
 
+def with_ambient_share(shader):
+    """Say how much of the surface's light is ambient, in the distance
+    target's alpha (look.hlsl's DaoShare; issue 8). Only where
+    with_materials found what it is made of, and an ambient light is known: a
+    figure's or a prop's probe light, or the level's baked light
+    (with_shaped_bake's). Any other shader says 1, as vanilla's do, and is
+    shaded whole as before."""
+    ambient = getattr(shader, "share", None)
+    if ambient is None:
+        return
+    shader.insert(
+        len(shader.statements) - 1,
+        [f"oC1.w = DaoShare({ambient} * daoAlbedo, daoLit);"],
+    )
+
+
 def changes_for(stem, listing, map_size, show):
     """What this build changes in one of the game's pixel shaders: the
     functions that change it, and the HLSL they call."""
@@ -1270,6 +1314,10 @@ def changes_for(stem, listing, map_size, show):
     if (stem in PROPS or takes_baked_light(listing)) and with_materials not in changes:
         changes.insert(0, with_materials)
         preamble += ours("materials.hlsl")
+    # The ambient share, last, and not from a shader that is drawn blended:
+    # there the distance's alpha is what its distance is blended by.
+    if with_materials in changes and "alph" not in stem:
+        changes.append(with_ambient_share)
     return changes, preamble
 
 
