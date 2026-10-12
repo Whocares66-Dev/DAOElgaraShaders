@@ -49,6 +49,17 @@ static const float kDaoRelitMost = 8.0;
 // How much of the light baked into a level is taken away, to see the level
 // by its real lights alone (bake.hlsl's DaoShapedBake): the look's BakedLess.
 #define DAO_BAKED_LESS daoLook[3].y
+// Whether what is drawn now goes into the frame's own picture, 1, or into
+// some other target, 0: the plugin's word, as the device's target changes
+// (Graphics.cpp's SetRenderTarget). A share is written to the alpha of the
+// first and never of the second: a portrait and the record's or the
+// inventory's figure are drawn into small targets of their own, whose alpha
+// is their opacity when the interface lays them on the screen, and with a
+// share there a face was gone from every portrait and the figure from the
+// record (the user, 2026-10-12: "portraits are broken", "so are char
+// records"; a share is 0 where no light is ambient, which is all of such a
+// scene).
+#define DAO_SHARE_ASKED daoLook[3].w
 // How much of a surface's light is ambient, 0 to 1: what the ambient
 // occlusion may shade (issue 8). `ambient` is what the surface sends of its
 // ambient light, scattered (a figure's probe light, a level's baked light,

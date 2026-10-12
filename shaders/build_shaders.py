@@ -1749,15 +1749,18 @@ def with_ambient_share(shader):
              is what "transparent" was (the user, 2026-10-12, eight times;
              seen at last in the distance itself, `show-depth`: the figure
              with no helm on it). What the occlusion cannot see it is not to
-             shade."""
+             shade.
+
+    And only into the frame's own picture (look.hlsl's DAO_SHARE_ASKED): in
+    any other target the alpha stays the game's, whatever the build."""
     mode, least, seen = getattr(shader, "alpha", ("keep", None, False))
     if mode == "keep":
         return
     ambient = getattr(shader, "share", None)
     share = (
-        f"oC0.w = DaoShare({ambient} * daoAlbedo * DaoScattered(daoMetal) + DaoEnvSent(), daoLit);"
+        f"DaoShare({ambient} * daoAlbedo * DaoScattered(daoMetal) + DaoEnvSent(), daoLit)"
         if ambient is not None
-        else "oC0.w = daoScatteredShare;"
+        else "daoScatteredShare"
         if getattr(shader, "scattered", False)
         else None
     )
@@ -1765,9 +1768,9 @@ def with_ambient_share(shader):
     if mode == "cut":
         said.append(f"clip(oC0.w - {(least - 0.5) / 255.0!r});")
         if not seen:
-            share = "oC0.w = 0;"
+            share = "0"
     if share is not None:
-        said.append(share)
+        said.append(f"oC0.w = lerp(oC0.w, {share}, saturate(DAO_SHARE_ASKED));")
     shader.insert(len(shader.statements) - 1, said)
 
 

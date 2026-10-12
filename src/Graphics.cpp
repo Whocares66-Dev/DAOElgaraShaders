@@ -132,6 +132,11 @@ void __cdecl SetPartitions(const Partition *partitions, std::uint32_t count)
 constexpr UINT kLookRegister = 220;
 constexpr std::size_t kLookRegisters = 4;
 std::array<std::atomic<float>, kLookRegisters * 4> g_look{};
+// The last of them is not a look's: whether the device's first target is the
+// frame's own picture (look.hlsl's DAO_SHARE_ASKED), which is the drawing
+// thread's to know and to say as the target changes (SetRenderTarget).
+constexpr std::size_t kShareAsked = kLookRegisters * 4 - 1;
+bool g_drawsPicture = true;
 
 using CreateFn = IDirect3D9 *(__stdcall *)(UINT);
 using CreateDeviceFn = HRESULT(__stdcall *)(IDirect3D9 *, UINT, D3DDEVTYPE, HWND, DWORD, D3DPRESENT_PARAMETERS *,
@@ -326,6 +331,7 @@ void DropScene()
 void MakeScene(IDirect3DDevice9 *device)
 {
     DropScene();
+    g_drawsPicture = true;
     if (FAILED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &g_scene.back)))
     {
         return;
@@ -1746,9 +1752,48 @@ HRESULT __stdcall StretchRect(IDirect3DDevice9 *device, IDirect3DSurface9 *from,
     return g_stretchRect.Original()(device, from, part, to, place, filter);
 }
 
+// Whether a surface is the frame's own picture: our target, or the back
+// buffer where none of ours was made.
+bool IsPicture(IDirect3DDevice9 *device, IDirect3DSurface9 *surface)
+{
+    if (g_scene.own != nullptr)
+    {
+        return surface == g_scene.own;
+    }
+    IDirect3DSurface9 *back = nullptr;
+    const bool is = SUCCEEDED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back)) && back == surface;
+    Released(back);
+    return is;
+}
+
+// The look's last register as the drawing thread has it now: the look's
+// three numbers and whether the frame's own picture is drawn into.
+void HandShareAsked(IDirect3DDevice9 *device)
+{
+    std::array<float, 4> last{};
+    for (std::size_t i = 0; i + 1 < last.size(); ++i)
+    {
+        last.at(i) = g_look.at(kShareAsked - 3 + i).load(std::memory_order_relaxed);
+    }
+    last.back() = g_drawsPicture ? 1.0F : 0.0F;
+    device->SetPixelShaderConstantF(kLookRegister + kLookRegisters - 1, last.data(), 1);
+}
+
 HRESULT __stdcall SetRenderTarget(IDirect3DDevice9 *device, DWORD index, IDirect3DSurface9 *target)
 {
     target = index == 0 ? Swapped(target) : target;
+    if (index == 0 && target != nullptr)
+    {
+        // A portrait and the record's and the inventory's figures are drawn
+        // into targets of their own (the record's: 270 by 459, format 21,
+        // first in the frame; traced 2026-10-12), and the scene, with the
+        // game's anti-aliasing and without, into the frame's own.
+        if (const bool picture = IsPicture(device, target); picture != g_drawsPicture)
+        {
+            g_drawsPicture = picture;
+            HandShareAsked(device);
+        }
+    }
     if (g_tracing)
     {
         LogDraws();
@@ -1916,6 +1961,7 @@ HRESULT __stdcall BeginScene(IDirect3DDevice9 *device)
     {
         values.at(i) = g_look.at(i).load(std::memory_order_relaxed);
     }
+    values.at(kShareAsked) = g_drawsPicture ? 1.0F : 0.0F;
     device->SetPixelShaderConstantF(kLookRegister, values.data(), kLookRegisters);
     return g_beginScene.Original()(device);
 }
