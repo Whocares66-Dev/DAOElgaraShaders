@@ -7,7 +7,7 @@
     build\<preset>\daolib\plugins\elgarashaders\ (elgarashaders.dll, its .pdb, graphics.ini
     and the override folder of rebuilt shaders), under bin_ship\daolib\plugins. The game must
     not be running from that folder: it holds those files open. DAOLib's loader
-    (version.dll) and its address files are DAOLib's to put there (its own deploy.ps1, or a
+    (dinput8.dll) and its address files are DAOLib's to put there (its own deploy.ps1, or a
     release of it); other plugins in the folder are left as they are.
 
     A look chosen in play is kept in the installed folder's graphics.chosen, which a deploy
@@ -93,8 +93,8 @@ $built = Join-Path $repo "build\$Preset\daolib\plugins\elgarashaders"
 if (-not (Test-Path (Join-Path $built 'elgarashaders.dll'))) {
     throw "No elgarashaders.dll in $built; run .\tools\build.ps1 -Preset $Preset first"
 }
-if (-not (Test-Path (Join-Path $Game 'version.dll'))) {
-    Show-Line "no version.dll beside DAOrigins.exe: DAOLib's loader is not installed, and nothing loads the plugin" -Colour Yellow
+if (-not (Test-Path (Join-Path $Game 'dinput8.dll'))) {
+    Show-Line "no dinput8.dll beside DAOrigins.exe: DAOLib's loader is not installed, and nothing loads the plugin" -Colour Yellow
 }
 # The look chosen in play is the player's, kept across a deploy.
 $chosen = Join-Path $pluginFolder 'graphics.chosen'
