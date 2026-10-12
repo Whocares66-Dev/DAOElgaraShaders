@@ -250,10 +250,23 @@ struct Lamp
     float clear = 0;
 };
 
+// A run of a room's lightmapped triangles: those one mesh node of a placed
+// model draws, which are one chunk of the model's mesh file, each triangle
+// three of the chunk's indices in their order. It says what a triangle is a
+// triangle of, its material and where on the material's texture it is, which
+// the triangle itself does not keep (SurfaceColours.h, 2026-10-12).
+struct Part
+{
+    std::size_t from = 0;                  // its first triangle in `lit`; it goes on to the next part's first
+    const level::Placed *placed = nullptr; // the model, as the room places it: the level keeps the room
+    std::size_t chunk = 0;                 // which of the model's chunks (ModelParts)
+};
+
 // A room's lightmapped triangles and the tree rays are cast against.
 struct Geometry
 {
     std::vector<level::LitTriangle> lit;
+    std::vector<Part> parts;                                 // what `lit` is made of, in its order
     std::optional<core::TriangleTree> tree;                  // over `lit`, in its order; none for a room not read
     std::set<std::uint32_t> atlases;                         // the lightmaps its triangles are in
     std::vector<std::wstring> models;                        // the models that are the level's own, a tile's ground
@@ -650,14 +663,26 @@ class Level
             {
                 const bool own = Lower(placed.file).starts_with(name_ + L"_");
                 const std::size_t from = out.size();
-                level::AddTriangles(
-                    *room, placed, parts->model, parts->chunks,
-                    [&](const std::wstring &atlas) {
-                        const std::uint32_t number = AtlasNumber(atlas);
-                        geometry.atlases.insert(number);
-                        return number;
-                    },
-                    out);
+                // A node at a time, the triangles in the order the whole
+                // model's would be, so that which chunk each is of is known.
+                for (const level::MeshNode &node : parts->model.nodes)
+                {
+                    const std::size_t before = out.size();
+                    level::AddTriangles(
+                        *room, placed, level::Model{{}, {node}}, parts->chunks,
+                        [&](const std::wstring &atlas) {
+                            const std::uint32_t number = AtlasNumber(atlas);
+                            geometry.atlases.insert(number);
+                            return number;
+                        },
+                        out);
+                    if (out.size() != before)
+                    {
+                        const auto chunk = std::ranges::find(parts->chunks, node.chunk, &level::MeshChunk::name);
+                        geometry.parts.push_back(
+                            {before, &placed, static_cast<std::size_t>(chunk - parts->chunks.begin())});
+                    }
+                }
                 if (own)
                 {
                     geometry.models.push_back(Lower(placed.file));
@@ -736,11 +761,38 @@ class Level
         return name_;
     }
 
+    // A model the rooms place, as it was read for them; null for one that could not be.
+    const ModelParts *PartsOf(const std::wstring &name)
+    {
+        return ModelOf(name);
+    }
+
+    // A model's mesh file whole, for what of it the model's parts do not
+    // keep: the game's, or the level's own.
+    std::optional<std::vector<std::byte>> MeshOf(const std::wstring &name)
+    {
+        const ModelParts *parts = ModelOf(name);
+        return parts != nullptr ? MeshFile(Lower(name), parts->model) : std::nullopt;
+    }
+
   private:
     // A room's files' names before what says which file: <level>_<room>.
     std::wstring Stem(const std::wstring &id) const
     {
         return id.empty() ? name_ : name_ + L"_" + id;
+    }
+
+    // The mesh file of a model: the one its tree names, or one of its own name.
+    // @param key the model's name in lower case
+    std::optional<std::vector<std::byte>> MeshFile(const std::wstring &key, const level::Model &model) const
+    {
+        std::wstring meshFile = model.meshFile.empty() ? key : model.meshFile;
+        if (!meshFile.ends_with(L".msh"))
+        {
+            meshFile += L".msh";
+        }
+        std::optional<std::vector<std::byte>> mesh = meshes_->Read(meshFile);
+        return mesh ? mesh : Find(meshFile);
     }
 
     const ModelParts *ModelOf(const std::wstring &name)
@@ -767,16 +819,7 @@ class Level
                 MaterialsUnder(*root, 0, materials);
                 read.materials.assign(materials.begin(), materials.end());
             }
-            std::wstring meshFile = read.model.meshFile.empty() ? key : read.model.meshFile;
-            if (!meshFile.ends_with(L".msh"))
-            {
-                meshFile += L".msh";
-            }
-            std::optional<std::vector<std::byte>> mesh = meshes_->Read(meshFile);
-            if (!mesh)
-            {
-                mesh = Find(meshFile);
-            }
+            const std::optional<std::vector<std::byte>> mesh = MeshFile(key, read.model);
             if (const auto meshParsed = mesh ? core::gff4::File::Parse(*mesh) : std::nullopt)
             {
                 read.chunks = level::Meshes(*meshParsed);

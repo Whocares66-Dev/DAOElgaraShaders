@@ -32,6 +32,7 @@
 
 #include "LevelFiles.h"
 #include "ProbeBaker.h"
+#include "SurfaceColours.h"
 
 #include <spdlog/spdlog.h>
 
@@ -224,6 +225,11 @@ struct Scene
     Shining shining;
     std::vector<Beaming> beams;
     std::map<std::uint32_t, Map> maps; // by the atlas's number
+    // What each room's lightmapped triangles send on of their light as a
+    // picture of the level sees them, their own colours (PaintSurfaces):
+    // none until a picture is wanted. The bake's own light is reckoned with
+    // every surface the one grey, `surfaces`.
+    std::vector<std::vector<Colour>> sends;
 #ifdef ELGARA_EMBREE
     RTCScene embree = nullptr; // every room of the world, a geometry each by the room's number; or none
 #endif
@@ -447,6 +453,7 @@ struct Landing
 {
     const Geometry *geometry = nullptr;
     core::RayHit hit;
+    std::uint32_t room = 0; // the room landed in, by its number among the scene's
 };
 std::optional<Landing> Cast(const Scene &scene, std::uint32_t room, const core::Point &from, const core::Point &way,
                             float far)
@@ -473,7 +480,7 @@ std::optional<Landing> Cast(const Scene &scene, std::uint32_t room, const core::
         }
         // Embree's u and v are the second and third corners' weights, as the tree's are.
         return Landing{scene.rooms[cast.hit.geomID].geometry,
-                       core::RayHit{cast.hit.primID, cast.ray.tfar, cast.hit.u, cast.hit.v}};
+                       core::RayHit{cast.hit.primID, cast.ray.tfar, cast.hit.u, cast.hit.v}, cast.hit.geomID};
     }
 #endif
     std::optional<Landing> nearest;
@@ -487,7 +494,7 @@ std::optional<Landing> Cast(const Scene &scene, std::uint32_t room, const core::
         }
         if (const std::optional<core::RayHit> found = lit.geometry->tree->Cast(from, way, 1e-3F, most))
         {
-            nearest = Landing{lit.geometry, *found};
+            nearest = Landing{lit.geometry, *found, static_cast<std::uint32_t>(other)};
             most = found->distance;
         }
     }
@@ -2352,16 +2359,346 @@ std::vector<LampSeen> LampsSeenFrom(const Scene &scene, std::uint32_t room, cons
     return seen;
 }
 
-// What a ray sees of the level's surfaces: the light the lightmap has where
-// it lands, as WriteMaps writes it, by what a surface sends on; or what
-// glows there, by its own colour; or nothing.
+// The game's archives a surface's colour is read from (SurfaceColours.h's
+// head has what is in which). Any may be missing: the surfaces whose colours
+// it had are then the bake's grey.
+struct PaintFiles
+{
+    std::optional<Archive> materials; // materialobjects.erf
+    std::optional<Archive> pack;      // the texture pack
+    std::optional<Archive> textures;  // textures.erf
+
+    // A material object by the material's name: the game's, or the level's own.
+    std::optional<std::vector<std::byte>> Material(const Level &level, const std::wstring &name) const
+    {
+        std::optional<std::vector<std::byte>> file = materials ? materials->Read(name + L".mao") : std::nullopt;
+        return file ? file : level.Find(name + L".mao");
+    }
+
+    // A texture by its file's name: the game's, or the level's own.
+    std::optional<std::vector<std::byte>> Texture(const Level &level, const std::wstring &file) const
+    {
+        for (const std::optional<Archive> *archive : {&pack, &textures})
+        {
+            if (std::optional<std::vector<std::byte>> read = *archive ? (*archive)->Read(file) : std::nullopt)
+            {
+                return read;
+            }
+        }
+        return level.Find(file);
+    }
+};
+
+// What paints a level's surfaces, each read once: a material's texture,
+// nothing for one whose texture could not be found or read, and a model's
+// texture coordinates.
+struct Paints
+{
+    std::map<std::wstring, std::optional<surfacecolours::Paint>> materials;
+    std::map<std::wstring, std::vector<surfacecolours::ChunkUv>> models;
+};
+
+// The texture a material paints with, or null.
+const surfacecolours::Paint *PaintOf(const Level &level, const PaintFiles &files, Paints &kept,
+                                     const std::wstring &material)
+{
+    auto found = kept.materials.find(material);
+    if (found == kept.materials.end())
+    {
+        std::optional<surfacecolours::Paint> paint;
+        if (const std::optional<std::vector<std::byte>> mao = files.Material(level, material))
+        {
+            const std::wstring texture =
+                surfacecolours::PaintNamed({reinterpret_cast<const char *>(mao->data()), mao->size()});
+            const std::optional<std::vector<std::byte>> dds =
+                texture.empty() ? std::nullopt : files.Texture(level, texture);
+            paint = dds ? surfacecolours::Paint::Of(*dds) : std::nullopt;
+            const Colour mean = paint ? paint->Mean() : Colour{};
+            spdlog::debug("relight: the material {} is painted with {}, {}: {:.3f} {:.3f} {:.3f} in the mean",
+                          Text(material), texture.empty() ? "nothing" : Text(texture), paint ? "read" : "not read",
+                          mean[0], mean[1], mean[2]);
+        }
+        found = kept.materials.emplace(material, std::move(paint)).first;
+    }
+    return found->second ? &*found->second : nullptr;
+}
+
+// Where each vertex of a model's chunk is on its material's texture, or null
+// for a chunk whose mesh file says nothing of it.
+const std::vector<level::Uv> *PaintedUvOf(Level &level, Paints &kept, const std::wstring &model,
+                                          const level::MeshChunk &chunk)
+{
+    auto found = kept.models.find(model);
+    if (found == kept.models.end())
+    {
+        std::vector<surfacecolours::ChunkUv> read;
+        const std::optional<std::vector<std::byte>> bytes = level.MeshOf(model);
+        if (const auto mesh = bytes ? core::gff4::File::Parse(*bytes) : std::nullopt)
+        {
+            read = surfacecolours::PaintedUvs(*mesh);
+        }
+        found = kept.models.emplace(model, std::move(read)).first;
+    }
+    const auto uv = std::ranges::find(found->second, chunk.name, &surfacecolours::ChunkUv::name);
+    return uv != found->second.end() && uv->uv.size() == chunk.positions.size() ? &uv->uv : nullptr;
+}
+
+// What of a world's lightmapped surface is painted, for PaintSurfaces.
+struct Painted
+{
+    std::vector<std::vector<bool>> triangles; // each room's triangles: whether it has a colour of its own
+    double area = 0;                          // square metres painted from a texture
+    double whole = 0;                         // of them, by the whole texture's mean: where on it is not known
+    double grey = 0;                          // square metres left the bake's grey
+    std::size_t materials = 0;                // how many materials the surface is drawn with
+    std::size_t read = 0;                     // and of how many the texture was read
+    std::string unread;                       // the others' names, with commas between
+};
+
+// Gives the triangles of one part of a room (LevelFiles.h's Part) their
+// colours: each the mean of its material's texture over where the triangle
+// is laid on it, as light. A part whose material has no texture that could
+// be read is left as it is.
+// @param painted the room's triangles: which have been given a colour
+void PaintPart(Level &level, const PaintFiles &files, Paints &kept, const Geometry &geometry, std::size_t index,
+               std::vector<Colour> &sends, std::vector<bool> &painted, Painted &tally)
+{
+    const Part &part = geometry.parts[index];
+    const std::size_t to = index + 1 < geometry.parts.size() ? geometry.parts[index + 1].from : geometry.lit.size();
+    const ModelParts *model = level.PartsOf(part.placed->file);
+    if (model == nullptr || part.chunk >= model->chunks.size())
+    {
+        return;
+    }
+    const level::MeshChunk &chunk = model->chunks[part.chunk];
+    const std::wstring *material = Found(model->materials, Lower(chunk.name));
+    const surfacecolours::Paint *paint = material != nullptr ? PaintOf(level, files, kept, *material) : nullptr;
+    const std::vector<level::Uv> *uv =
+        paint != nullptr ? PaintedUvOf(level, kept, Lower(part.placed->file), chunk) : nullptr;
+    for (std::size_t at = part.from; at < to; ++at)
+    {
+        const core::Triangle &corners = geometry.lit[at].corners;
+        const core::Point across = Cross(Sub(corners.b, corners.a), Sub(corners.c, corners.a));
+        const double area = 0.5 * double{std::sqrt(Dot(across, across))};
+        if (paint == nullptr)
+        {
+            tally.grey += area;
+            continue;
+        }
+        // The part's triangles are the chunk's, three of its indices each, in their order.
+        const std::size_t first = 3 * (at - part.from);
+        const bool placed = uv != nullptr && first + 2 < chunk.indices.size();
+        sends[at] = placed ? paint->Over({(*uv)[chunk.indices[first]], (*uv)[chunk.indices[first + 1]],
+                                          (*uv)[chunk.indices[first + 2]]})
+                           : paint->Mean();
+        painted[at] = true;
+        tally.area += area;
+        tally.whole += placed ? 0.0 : area;
+    }
+}
+
+// Gives every lightmapped triangle of the world its own colour, as light
+// (2026-10-12): what a picture of the level sees it send on of the light on
+// it, once BringToSurfaces has said how bright the colours are together. With
+// every surface the bake's one grey, what armour mirrored indoors was a grey
+// room, the red carpet of the tower's library grey stone.
 //
-// A surface's own colour is `surfaces`, one grey for the whole level, which
-// is what the bake itself takes every surface to be. Its textures are not
-// read: a red carpet is grey stone here.
-// Only what is lightmapped is in the world the rays are cast in (the level's
-// walls, floors and what is built into them): a statue or a shelf of books
-// that has no lightmap is not in the picture.
+// A surface whose material's texture could not be found or read is left the
+// bake's grey, `surfaces`.
+Painted PaintSurfaces(Level &level, Scene &scene, const PaintFiles &files, const Options &options)
+{
+    Paints kept;
+    Painted tally;
+    tally.triangles.resize(scene.rooms.size());
+    scene.sends.assign(scene.rooms.size(), {});
+    for (std::size_t room = 0; room < scene.rooms.size(); ++room)
+    {
+        const Geometry *geometry = scene.rooms[room].geometry;
+        if (geometry == nullptr)
+        {
+            continue;
+        }
+        scene.sends[room].assign(geometry->lit.size(), {options.surfaces, options.surfaces, options.surfaces});
+        tally.triangles[room].assign(geometry->lit.size(), false);
+        for (std::size_t part = 0; part < geometry->parts.size(); ++part)
+        {
+            PaintPart(level, files, kept, *geometry, part, scene.sends[room], tally.triangles[room], tally);
+        }
+    }
+    tally.materials = kept.materials.size();
+    for (const auto &[material, paint] : kept.materials)
+    {
+        tally.read += paint ? 1 : 0;
+        if (!paint)
+        {
+            tally.unread += (tally.unread.empty() ? "" : ", ") + Text(material);
+        }
+    }
+    return tally;
+}
+
+// A texel of a cube's picture, by its number among the picture's, face by
+// face and row by row.
+struct CubeTexel
+{
+    core::Point way{}; // out of the cube's middle through the texel's, of length 1
+    // 1 and the squares of how far across and down its face the texel is,
+    // each from -1 to 1: a texel is a square 2 / side across on a face one
+    // away from the middle, and from the middle it is smaller the further
+    // out on its face, by this to the power of three halves.
+    float out = 1;
+};
+
+CubeTexel TexelOf(std::size_t number, std::uint32_t side)
+{
+    const std::size_t aFace = std::size_t{side} * side;
+    const std::size_t column = (number % aFace) % side;
+    const std::size_t row = (number % aFace) / side;
+    const float across = (((static_cast<float>(column) + 0.5F) / static_cast<float>(side)) * 2) - 1;
+    const float down = (((static_cast<float>(row) + 0.5F) / static_cast<float>(side)) * 2) - 1;
+    return {WayOfCube(number / aFace, across, down), 1 + (across * across) + (down * down)};
+}
+
+// A cube the level has a file for: where its light-probe object stands, in
+// which room of the scene's, and the file's name.
+struct CubeAt
+{
+    std::uint32_t room = 0;
+    core::Point at{};
+    std::wstring file;
+};
+
+// The level's cubes, each once: only a cube the level has a file for, whose
+// stand-in ours is.
+std::vector<CubeAt> CubesOf(Level &level, const std::vector<std::wstring> &ids)
+{
+    std::vector<CubeAt> cubes;
+    for (std::size_t room = 0; room < ids.size(); ++room)
+    {
+        for (const OwnProbe &probe : level.ProbesOf(ids[room]))
+        {
+            std::wstring file = Lower(probe.cube);
+            if (!file.empty() && level.Find(file) && std::ranges::find(cubes, file, &CubeAt::file) == cubes.end())
+            {
+                cubes.push_back({static_cast<std::uint32_t>(room), probe.at, std::move(file)});
+            }
+        }
+    }
+    return cubes;
+}
+
+// What the ray of one texel of one of a level's cubes lands on, for
+// BringToSurfaces: the share of all the ways round that the texel is (but
+// for a number the same for all), and the surface's colour by that share;
+// nothing of either where it lands on nothing painted.
+struct Landed
+{
+    float share = 0;
+    Colour colour{};
+};
+
+// What every texel of every cube of the level lands on, a ray a texel as
+// the cubes' pictures are made.
+// @param side a cube's face's, in texels
+std::vector<Landed> LandedFrom(const Scene &scene, const Painted &painted, std::span<const CubeAt> cubes,
+                               std::uint32_t side)
+{
+    const std::size_t texels = std::size_t{side} * side * 6;
+    std::vector<Landed> landed(cubes.size() * texels);
+    ForEach(landed.size(), [&](std::size_t i) {
+        const CubeAt &cube = cubes[i / texels];
+        const CubeTexel texel = TexelOf(i % texels, side);
+        const std::optional<Landing> landing =
+            Cast(scene, cube.room, cube.at, texel.way, std::numeric_limits<float>::infinity());
+        if (landing && painted.triangles[landing->room][landing->hit.triangle])
+        {
+            const float share = 1 / (texel.out * std::sqrt(texel.out));
+            const Colour &colour = scene.sends[landing->room][landing->hit.triangle];
+            landed[i] = {share, {share * colour[0], share * colour[1], share * colour[2]}};
+        }
+    });
+    return landed;
+}
+
+// Says how bright the surfaces' colours are together: all of them multiplied
+// by the one number that brings their mean brightness, over what the level's
+// cubes see, to the bake's `surfaces`.
+//
+// A texture's colours taken as light (SurfaceColours.h's LightOf) are dark:
+// what the tower's cubes see is 0.13 of white in the mean and the Commons'
+// 0.14, where their recipes' `surfaces` are 0.75 and 0.4. The cubes were
+// looked at in the game with every surface that grey, and how bright a
+// level's are is to stay what it was. So the mean is brought to it (the
+// tower's colours by 5.9, the Commons' by 2.9), and a colour is a share of
+// the level's mean and not a surface's true whiteness: the palest come out
+// brighter than white, and the library's carpet sends on more red than
+// falls on it.
+//
+// The mean is over what the cubes see, a ray a texel as their pictures are
+// made, each by the share of all the ways round that its texel is; and not
+// over the level's surface by its area, which was tried first. Orzammar's
+// one cube stands in the market among pale buildings on a pale floor, and
+// most of the level's surface is the dark rock of its cave far off (0.08 in
+// the mean): by area the cube was two fifths brighter than with the grey
+// (0.155 to 0.219 in the mean), and by what it sees it is 0.161.
+// @param side a cube's face's, in texels
+void BringToSurfaces(Scene &scene, const Painted &painted, std::span<const CubeAt> cubes, std::uint32_t side,
+                     const Options &options, const std::string &name)
+{
+    const std::vector<Landed> landed = LandedFrom(scene, painted, cubes, side);
+    double share = 0;
+    std::array<double, 3> colour{};
+    for (const Landed &one : landed)
+    {
+        share += double{one.share};
+        for (std::size_t channel = 0; channel < 3; ++channel)
+        {
+            colour.at(channel) += double{one.colour.at(channel)};
+        }
+    }
+    const double light = (kLuma[0] * colour[0]) + (kLuma[1] * colour[1]) + (kLuma[2] * colour[2]);
+    const float by = light > 0 ? static_cast<float>(double{options.surfaces} * share / light) : 1.0F;
+    for (std::size_t room = 0; room < scene.sends.size(); ++room)
+    {
+        for (std::size_t at = 0; at < scene.sends[room].size(); ++at)
+        {
+            if (painted.triangles[room][at])
+            {
+                std::ranges::for_each(scene.sends[room][at], [by](float &channel) { channel *= by; });
+            }
+        }
+    }
+    // And how much of what the cubes see comes out brighter than white in one of its colours.
+    double over = 0;
+    for (const Landed &one : landed)
+    {
+        over += std::ranges::max(one.colour) * by > one.share ? double{one.share} : 0.0;
+    }
+    const double seen = std::max(share, 1e-9);
+    const double all = std::max(painted.area + painted.grey, 1e-9);
+    spdlog::info("relight: {}: {} of {} materials painted from their textures, {:.1f}% of the lightmapped surface "
+                 "({:.1f}% by a whole texture's mean); their colour {:.3f} {:.3f} {:.3f} in the mean of what the "
+                 "cubes see, by {:.2f} to the bake's {:.2f}, {:.1f}% of it over white; left grey: {}",
+                 name, painted.read, painted.materials, 100 * painted.area / all, 100 * painted.whole / all,
+                 colour[0] / seen, colour[1] / seen, colour[2] / seen, by, options.surfaces, 100 * over / seen,
+                 painted.unread.empty() ? "none" : painted.unread);
+}
+
+// What a ray sees of the level's surfaces: the light the lightmap has where
+// it lands, as WriteMaps writes it, by what the surface there sends on, which
+// is its own colour (PaintSurfaces); or what glows there, by its own colour;
+// or nothing.
+//
+// Only what is lightmapped is in the world the rays are cast in, which is
+// nearly all that a level's rooms place, its statues, shelves and beds with
+// its walls (counted 2026-10-12: 809 thousand triangles of the tower's 820,
+// 722 of the Commons' 737). What the rooms place with no lightmap is mostly
+// not for a picture: the black that closes a level off, lava and window
+// panes, which are here as what glows, a lantern's glass. Left out are a few
+// open books and stools and the Commons' vistas, its far city as flat
+// pictures; and what an area places in a level, which the level's rooms do
+// not have: no door's leaf and no chest is among the models the tower's
+// rooms place.
 Colour SeenAlong(const Scene &scene, std::uint32_t room, const core::Point &from, const core::Point &way,
                  const Options &options)
 {
@@ -2379,9 +2716,13 @@ Colour SeenAlong(const Scene &scene, std::uint32_t room, const core::Point &from
                 (w * triangle.uv[0][1]) + (landing->hit.u * triangle.uv[1][1]) + (landing->hit.v * triangle.uv[2][1]);
             const Colour &lit = At(map->second, map->second.whole, u, v);
             const Colour &own = At(map->second, map->second.own, u, v);
+            const bool painted =
+                landing->room < scene.sends.size() && landing->hit.triangle < scene.sends[landing->room].size();
+            const Colour sends = painted ? scene.sends[landing->room][landing->hit.triangle]
+                                         : Colour{options.surfaces, options.surfaces, options.surfaces};
             for (std::size_t channel = 0; channel < 3; ++channel)
             {
-                seen.at(channel) = options.surfaces * (lit.at(channel) + (options.kept * own.at(channel)));
+                seen.at(channel) = sends.at(channel) * (lit.at(channel) + (options.kept * own.at(channel)));
             }
         }
     }
@@ -2433,19 +2774,11 @@ float Covered(float between, float wide, float texel)
 std::vector<Colour> CubeFrom(const Scene &scene, std::uint32_t room, const core::Point &from, std::uint32_t side,
                              std::span<const LampSeen> lamps, const Options &options)
 {
-    const std::size_t aFace = std::size_t{side} * side;
-    std::vector<Colour> cube(6 * aFace);
+    std::vector<Colour> cube(std::size_t{side} * side * 6);
     ForEach(cube.size(), [&](std::size_t i) {
-        const std::size_t face = i / aFace;
-        const std::size_t column = (i % aFace) % side;
-        const std::size_t row = (i % aFace) / side;
-        const float across = (((static_cast<float>(column) + 0.5F) / static_cast<float>(side)) * 2) - 1;
-        const float down = (((static_cast<float>(row) + 0.5F) / static_cast<float>(side)) * 2) - 1;
-        const core::Point way = WayOfCube(face, across, down);
+        const auto [way, out] = TexelOf(i, side);
         Colour seen = SeenAlong(scene, room, from, way, options);
-        // A texel is a square 2 / side across on a face one away from the
-        // middle: from the middle it is smaller the further out on its face.
-        const float out = 1 + (across * across) + (down * down);
+        // The angle of a round as large as the texel is (CubeTexel::out).
         const float texel =
             (2 / static_cast<float>(side)) / std::sqrt(std::numbers::pi_v<float> * out * std::sqrt(out));
         for (const LampSeen &lamp : lamps)
@@ -2515,53 +2848,210 @@ std::vector<std::byte> DdsOfCube(const std::vector<Colour> &cube, std::uint32_t 
     return file;
 }
 
+// The texel of a cube's picture that a way out of its middle goes through:
+// WayOfCube the other way about.
+std::size_t TexelOfCube(const core::Point &way, std::uint32_t side)
+{
+    const std::array<float, 3> size{std::abs(way[0]), std::abs(way[1]), std::abs(way[2])};
+    const std::size_t axis = static_cast<std::size_t>(std::ranges::max_element(size) - size.begin());
+    const float most = std::max(size.at(axis), 1e-20F);
+    const bool forward = way.at(axis) > 0;
+    float across = 0;
+    float down = 0;
+    switch (axis)
+    {
+    case 0:
+        across = (forward ? -way[2] : way[2]) / most;
+        down = -way[1] / most;
+        break;
+    case 1:
+        across = way[0] / most;
+        down = (forward ? way[2] : -way[2]) / most;
+        break;
+    default:
+        across = (forward ? way[0] : -way[0]) / most;
+        down = -way[1] / most;
+        break;
+    }
+    const auto texel = [side](float along) {
+        return static_cast<std::size_t>(
+            std::clamp((along + 1) / 2 * static_cast<float>(side), 0.0F, static_cast<float>(side - 1)));
+    };
+    const std::size_t face = (2 * axis) + (forward ? 0 : 1);
+    return (((face * side) + texel(down)) * side) + texel(across);
+}
+
+// A cube's picture laid out for the eye, the tool's `cubeview`: four views
+// from its middle side by side, each upright and each a quarter turn on from
+// the one before (towards -y, +x, +y and -x), with the ceiling over the
+// first and the floor under it; three bytes a pixel, 4 by 3 faces. They are
+// the file's faces turned upright, neither mirrored, so what is right of
+// what is as the file has it. The light is shown as the earlier look at the
+// cubes showed it (2026-10-12): twice it over one more than twice it, a
+// white wall at two thirds and a lamp at white, with no curve after, the
+// game's shaders showing a cube's light as it is.
+std::vector<std::uint8_t> CrossOf(const std::vector<Colour> &cube, std::uint32_t side)
+{
+    struct View
+    {
+        core::Point ahead{};
+        core::Point right{};
+        core::Point up{};
+        std::uint32_t column = 0;
+        std::uint32_t row = 0;
+    };
+    const std::array<View, 6> views{{{{0, -1, 0}, {1, 0, 0}, {0, 0, 1}, 0, 1},
+                                     {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}, 1, 1},
+                                     {{0, 1, 0}, {-1, 0, 0}, {0, 0, 1}, 2, 1},
+                                     {{-1, 0, 0}, {0, -1, 0}, {0, 0, 1}, 3, 1},
+                                     {{0, 0, 1}, {1, 0, 0}, {0, 1, 0}, 0, 0},
+                                     {{0, 0, -1}, {1, 0, 0}, {0, -1, 0}, 0, 2}}};
+    const std::size_t width = std::size_t{side} * 4;
+    std::vector<std::uint8_t> picture(width * side * 3 * 3);
+    for (const View &view : views)
+    {
+        for (std::uint32_t y = 0; y < side; ++y)
+        {
+            for (std::uint32_t x = 0; x < side; ++x)
+            {
+                const float across = (((static_cast<float>(x) + 0.5F) / static_cast<float>(side)) * 2) - 1;
+                const float down = (((static_cast<float>(y) + 0.5F) / static_cast<float>(side)) * 2) - 1;
+                core::Point way{};
+                for (std::size_t axis = 0; axis < 3; ++axis)
+                {
+                    way.at(axis) = view.ahead.at(axis) + (across * view.right.at(axis)) - (down * view.up.at(axis));
+                }
+                const Colour &light = cube[TexelOfCube(way, side)];
+                std::uint8_t *pixel =
+                    &picture[((((std::size_t{view.row} * side) + y) * width) + (std::size_t{view.column} * side) + x) *
+                             3];
+                for (std::size_t channel = 0; channel < 3; ++channel)
+                {
+                    const float shown = 2 * std::max(light.at(channel), 0.0F);
+                    pixel[channel] = NearestByte(255.0F * shown / (1 + shown));
+                }
+            }
+        }
+    }
+    return picture;
+}
+
+// A picture of three bytes a pixel as a PNG file. Not packed: the format's
+// stream is zlib's, and zlib's has a way to say bytes as they are, 65535 at
+// a time, which every reader takes; a cube's picture is half a megabyte so.
+std::vector<std::byte> PngOf(std::span<const std::uint8_t> rgb, std::uint32_t width, std::uint32_t height)
+{
+    std::vector<std::uint8_t> file{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
+    const auto big = [](std::vector<std::uint8_t> &to, std::uint32_t value) {
+        for (int shift = 24; shift >= 0; shift -= 8)
+        {
+            to.push_back(static_cast<std::uint8_t>(value >> shift));
+        }
+    };
+    // A piece of the file: its length, its kind and its bytes, and the CRC-32 of the last two.
+    const auto piece = [&](std::string_view kind, std::span<const std::uint8_t> bytes) {
+        big(file, static_cast<std::uint32_t>(bytes.size()));
+        const std::size_t from = file.size();
+        file.insert(file.end(), kind.begin(), kind.end());
+        file.insert(file.end(), bytes.begin(), bytes.end());
+        std::uint32_t crc = 0xFFFFFFFFU;
+        for (std::size_t at = from; at < file.size(); ++at)
+        {
+            crc ^= file[at];
+            for (int bit = 0; bit < 8; ++bit)
+            {
+                crc = (crc >> 1) ^ ((crc & 1U) != 0 ? 0xEDB88320U : 0U);
+            }
+        }
+        big(file, ~crc);
+    };
+    std::vector<std::uint8_t> head;
+    big(head, width);
+    big(head, height);
+    head.insert(head.end(),
+                {8, 2, 0, 0, 0}); // eight bits a channel, red green and blue, and the format's one way of each else
+    piece("IHDR", head);
+    // The rows, each after a byte that says it is kept as it is.
+    std::vector<std::uint8_t> rows;
+    rows.reserve(((std::size_t{width} * 3) + 1) * height);
+    for (std::uint32_t y = 0; y < height; ++y)
+    {
+        rows.push_back(0);
+        const auto row = rgb.subspan(std::size_t{y} * width * 3, std::size_t{width} * 3);
+        rows.insert(rows.end(), row.begin(), row.end());
+    }
+    std::vector<std::uint8_t> stream{0x78, 0x01};
+    std::uint32_t low = 1; // Adler-32, zlib's sum of the bytes it holds
+    std::uint32_t high = 0;
+    constexpr std::size_t kAtATime = 65535;
+    for (std::size_t at = 0; at < rows.size(); at += kAtATime)
+    {
+        const std::size_t count = std::min(kAtATime, rows.size() - at);
+        stream.push_back(at + count == rows.size() ? 1 : 0);
+        for (const std::size_t length : {count, count ^ 0xFFFFU})
+        {
+            stream.push_back(static_cast<std::uint8_t>(length));
+            stream.push_back(static_cast<std::uint8_t>(length >> 8));
+        }
+        for (std::size_t i = at; i < at + count; ++i)
+        {
+            stream.push_back(rows[i]);
+            low = (low + rows[i]) % 65521;
+            high = (high + low) % 65521;
+        }
+    }
+    big(stream, (high << 16) | low);
+    piece("IDAT", stream);
+    piece("IEND", {});
+    std::vector<std::byte> bytes(file.size());
+    std::memcpy(bytes.data(), file.data(), file.size());
+    return bytes;
+}
+
 // Makes the level's reflection cubes of a world that is lit, and writes each
 // into the folder as a DDS of vanilla's own name, which in the plugin's
 // override folder is the cube the game hands the shaders. Only a cube the
-// level has a file for is made: it is that file's stand-in.
-// @return how many were written
-std::size_t WriteCubes(Level &level, const Scene &scene, const std::filesystem::path &out, const Options &options,
-                       const std::vector<std::wstring> &ids, const std::string &name)
+// level has a file for is made (CubesOf). Where a folder is named for it
+// (Options::cubeview), each is written there too as a picture to look at,
+// <the cube's name>.png.
+// @param side a cube's face's, in texels
+// @param ids the scene's rooms' names, for the log
+void WriteCubes(const Scene &scene, std::span<const CubeAt> cubes, std::uint32_t side, const std::filesystem::path &out,
+                const Options &options, const std::string &name, const std::vector<std::wstring> &ids)
 {
-    // A cube map's side is a power of two: the one at or under what was asked.
-    const std::uint32_t side = std::bit_floor(options.cube);
-    std::set<std::wstring> made;
-    if (side == 0)
+    std::error_code error;
+    if (!options.cubeview.empty())
     {
-        return 0;
+        std::filesystem::create_directories(options.cubeview, error);
     }
-    for (std::size_t room = 0; room < ids.size(); ++room)
+    for (const CubeAt &at : cubes)
     {
-        for (const OwnProbe &probe : level.ProbesOf(ids[room]))
+        const std::vector<LampSeen> lamps = LampsSeenFrom(scene, at.room, at.at, options);
+        const std::vector<Colour> cube = CubeFrom(scene, at.room, at.at, side, lamps, options);
+        const std::vector<std::byte> bytes = DdsOfCube(cube, side);
+        std::ofstream stream(out / at.file, std::ios::binary);
+        stream.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        if (!options.cubeview.empty())
         {
-            const std::wstring file = Lower(probe.cube);
-            if (file.empty() || !level.Find(file) || !made.insert(file).second)
-            {
-                continue;
-            }
-            const std::vector<LampSeen> lamps =
-                LampsSeenFrom(scene, static_cast<std::uint32_t>(room), probe.at, options);
-            const std::vector<Colour> cube =
-                CubeFrom(scene, static_cast<std::uint32_t>(room), probe.at, side, lamps, options);
-            const std::vector<std::byte> bytes = DdsOfCube(cube, side);
-            std::ofstream stream(out / file, std::ios::binary);
-            stream.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-            double mean = 0;
-            double most = 0;
-            for (const Colour &light : cube)
-            {
-                const double luma =
-                    (kLuma[0] * double{light[0]}) + (kLuma[1] * double{light[1]}) + (kLuma[2] * double{light[2]});
-                mean += luma / static_cast<double>(cube.size());
-                most = std::max(most, luma);
-            }
-            spdlog::info("relight: {}: the cube {} from {:.2f} {:.2f} {:.2f}, room {}: {} of {} lamps in sight, "
-                         "its light {:.3f} in the mean and {:.1f} at the most",
-                         name, Text(file), probe.at[0], probe.at[1], probe.at[2], Text(ids[room]), lamps.size(),
-                         scene.lamps.size(), mean, most);
+            const std::vector<std::byte> png = PngOf(CrossOf(cube, side), side * 4, side * 3);
+            std::ofstream view(options.cubeview / std::filesystem::path(at.file).replace_extension(L".png"),
+                               std::ios::binary);
+            view.write(reinterpret_cast<const char *>(png.data()), static_cast<std::streamsize>(png.size()));
         }
+        double mean = 0;
+        double most = 0;
+        for (const Colour &light : cube)
+        {
+            const double luma =
+                (kLuma[0] * double{light[0]}) + (kLuma[1] * double{light[1]}) + (kLuma[2] * double{light[2]});
+            mean += luma / static_cast<double>(cube.size());
+            most = std::max(most, luma);
+        }
+        spdlog::info("relight: {}: the cube {} from {:.2f} {:.2f} {:.2f}, room {}: {} of {} lamps in sight, "
+                     "its light {:.3f} in the mean and {:.1f} at the most",
+                     name, Text(at.file), at.at[0], at.at[1], at.at[2], Text(ids[at.room]), lamps.size(),
+                     scene.lamps.size(), mean, most);
     }
-    return made.size();
 }
 
 // Lights one world of a level's rooms and writes its lightmaps: the rooms
@@ -2573,7 +3063,7 @@ std::size_t WriteCubes(Level &level, const Scene &scene, const std::filesystem::
 std::size_t LightRooms(Level &level, const std::filesystem::path &levelRim, const std::filesystem::path &out,
                        const Options &options, const std::vector<std::wstring> &ids,
                        const std::vector<std::wstring> &sources, bool withProbes, std::set<std::wstring> &done,
-                       std::optional<Colour> &gain)
+                       std::optional<Colour> &gain, const PaintFiles &paints)
 {
     const auto began = std::chrono::steady_clock::now();
     const std::string name = levelRim.stem().string();
@@ -2606,13 +3096,20 @@ std::size_t LightRooms(Level &level, const std::filesystem::path &levelRim, cons
     const std::size_t written = WriteMaps(level, scene, out, options, done);
     if (withProbes && options.cube > 0)
     {
-        // The level's cubes, of the light as the lightmaps were just written with it.
+        // The level's cubes, of the light as the lightmaps were just written
+        // with it, each surface in its own colour: the colours are found now,
+        // the lightmaps written, and are the cubes' alone.
         if (!scene.shining.triangles.empty())
         {
             scene.shining.tree.emplace(scene.shining.triangles);
         }
-        const std::size_t cubes = WriteCubes(level, scene, out, options, ids, name);
-        spdlog::info("relight: {}: {} reflection cubes, {} texels a side", name, cubes, std::bit_floor(options.cube));
+        // A cube map's side is a power of two: the one at or under what was asked.
+        const std::uint32_t side = std::bit_floor(options.cube);
+        const std::vector<CubeAt> cubes = CubesOf(level, ids);
+        const Painted painted = PaintSurfaces(level, scene, paints, options);
+        BringToSurfaces(scene, painted, cubes, side, options, name);
+        WriteCubes(scene, cubes, side, out, options, name, ids);
+        spdlog::info("relight: {}: {} reflection cubes, {} texels a side", name, cubes.size(), side);
     }
     if (withProbes)
     {
@@ -2690,9 +3187,17 @@ std::size_t Relight(const std::filesystem::path &levelRim, const std::filesystem
     }
     std::set<std::wstring> done;
     std::optional<Colour> gain; // what the level's light is brought to vanilla's by, found by its first world
+    // Where the surfaces' colours are, for the cubes; not opened where none is made.
+    PaintFiles paints;
+    if (options.cube > 0)
+    {
+        paints.materials = Archive::Open(data / "materialobjects.erf", true);
+        paints.pack = Archive::Open(game / "packages" / "core" / "textures" / "high" / "texturepack.erf", true);
+        paints.textures = Archive::Open(data / "textures.erf", true);
+    }
     if (!level.Terrain())
     {
-        return LightRooms(level, levelRim, out, options, level.Rooms(), level.Rooms(), true, done, gain);
+        return LightRooms(level, levelRim, out, options, level.Rooms(), level.Rooms(), true, done, gain, paints);
     }
     // A level of terrain is more than its tiles as they are from near. Each
     // tile has a far detail (<x>_<y>_1) with lightmaps of its own, drawn in
@@ -2713,8 +3218,8 @@ std::size_t Relight(const std::filesystem::path &levelRim, const std::filesystem
         far.push_back(id.substr(0, id.size() - 1) + L"1");
     }
     far.emplace_back();
-    std::size_t written = LightRooms(level, levelRim, out, options, first, near, true, done, gain);
-    written += LightRooms(level, levelRim, out, options, far, near, false, done, gain);
+    std::size_t written = LightRooms(level, levelRim, out, options, first, near, true, done, gain, paints);
+    written += LightRooms(level, levelRim, out, options, far, near, false, done, gain, paints);
     return written;
 }
 

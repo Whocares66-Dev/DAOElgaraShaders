@@ -141,7 +141,17 @@ struct Options
     // the lightmaps are (Relighter.cpp's WriteCubes; issue 9, 2026-10-12).
     // Vanilla's are 256 a side; a surface reads no sharper than the fourth
     // mip, so half that loses nothing it shows.
+    //
+    // A surface is in a cube in its own colour, its material's texture's
+    // where the surface is laid on it (SurfaceColours.h; 2026-10-12), the
+    // level's colours together as bright in the mean as `surfaces`. The
+    // lightmaps and the probes are of the one grey still.
     std::uint32_t cube = 128;
+    // A folder each cube is also written into as a picture to look at with
+    // no game, <the cube's name>.png: four views side by side, the ceiling
+    // over the first and the floor under it, the light brought into what a
+    // screen shows (Relighter.cpp's CrossOf). Nothing for none.
+    std::filesystem::path cubeview;
 };
 
 // Lights a level again and writes its lightmaps into a folder, each a DDS of

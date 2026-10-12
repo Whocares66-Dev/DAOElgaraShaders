@@ -25,6 +25,10 @@
 //   cube=128       how many pixels a side the level's reflection cubes are
 //                  made, each a DDS of vanilla's own name beside the
 //                  lightmaps; 0 makes none
+//   cubeview=<folder>   each cube written there too as a picture to look at
+//                  with no game, <the cube's name>.png: four views from where
+//                  the cube stands side by side (towards -y, +x, +y and -x),
+//                  the ceiling over the first and the floor under it
 //   glow=window:6,8,12   every part whose material's name has "window" in it
 //                  glows that colour; as many of these as wanted. A fourth
 //                  number, after another colon, is how much of that colour
@@ -238,6 +242,10 @@ bool Take(relighter::Options &options, const std::string &name, const std::strin
     else if (name == "glow")
     {
         options.glows.push_back(GlowOf(value));
+    }
+    else if (name == "cubeview")
+    {
+        options.cubeview = value;
     }
     else
     {
