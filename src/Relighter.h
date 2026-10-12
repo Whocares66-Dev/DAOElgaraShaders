@@ -103,6 +103,18 @@ struct Options
     float kept = 0.0F;          // of the game's own baked light, what is laid under ours
     std::vector<Glow> glows;    // what glows in this level
     std::vector<Flame> flames;  // and what burns in it
+    // How far the level's light is brought to vanilla's bake: at 1 its mean
+    // colour over every texel lit is that of vanilla's lightmaps over the same
+    // texels, and its bright end (the texel brighter than nineteen in twenty)
+    // is as bright as vanilla's. Where the light falls is
+    // the fittings' to say; how bright the level is and what colour, taken
+    // all together, is vanilla's. Without it each level's strengths and
+    // colours were set by eye and drifted: Orzammar an orange vanilla has
+    // not, Aeducan Thaig three and a half times as bright as vanilla's bake
+    // (the user, 2026-10-11: "things are way too bright. i feel like we're
+    // moving in the wrong direction. to keep it simple, preserve vanilla
+    // hue, saturation, etc."). 0 leaves the light as the fittings give it.
+    float match = 1.0F;
     // What casts the rays: Embree (1) where the tool is built with it, as the
     // 64-bit one is (bake/CMakeLists.txt), or DAOLib's tree of triangles (0),
     // a room at a time, which is all the 32-bit tool has. Embree has the

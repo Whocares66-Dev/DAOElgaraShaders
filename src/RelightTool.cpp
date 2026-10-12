@@ -16,6 +16,8 @@
 //   bounces=2      how many times light is followed off a surface
 //   rays=48        cast from a texel for what comes back
 //   kept=0         of the game's own baked light, what is laid under ours
+//   match=1        how far the level's light is brought to vanilla's bake in its
+//                  mean brightness and colour; 0 leaves it as the fittings give it
 //   caster=embree  what casts the rays: Embree, where the tool is built with
 //                  it (the 64-bit one, tools/build-bake.ps1), or `tree`,
 //                  DAOLib's own, a room at a time
@@ -100,6 +102,10 @@ bool TakeNumber(relighter::Options &options, const std::string &name, const std:
     else if (name == "rays")
     {
         options.rays = std::strtoul(value.c_str(), nullptr, 10);
+    }
+    else if (name == "match")
+    {
+        options.match = std::strtof(value.c_str(), nullptr);
     }
     else if (name == "caster")
     {

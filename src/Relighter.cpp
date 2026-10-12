@@ -2099,6 +2099,114 @@ void WriteProbes(Level &level, const Scene &scene, const std::filesystem::path &
     spdlog::info("relight: {}: {} probes in {} rooms", levelRim.stem().string(), count, lit.size());
 }
 
+// Brings a world's light to vanilla's bake, its colour by the means and its
+// brightness by the bright end (Options::match): the lightmaps' light, and the lights themselves, which
+// the probes are yet to be made of. Light adds up, so every source and what
+// has come of it multiplied alike is the level lit by sources that much
+// brighter or dimmer.
+// @param gain what a level's first world was multiplied by, for its second
+//  to be multiplied by the same; found here where it has no value yet
+void MatchVanilla(Scene &scene, const Options &options, std::optional<Colour> &gain, const std::string &name)
+{
+    if (options.match <= 0)
+    {
+        return;
+    }
+    if (!gain)
+    {
+        // Its colour by the means, and its brightness by the bright end: what
+        // is brighter than nineteen texels in twenty is made as bright as
+        // vanilla's is. By the means alone the tower came out a third
+        // brighter where its light falls, since a level lit from its sources
+        // is darker than vanilla's bake where no light reaches and must then
+        // be brighter where it does (the user, 2026-10-11, of a pillar by a
+        // window: "the moonlight is too bright now"). Nothing lit is to be
+        // brighter than vanilla shows the level's bright places; what is
+        // dark is left dark.
+        constexpr double kBrightEnd = 0.95;
+        constexpr std::array<double, 3> kLuma{0.2126, 0.7152, 0.0722};
+        std::array<double, 3> ours{};
+        std::array<double, 3> vanillas{};
+        std::vector<float> ourLuma;
+        std::vector<float> vanillasLuma;
+        for (const auto &[atlas, map] : scene.maps)
+        {
+            for (std::size_t i = 0; i < map.texels.size(); ++i)
+            {
+                if (!map.texels[i].covered)
+                {
+                    continue;
+                }
+                double mine = 0;
+                double theirs = 0;
+                for (std::size_t channel = 0; channel < 3; ++channel)
+                {
+                    ours.at(channel) += double{map.whole[i].at(channel)};
+                    vanillas.at(channel) += double{map.own[i].at(channel)};
+                    mine += kLuma.at(channel) * double{map.whole[i].at(channel)};
+                    theirs += kLuma.at(channel) * double{map.own[i].at(channel)};
+                }
+                ourLuma.push_back(static_cast<float>(mine));
+                vanillasLuma.push_back(static_cast<float>(theirs));
+            }
+        }
+        Colour found{1, 1, 1};
+        if (!ourLuma.empty())
+        {
+            const auto at = static_cast<std::ptrdiff_t>(static_cast<double>(ourLuma.size() - 1) * kBrightEnd);
+            std::ranges::nth_element(ourLuma, ourLuma.begin() + at);
+            std::ranges::nth_element(vanillasLuma, vanillasLuma.begin() + at);
+            const double bright = ourLuma[static_cast<std::size_t>(at)] > 0
+                                      ? double{vanillasLuma[static_cast<std::size_t>(at)]} / double{ourLuma[static_cast<std::size_t>(at)]}
+                                      : 1.0;
+            // The colour's part: each channel's mean against vanilla's, with the brightness of that taken out.
+            double oursMean = 0;
+            double vanillasMean = 0;
+            for (std::size_t channel = 0; channel < 3; ++channel)
+            {
+                oursMean += kLuma.at(channel) * ours.at(channel);
+                vanillasMean += kLuma.at(channel) * vanillas.at(channel);
+            }
+            for (std::size_t channel = 0; channel < 3; ++channel)
+            {
+                if (ours.at(channel) > 0 && vanillas.at(channel) > 0 && oursMean > 0 && vanillasMean > 0)
+                {
+                    const double hue = (vanillas.at(channel) / ours.at(channel)) / (vanillasMean / oursMean);
+                    // What is kept of vanilla's bake is under ours (DdsOf): ours has the rest of the bright end.
+                    const double share = std::max(0.0, 1.0 - double{options.kept});
+                    found.at(channel) =
+                        std::lerp(1.0F, static_cast<float>(share * bright * hue), std::min(options.match, 1.0F));
+                }
+            }
+        }
+        gain = found;
+        spdlog::info("relight: {}: brought to vanilla's bake: its light by {:.2f}, {:.2f}, {:.2f}", name, found[0], found[1],
+                     found[2]);
+    }
+    const auto scaled = [&](Colour &colour) {
+        for (std::size_t channel = 0; channel < 3; ++channel)
+        {
+            colour.at(channel) *= gain->at(channel);
+        }
+    };
+    for (auto &[atlas, map] : scene.maps)
+    {
+        std::ranges::for_each(map.whole, scaled);
+    }
+    for (Lamp &lamp : scene.lamps)
+    {
+        scaled(lamp.colour);
+    }
+    for (Glowing &glow : scene.glows)
+    {
+        scaled(glow.colour);
+    }
+    for (Beaming &beam : scene.beams)
+    {
+        scaled(beam.colour);
+    }
+}
+
 // Lights one world of a level's rooms and writes its lightmaps: the rooms
 // `ids` are the world, each lit and each in the way of the others' light.
 // @param sources the rooms whose definitions place the level's fittings
@@ -2107,7 +2215,8 @@ void WriteProbes(Level &level, const Scene &scene, const std::filesystem::path &
 // @return how many lightmaps were written
 std::size_t LightRooms(Level &level, const std::filesystem::path &levelRim, const std::filesystem::path &out,
                        const Options &options, const std::vector<std::wstring> &ids,
-                       const std::vector<std::wstring> &sources, bool withProbes, std::set<std::wstring> &done)
+                       const std::vector<std::wstring> &sources, bool withProbes, std::set<std::wstring> &done,
+                       std::optional<Colour> &gain)
 {
     const auto began = std::chrono::steady_clock::now();
     const std::string name = levelRim.stem().string();
@@ -2136,9 +2245,27 @@ std::size_t LightRooms(Level &level, const std::filesystem::path &levelRim, cons
     {
         Bounce(scene, order, options, bounce);
     }
+    MatchVanilla(scene, options, gain, name);
     const std::size_t written = WriteMaps(level, scene, out, options, done);
     if (withProbes)
     {
+        // A figure is lit by what is kept of vanilla's bake as a room's
+        // probes always took it: each side of it as the surface behind is.
+        // The probes take a surface to send on `surfaces` of its light, so
+        // the kept light is put into the maps by one over that.
+        if (options.kept > 0 && options.surfaces > 0)
+        {
+            for (auto &[atlas, map] : scene.maps)
+            {
+                for (std::size_t i = 0; i < map.whole.size(); ++i)
+                {
+                    for (std::size_t channel = 0; channel < 3; ++channel)
+                    {
+                        map.whole[i].at(channel) += options.kept * map.own[i].at(channel) / options.surfaces;
+                    }
+                }
+            }
+        }
         WriteProbes(level, scene, levelRim, out, options, ids);
     }
     const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began);
@@ -2195,9 +2322,10 @@ std::size_t Relight(const std::filesystem::path &levelRim, const std::filesystem
         spdlog::info("relight: {}: {} lamps of the level's own, said in its .lamps", levelRim.stem().string(), count);
     }
     std::set<std::wstring> done;
+    std::optional<Colour> gain; // what the level's light is brought to vanilla's by, found by its first world
     if (!level.Terrain())
     {
-        return LightRooms(level, levelRim, out, options, level.Rooms(), level.Rooms(), true, done);
+        return LightRooms(level, levelRim, out, options, level.Rooms(), level.Rooms(), true, done, gain);
     }
     // A level of terrain is more than its tiles as they are from near. Each
     // tile has a far detail (<x>_<y>_1) with lightmaps of its own, drawn in
@@ -2218,8 +2346,8 @@ std::size_t Relight(const std::filesystem::path &levelRim, const std::filesystem
         far.push_back(id.substr(0, id.size() - 1) + L"1");
     }
     far.emplace_back();
-    std::size_t written = LightRooms(level, levelRim, out, options, first, near, true, done);
-    written += LightRooms(level, levelRim, out, options, far, near, false, done);
+    std::size_t written = LightRooms(level, levelRim, out, options, first, near, true, done, gain);
+    written += LightRooms(level, levelRim, out, options, far, near, false, done, gain);
     return written;
 }
 
