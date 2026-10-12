@@ -115,6 +115,15 @@ struct Options
     // moving in the wrong direction. to keep it simple, preserve vanilla
     // hue, saturation, etc."). 0 leaves the light as the fittings give it.
     float match = 1.0F;
+    // How far the level's brightness is brought to vanilla's bake as well, by
+    // the bright end. 0 leaves it as the fittings' strengths give it, which
+    // is the rule: vanilla's bake is no measure of how bright a level is
+    // where vanilla lights the level by its ambient colour and its lamps
+    // more than by its bake. Orzammar's Commons brought to its bake's bright
+    // end was a third as bright as the bake the user had called "pretty
+    // good" and all but black (seen 2026-10-12). The tower's bake is a fair
+    // measure of the tower, and its recipe says 1.
+    float bright = 0.0F;
     // What casts the rays: Embree (1) where the tool is built with it, as the
     // 64-bit one is (bake/CMakeLists.txt), or DAOLib's tree of triangles (0),
     // a room at a time, which is all the 32-bit tool has. Embree has the

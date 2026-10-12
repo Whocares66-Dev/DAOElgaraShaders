@@ -18,6 +18,7 @@
 //   kept=0         of the game's own baked light, what is laid under ours
 //   match=1        how far the level's light is brought to vanilla's bake in its
 //                  mean brightness and colour; 0 leaves it as the fittings give it
+//   bright=0       how far its brightness is brought to vanilla's bake too, by the bright end
 //   caster=embree  what casts the rays: Embree, where the tool is built with
 //                  it (the 64-bit one, tools/build-bake.ps1), or `tree`,
 //                  DAOLib's own, a room at a time
@@ -106,6 +107,10 @@ bool TakeNumber(relighter::Options &options, const std::string &name, const std:
     else if (name == "match")
     {
         options.match = std::strtof(value.c_str(), nullptr);
+    }
+    else if (name == "bright")
+    {
+        options.bright = std::strtof(value.c_str(), nullptr);
     }
     else if (name == "caster")
     {

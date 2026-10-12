@@ -2180,7 +2180,10 @@ Colour GainTo(Against &measured, const Options &options)
         if (measured.ours.at(channel) > 0 && measured.vanillas.at(channel) > 0)
         {
             const double hue = (measured.vanillas.at(channel) / measured.ours.at(channel)) / (vanillasMean / oursMean);
-            found.at(channel) = std::lerp(1.0F, static_cast<float>(share * bright * hue), std::min(options.match, 1.0F));
+            const float toHue = std::lerp(1.0F, static_cast<float>(hue), std::min(options.match, 1.0F));
+            const float toBright =
+                std::lerp(1.0F, static_cast<float>(share * bright), std::clamp(options.bright, 0.0F, 1.0F));
+            found.at(channel) = toHue * toBright;
         }
     }
     return found;
