@@ -500,7 +500,9 @@ def with_our_grade(shader, occlusion=False, show=False):
 LOOK = [
     ("DaoSharpen", "grade", 0.6, 0, 1),
     ("DaoVibrance", "grade", 0.3, 0, 2),
-    ("DaoContrast", "grade", 0.25, 0, 1),
+    ("DaoContrast", "grade", 0.25, -1, 1),
+    ("DaoSaturation", "grade", 0.0, -1, 1),
+    ("DaoWarmth", "grade", 0.0, -1, 1),
     ("DaoHighlights", "grade", 0.0, 0, 1),
     ("DaoExposure", "grade+glow", 0.0, -3, 3),
     ("DaoRange", "grade+glow", 1.5, 1, 16),

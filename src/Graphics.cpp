@@ -916,6 +916,81 @@ std::atomic<float> g_levelSeen{0};  // the level's, or 0 while it is not known
 // game baked it.
 std::atomic<bool> g_levelRelit{false};
 
+// The player's own tuning of the picture, a level at a time: four sliders of
+// the options screen's, each a whole number of steps either side of nothing.
+// The user asked for them so as to set a level to their liking and have what
+// they set made that level's own (2026-10-11: "then i can tune it to my
+// liking, save, you can look at the config, and make the settings the
+// default for that map"). What the player has set is in graphics.chosen
+// (`Tune.<level> = exposure, contrast, saturation, warmth`); what a level
+// has when the player has set nothing is in graphics.tuned, the same lines,
+// which is where a player's settings go to be every player's. The level is
+// the one the area's figures were last matched to a room of.
+enum TuneOf : std::size_t
+{
+    kTuneExposure,
+    kTuneContrast,
+    kTuneSaturation,
+    kTuneWarmth,
+    kTunes
+};
+using Tune = std::array<int, kTunes>;
+constexpr int kTuneSteps = 4;                                                 // either side
+constexpr std::array<float, kTunes> kTuneStep{0.25F, 0.1F, 0.125F, 0.125F}; // stops; and the chain's own units
+std::mutex g_tuneLock;
+std::map<std::string, Tune, std::less<>> g_tunedByPlayer;
+std::map<std::string, Tune, std::less<>> g_tunedShipped;
+std::string g_levelName; // under g_tuneLock: the lights' chooser says it, the game thread reads it
+
+void NoteLevel(const std::string &level)
+{
+    const std::scoped_lock lock(g_tuneLock);
+    if (g_levelName != level)
+    {
+        g_levelName = level;
+    }
+}
+
+// The tuning in force: the player's for the level, else the level's own, else none.
+Tune TuneNow()
+{
+    const std::scoped_lock lock(g_tuneLock);
+    if (const auto found = g_tunedByPlayer.find(g_levelName); found != g_tunedByPlayer.end())
+    {
+        return found->second;
+    }
+    if (const auto found = g_tunedShipped.find(g_levelName); found != g_tunedShipped.end())
+    {
+        return found->second;
+    }
+    return {};
+}
+
+// Takes a line `Tune.<level> = a, b, c, d` into a table; false for any other line.
+bool TakeTune(std::string_view key, std::string_view value, std::map<std::string, Tune, std::less<>> &into)
+{
+    constexpr std::string_view kPrefix = "Tune.";
+    if (!key.starts_with(kPrefix))
+    {
+        return false;
+    }
+    Tune tune{};
+    std::size_t at = 0;
+    for (int &step : tune)
+    {
+        const std::size_t comma = value.find(',', at);
+        const std::string number(value.substr(at, comma == std::string_view::npos ? comma : comma - at));
+        step = std::clamp(static_cast<int>(std::strtol(number.c_str(), nullptr, 10)), -kTuneSteps, kTuneSteps);
+        if (comma == std::string_view::npos)
+        {
+            break;
+        }
+        at = comma + 1;
+    }
+    into.insert_or_assign(std::string(key.substr(kPrefix.size())), tune);
+    return true;
+}
+
 // The rooms lit again that the area's figures have been matched to since the
 // area was come into, with the table that holds them: what a door's light is
 // the mean of (RelitMean). A room is noted as its probes are chosen for a
@@ -1124,6 +1199,7 @@ void LightsToMix(const ProbeRooms &rooms, const std::vector<ScoredProbe> &scored
                 g_levelSeen.store(room->levelSeen, std::memory_order_relaxed);
             }
             NoteAreaRelit(room->relit);
+            NoteLevel(room->level);
             if (room->relit)
             {
                 NoteRelitRoom(rooms, room);
@@ -1955,11 +2031,13 @@ constexpr std::wstring_view kChain = L"da_hsvmatrix"; // the chain build_shaders
 constexpr int kLookEvery = 30;                        // frames between looks at the file and the chain
 constexpr const char *kLooksFile = "graphics.ini";
 constexpr const char *kChosenFile = "graphics.chosen"; // what is chosen, kept between sessions
+constexpr const char *kTunedFile = "graphics.tuned";   // each level's own tuning, where the player has set none
 // The look a player who has chosen none starts with: the lighting, with no
 // sharpening and no change of saturation or contrast. Those are taste, and
 // are to get controls of their own; the named looks that carry them are
 // placeholders (the user, 2026-10-11).
 constexpr std::string_view kFirstLook = "Lighting only";
+constexpr std::string_view kVanillaLook = "Vanilla";
 constexpr std::wstring_view kSmaa = L"DaoSmaa"; // the chain's switch for its anti-aliasing (smaa.py)
 
 // The looks and the one chosen: the game thread's, as the options screen's
@@ -2068,6 +2146,20 @@ void ReadChosen(const std::filesystem::path &folder)
         {
             g_chosen = LookNamed(value).value_or(g_chosen);
         }
+        const std::scoped_lock lock(g_tuneLock);
+        TakeTune(key, value, g_tunedByPlayer);
+    }
+    // And what each level has of its own, beside it.
+    std::ifstream shipped(folder / kTunedFile);
+    for (std::string line; std::getline(shipped, line);)
+    {
+        const std::size_t equals = line.find('=');
+        if (equals != std::string::npos && !line.starts_with(';'))
+        {
+            const std::scoped_lock lock(g_tuneLock);
+            TakeTune(Trimmed(std::string_view(line).substr(0, equals)), Trimmed(std::string_view(line).substr(equals + 1)),
+                     g_tunedShipped);
+        }
     }
 }
 
@@ -2076,6 +2168,13 @@ void KeepChosen()
 {
     std::ofstream out(dao::Module::OwnFolder() / kChosenFile, std::ios::trunc);
     out << "Look = " << g_looks[g_chosen].name << "\nAntiAliasing = " << (g_smaa ? "SMAA" : "Off") << '\n';
+    {
+        const std::scoped_lock lock(g_tuneLock);
+        for (const auto &[level, tune] : g_tunedByPlayer)
+        {
+            out << "Tune." << level << " = " << tune[0] << ", " << tune[1] << ", " << tune[2] << ", " << tune[3] << '\n';
+        }
+    }
     if (!out)
     {
         spdlog::warn("{} was not written: the choice lasts this session", kChosenFile);
@@ -2122,6 +2221,17 @@ float ChosenValue(std::string_view key, float otherwise = 0)
         }
     }
     return otherwise;
+}
+
+// What one of the player's sliders adds, in the units of what it is added to:
+// nothing in the Vanilla look, which is the game as it is.
+float TunedBy(TuneOf which)
+{
+    if (g_chosen < g_looks.size() && g_looks[g_chosen].name == kVanillaLook)
+    {
+        return 0.0F;
+    }
+    return static_cast<float>(TuneNow().at(which)) * kTuneStep.at(which);
 }
 
 // Keeps the sun on the world at the look's strength. An area's sunlight has
@@ -2253,9 +2363,10 @@ void KeepSun(float sun, float onFigures, float exposure)
     constexpr float kRelitRange = 8.0F;    // whites
     const bool relit = day <= 0 && g_levelRelit.load(std::memory_order_relaxed);
     Keep(L"DaoExposure",
-         relit ? ChosenValue("InteriorExposure", kRelitExposure) +
-                     (ChosenValue("InteriorAdapt", 0.0F) * g_relitAdapt.load(std::memory_order_relaxed))
-               : exposure * day,
+         TunedBy(kTuneExposure) +
+             (relit ? ChosenValue("InteriorExposure", kRelitExposure) +
+                          (ChosenValue("InteriorAdapt", 0.0F) * g_relitAdapt.load(std::memory_order_relaxed))
+                    : exposure * day),
          "Exposure");
     // Not through Keep: the meter moves it twice a second, which is no news.
     const float range = relit ? kRelitRange : kRangeIndoors + (kRangeBySun * sun);
@@ -2755,51 +2866,93 @@ void ApplyLook()
         const bool idle = value.key == "Highlights" && g_wideFormat == D3DFMT_UNKNOWN;
         if (value.key != "Exposure") // KeepSun's, by the area's sun
         {
-            Keep(value.name, idle ? 0.0F : value.value, value.key);
+            const float tuned = value.key == "Contrast" ? TunedBy(kTuneContrast) : 0.0F;
+            Keep(value.name, idle ? 0.0F : value.value + tuned, value.key);
         }
     }
+    Keep(L"DaoSaturation", TunedBy(kTuneSaturation), "Saturation");
+    Keep(L"DaoWarmth", TunedBy(kTuneWarmth), "Warmth");
     Keep(kSmaa, g_smaa ? 1.0F : 0.0F, "Smaa");
     KeepSun(ChosenValue("Sun"), ChosenValue("SunOnFigures"), ChosenValue("Exposure"));
     KeepSky(ChosenValue("Haze"), ChosenValue("Clouds"), ChosenValue("Clear"), ChosenValue("Sky"));
     KeepLookRegisters();
 }
 
-// The options screen's section: the anti-aliasing, and under it the looks, a
-// stop each.
+// The options screen's section, on the Video tab's right column, which holds
+// a heading and twelve rows (DAOLib #82): two checkboxes and four sliders
+// are ten. Vanilla or relit is a checkbox and no slider of looks (the user,
+// 2026-10-11: "just vanilla & relit. instead of slider we can use
+// checkbox"); the sliders are the player's own tuning of the level they are
+// in (TuneNow).
 constexpr const wchar_t *kOptionsTitle = L"Graphics";
+
+// One of the tuning's sliders: nine stops, the middle one nothing.
+dao::options::Choice TuneSlider(TuneOf which, const wchar_t *name, const wchar_t *label, const wchar_t *tooltip)
+{
+    dao::options::Choice slider;
+    slider.name = name;
+    slider.label = label;
+    slider.tooltip = tooltip;
+    for (int step = -kTuneSteps; step <= kTuneSteps; ++step)
+    {
+        slider.values.push_back(step > 0 ? L"+" + std::to_wstring(step) : std::to_wstring(step));
+    }
+    slider.get = [which] { return TuneNow().at(which) + kTuneSteps; };
+    slider.set = [which](std::int32_t wanted) {
+        {
+            const std::scoped_lock lock(g_tuneLock);
+            Tune tune{};
+            if (const auto found = g_tunedByPlayer.find(g_levelName); found != g_tunedByPlayer.end())
+            {
+                tune = found->second;
+            }
+            else if (const auto own = g_tunedShipped.find(g_levelName); own != g_tunedShipped.end())
+            {
+                tune = own->second;
+            }
+            tune.at(which) = std::clamp(wanted - kTuneSteps, -kTuneSteps, kTuneSteps);
+            g_tunedByPlayer.insert_or_assign(g_levelName, tune);
+            spdlog::info("tuned in {}: exposure {}, contrast {}, saturation {}, warmth {}",
+                         g_levelName.empty() ? "no level" : g_levelName, tune[0], tune[1], tune[2], tune[3]);
+        }
+        KeepChosen();
+        return wanted;
+    };
+    return slider;
+}
 
 void AddToOptions()
 {
-    if (g_looks.size() < 2)
+    const std::optional<std::size_t> vanilla = LookNamed(kVanillaLook);
+    const std::optional<std::size_t> relit = LookNamed(kFirstLook);
+    if (!vanilla || !relit)
     {
-        spdlog::warn("{}: {} looks; the options screen's slider wants two or more", kLooksFile, g_looks.size());
+        spdlog::warn("{} has not both the looks {} and {}; the options screen has no section", kLooksFile, kVanillaLook,
+                     kFirstLook);
         return;
     }
-    // On the Video tab, where a player looks for it (the user, 2026-10-11:
-    // "Put it under video"). That tab has five free rows, in its right
-    // column under "Frame-buffer effects", and this section is the five: a
-    // heading's two, the checkbox's one, the slider's two. A section that
-    // does not fit is left out, which once left the Look slider nowhere
-    // ("I still don't see the ... sliders"); a sixth row wants somewhere
-    // else to go first (DAOLib #79).
+    dao::options::Toggle lighting;
+    lighting.name = L"GraphicsRelit";
+    lighting.label = L"Relit lighting";
+    lighting.tooltip = L"The plugin's lighting; off is the game as it is";
+    lighting.get = [vanilla] { return g_chosen != *vanilla; };
+    lighting.set = [vanilla, relit](bool wanted) {
+        ChooseLook(static_cast<std::int32_t>(wanted ? *relit : *vanilla));
+        return wanted;
+    };
     dao::options::Toggle smaa;
     smaa.name = L"GraphicsAntiAliasing";
     smaa.label = L"Extra anti-aliasing (SMAA)";
     smaa.tooltip = L"Smooths the edges the game's own anti-aliasing misses; works with it or without";
     smaa.get = [] { return g_smaa; };
     smaa.set = [](bool wanted) { return ChooseAntiAliasing(wanted ? 1 : 0) == 1; };
-    dao::options::Choice look;
-    look.name = L"GraphicsLook";
-    look.label = L"Look";
-    look.tooltip = L"Sharpening, colour and ambient occlusion; the looks are graphics.ini's";
-    for (const Look &each : g_looks)
-    {
-        look.values.push_back(Wide(each.name));
-    }
-    look.get = [] { return static_cast<std::int32_t>(g_chosen); };
-    look.set = &ChooseLook;
-    if (!dao::options::AddSection(kOptionsTitle, {smaa}, {look}, dao::options::Column::Either,
-                                  dao::options::Tab::Video))
+    if (!dao::options::AddSection(
+            kOptionsTitle, {lighting, smaa},
+            {TuneSlider(kTuneExposure, L"GraphicsExposure", L"Exposure", L"How bright the picture is, in this area's level"),
+             TuneSlider(kTuneContrast, L"GraphicsContrast", L"Contrast", L"How far apart light and dark are"),
+             TuneSlider(kTuneSaturation, L"GraphicsSaturation", L"Saturation", L"How strong the colours are"),
+             TuneSlider(kTuneWarmth, L"GraphicsWarmth", L"Warmth", L"Cooler or warmer")},
+            dao::options::Column::Right, dao::options::Tab::Video))
     {
         spdlog::warn("the options screen did not take the section");
     }
@@ -2819,7 +2972,7 @@ void LogOptionsSection()
     switch (now)
     {
     case dao::options::SectionState::Shown:
-        spdlog::info("the options screen's Video tab shows the Look slider");
+        spdlog::info("the options screen's Video tab shows the Graphics section");
         break;
     case dao::options::SectionState::NoRoom:
         spdlog::warn("the options screen has no room for the Look slider: other sections took the Video tab's rows");

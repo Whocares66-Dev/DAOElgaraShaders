@@ -1251,6 +1251,10 @@ void BakeLevel(State &state, const std::filesystem::path &levelRim)
             spdlog::info("light probes: {} lit again, {} rooms, {} probes of its own lights", levelRim.stem().string(),
                          rooms->size(), ProbesIn(*rooms));
             ReadLamps(state, state.relit / (levelRim.stem().wstring() + L".lamps"));
+            for (Room &room : *rooms)
+            {
+                room.level = levelRim.stem().string();
+            }
             Publish(state, std::move(*rooms));
             return;
         }
@@ -1262,6 +1266,10 @@ void BakeLevel(State &state, const std::filesystem::path &levelRim)
         {
             spdlog::info("light probes: {} kept, {} rooms, {} probes", levelRim.stem().string(), rooms->size(),
                          ProbesIn(*rooms));
+            for (Room &room : *rooms)
+            {
+                room.level = levelRim.stem().string();
+            }
             Publish(state, std::move(*rooms));
             return;
         }
@@ -1282,6 +1290,10 @@ void BakeLevel(State &state, const std::filesystem::path &levelRim)
                  ProbesIn(*baked), took.count());
     // The level whole, and not a room at a time: a figure's light is of one
     // kind across a level from the frame the level's probes come.
+    for (Room &room : *baked)
+    {
+        room.level = levelRim.stem().string();
+    }
     Publish(state, std::move(*baked));
 }
 

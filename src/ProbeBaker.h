@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <memory>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace levelfiles
@@ -47,6 +48,9 @@ struct Room
     // probes were then baked from: such a level wants none of its ambient
     // colour, and its lamps are in its lightmaps (Graphics.cpp).
     bool relit = false;
+    // The level the room is of, by its folder's name (lak303d). Not kept in a
+    // table: said as a level's rooms are read or baked.
+    std::string level;
     std::vector<dao::core::probes::Probe> probes;
 
     // A grid over the probes, seen from above, so that the nearest few are

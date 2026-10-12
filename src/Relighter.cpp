@@ -2099,11 +2099,97 @@ void WriteProbes(Level &level, const Scene &scene, const std::filesystem::path &
     spdlog::info("relight: {}: {} probes in {} rooms", levelRim.stem().string(), count, lit.size());
 }
 
-// Brings a world's light to vanilla's bake, its colour by the means and its
-// brightness by the bright end (Options::match): the lightmaps' light, and the lights themselves, which
-// the probes are yet to be made of. Light adds up, so every source and what
-// has come of it multiplied alike is the level lit by sources that much
-// brighter or dimmer.
+// A world's light against vanilla's bake of it, over every texel lit: each
+// channel's sum of both, and every texel's brightness in both.
+struct Against
+{
+    std::array<double, 3> ours{};
+    std::array<double, 3> vanillas{};
+    std::vector<float> ourLuma;
+    std::vector<float> vanillasLuma;
+};
+
+constexpr std::array<double, 3> kLuma{0.2126, 0.7152, 0.0722};
+
+Against Measured(const Scene &scene)
+{
+    Against found;
+    for (const auto &[atlas, map] : scene.maps)
+    {
+        for (std::size_t i = 0; i < map.texels.size(); ++i)
+        {
+            if (!map.texels[i].covered)
+            {
+                continue;
+            }
+            double mine = 0;
+            double theirs = 0;
+            for (std::size_t channel = 0; channel < 3; ++channel)
+            {
+                found.ours.at(channel) += double{map.whole[i].at(channel)};
+                found.vanillas.at(channel) += double{map.own[i].at(channel)};
+                mine += kLuma.at(channel) * double{map.whole[i].at(channel)};
+                theirs += kLuma.at(channel) * double{map.own[i].at(channel)};
+            }
+            found.ourLuma.push_back(static_cast<float>(mine));
+            found.vanillasLuma.push_back(static_cast<float>(theirs));
+        }
+    }
+    return found;
+}
+
+// What a world's light is multiplied by to be brought to vanilla's bake: its
+// colour by the means, and its brightness by the bright end, so that what is
+// brighter than nineteen texels in twenty is as bright as vanilla's is. By
+// the means alone the tower came out a third brighter where its light falls,
+// since a level lit from its sources is darker than vanilla's bake where no
+// light reaches and must then be brighter where it does (the user,
+// 2026-10-11, of a pillar by a window: "the moonlight is too bright now").
+// Nothing lit is to be brighter than vanilla shows the level's bright
+// places; what is dark is left dark.
+Colour GainTo(Against &measured, const Options &options)
+{
+    constexpr double kBrightEnd = 0.95;
+    Colour found{1, 1, 1};
+    if (measured.ourLuma.empty())
+    {
+        return found;
+    }
+    const auto at = static_cast<std::ptrdiff_t>(static_cast<double>(measured.ourLuma.size() - 1) * kBrightEnd);
+    std::ranges::nth_element(measured.ourLuma, measured.ourLuma.begin() + at);
+    std::ranges::nth_element(measured.vanillasLuma, measured.vanillasLuma.begin() + at);
+    const auto oursBright = double{measured.ourLuma[static_cast<std::size_t>(at)]};
+    const auto vanillasBright = double{measured.vanillasLuma[static_cast<std::size_t>(at)]};
+    const double bright = oursBright > 0 ? vanillasBright / oursBright : 1.0;
+    // The colour's part: each channel's mean against vanilla's, with the brightness of that taken out.
+    double oursMean = 0;
+    double vanillasMean = 0;
+    for (std::size_t channel = 0; channel < 3; ++channel)
+    {
+        oursMean += kLuma.at(channel) * measured.ours.at(channel);
+        vanillasMean += kLuma.at(channel) * measured.vanillas.at(channel);
+    }
+    if (oursMean <= 0 || vanillasMean <= 0)
+    {
+        return found;
+    }
+    // What is kept of vanilla's bake is under ours (DdsOf): ours has the rest of the bright end.
+    const double share = std::max(0.0, 1.0 - double{options.kept});
+    for (std::size_t channel = 0; channel < 3; ++channel)
+    {
+        if (measured.ours.at(channel) > 0 && measured.vanillas.at(channel) > 0)
+        {
+            const double hue = (measured.vanillas.at(channel) / measured.ours.at(channel)) / (vanillasMean / oursMean);
+            found.at(channel) = std::lerp(1.0F, static_cast<float>(share * bright * hue), std::min(options.match, 1.0F));
+        }
+    }
+    return found;
+}
+
+// Brings a world's light to vanilla's bake (Options::match, GainTo): the
+// lightmaps' light, and the lights themselves, which the probes are yet to
+// be made of. Light adds up, so every source and what has come of it
+// multiplied alike is the level lit by sources that much brighter or dimmer.
 // @param gain what a level's first world was multiplied by, for its second
 //  to be multiplied by the same; found here where it has no value yet
 void MatchVanilla(Scene &scene, const Options &options, std::optional<Colour> &gain, const std::string &name)
@@ -2114,79 +2200,17 @@ void MatchVanilla(Scene &scene, const Options &options, std::optional<Colour> &g
     }
     if (!gain)
     {
-        // Its colour by the means, and its brightness by the bright end: what
-        // is brighter than nineteen texels in twenty is made as bright as
-        // vanilla's is. By the means alone the tower came out a third
-        // brighter where its light falls, since a level lit from its sources
-        // is darker than vanilla's bake where no light reaches and must then
-        // be brighter where it does (the user, 2026-10-11, of a pillar by a
-        // window: "the moonlight is too bright now"). Nothing lit is to be
-        // brighter than vanilla shows the level's bright places; what is
-        // dark is left dark.
-        constexpr double kBrightEnd = 0.95;
-        constexpr std::array<double, 3> kLuma{0.2126, 0.7152, 0.0722};
-        std::array<double, 3> ours{};
-        std::array<double, 3> vanillas{};
-        std::vector<float> ourLuma;
-        std::vector<float> vanillasLuma;
-        for (const auto &[atlas, map] : scene.maps)
-        {
-            for (std::size_t i = 0; i < map.texels.size(); ++i)
-            {
-                if (!map.texels[i].covered)
-                {
-                    continue;
-                }
-                double mine = 0;
-                double theirs = 0;
-                for (std::size_t channel = 0; channel < 3; ++channel)
-                {
-                    ours.at(channel) += double{map.whole[i].at(channel)};
-                    vanillas.at(channel) += double{map.own[i].at(channel)};
-                    mine += kLuma.at(channel) * double{map.whole[i].at(channel)};
-                    theirs += kLuma.at(channel) * double{map.own[i].at(channel)};
-                }
-                ourLuma.push_back(static_cast<float>(mine));
-                vanillasLuma.push_back(static_cast<float>(theirs));
-            }
-        }
-        Colour found{1, 1, 1};
-        if (!ourLuma.empty())
-        {
-            const auto at = static_cast<std::ptrdiff_t>(static_cast<double>(ourLuma.size() - 1) * kBrightEnd);
-            std::ranges::nth_element(ourLuma, ourLuma.begin() + at);
-            std::ranges::nth_element(vanillasLuma, vanillasLuma.begin() + at);
-            const double bright = ourLuma[static_cast<std::size_t>(at)] > 0
-                                      ? double{vanillasLuma[static_cast<std::size_t>(at)]} / double{ourLuma[static_cast<std::size_t>(at)]}
-                                      : 1.0;
-            // The colour's part: each channel's mean against vanilla's, with the brightness of that taken out.
-            double oursMean = 0;
-            double vanillasMean = 0;
-            for (std::size_t channel = 0; channel < 3; ++channel)
-            {
-                oursMean += kLuma.at(channel) * ours.at(channel);
-                vanillasMean += kLuma.at(channel) * vanillas.at(channel);
-            }
-            for (std::size_t channel = 0; channel < 3; ++channel)
-            {
-                if (ours.at(channel) > 0 && vanillas.at(channel) > 0 && oursMean > 0 && vanillasMean > 0)
-                {
-                    const double hue = (vanillas.at(channel) / ours.at(channel)) / (vanillasMean / oursMean);
-                    // What is kept of vanilla's bake is under ours (DdsOf): ours has the rest of the bright end.
-                    const double share = std::max(0.0, 1.0 - double{options.kept});
-                    found.at(channel) =
-                        std::lerp(1.0F, static_cast<float>(share * bright * hue), std::min(options.match, 1.0F));
-                }
-            }
-        }
+        Against measured = Measured(scene);
+        const Colour found = GainTo(measured, options);
         gain = found;
         spdlog::info("relight: {}: brought to vanilla's bake: its light by {:.2f}, {:.2f}, {:.2f}", name, found[0], found[1],
                      found[2]);
     }
-    const auto scaled = [&](Colour &colour) {
+    const Colour by = *gain;
+    const auto scaled = [&by](Colour &colour) {
         for (std::size_t channel = 0; channel < 3; ++channel)
         {
-            colour.at(channel) *= gain->at(channel);
+            colour.at(channel) *= by.at(channel);
         }
     };
     for (auto &[atlas, map] : scene.maps)

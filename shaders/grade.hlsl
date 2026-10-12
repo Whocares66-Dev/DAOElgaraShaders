@@ -76,7 +76,9 @@ float3 DaoAir(float2 uv)
 // LOOK), which the plugin sets from graphics.ini.
 float fDaoSharpen;    // 0 to 1
 float fDaoVibrance;   // saturation given to the colours that have least
-float fDaoContrast;   // of an S-curve over the middle tones
+float fDaoContrast;   // of an S-curve over the middle tones; less than 0 flattens them
+float fDaoSaturation; // the player's own: -1 is grey, 0 as it is, 1 twice the colour
+float fDaoWarmth;     // the player's own: -1 cooler, 1 warmer, the brightness kept
 float fDaoHighlights; // how far what is brighter than white is rolled off, not cut: 0 to 1
 float fDaoExposure;   // stops the scene is opened up by before that, each one a doubling of its light: -3 to 3
 float fDaoRange;      // the brightness that comes out white, in whites: 1 to 16
@@ -168,6 +170,10 @@ float3 DaoGrade(float3 colour, float2 pixel)
     const float luma = dot(colour, kDaoLuma);
     const float spread = max(colour.r, max(colour.g, colour.b)) - min(colour.r, min(colour.g, colour.b));
     colour = lerp(luma, colour, 1 + fDaoVibrance * (1 - spread));
+    // The player's own tuning (the options screen's sliders, kept a level at a time).
+    colour = lerp(dot(colour, kDaoLuma), colour, 1 + fDaoSaturation);
+    const float3 warm = float3(1 + 0.3 * fDaoWarmth, 1, 1 - 0.3 * fDaoWarmth);
+    colour *= warm / dot(warm, kDaoLuma);
     colour = saturate(colour);
     colour = lerp(colour, colour * colour * (3 - 2 * colour), fDaoContrast);
     // Interleaved gradient noise (Jimenez 2014), a step of the 8-bit picture wide.

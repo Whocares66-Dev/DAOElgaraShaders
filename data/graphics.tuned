@@ -1,0 +1,5 @@
+; Each level's own tuning of the picture, where a player has set none: a line a level,
+;   Tune.<level> = exposure, contrast, saturation, warmth
+; each a whole number of the options screen's steps, -4 to 4 (a step of exposure is a
+; quarter of a stop). A player's own, set with the sliders, are the same lines in
+; graphics.chosen and come before these.
