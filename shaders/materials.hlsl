@@ -187,26 +187,55 @@ float DaoScattered(float metal)
     return 1 - saturate(metal);
 }
 
-// A cube of the area's as light. In a level lit again it is one of ours, in
-// real light and kept as the lightmaps are: the square root of the light's
-// share of kDaoCubeMost (Relighter.cpp's WriteCubes; LevelFiles.h's
-// kCubeMost). The game's own is eight bits of a picture, taken as it is.
-static const float kDaoCubeMost = 64.0;
-float3 DaoCubeLight(float3 stored)
+// The mean of one of the game's own cubes, all round: its last picture, a
+// texel a face, read along each of the six ways (a level past the last is
+// the last).
+float3 DaoCubeMean(samplerCUBE cube)
 {
-    return lerp(stored, stored * stored * kDaoCubeMost, saturate(DAO_RELIT));
+    const float far = 16;
+    return (texCUBElod(cube, float4(1, 0, 0, far)).rgb + texCUBElod(cube, float4(-1, 0, 0, far)).rgb +
+            texCUBElod(cube, float4(0, 1, 0, far)).rgb + texCUBElod(cube, float4(0, -1, 0, far)).rgb +
+            texCUBElod(cube, float4(0, 0, 1, far)).rgb + texCUBElod(cube, float4(0, 0, -1, far)).rgb) /
+           6;
 }
 
-// What a cube of ours is multiplied by where a surface mirrors it: the
-// light that falls where the surface is (`local`: a level's baked light
-// there, a figure's or a prop's probe light). A cube of ours is counted in
-// the light that falls on what it sees, colour by colour (Relighter.cpp's
-// CubeFrom, which has why), so the reflection is as bright as the place and
-// in its light, not as the spot the cube was taken at. The game's own cube
-// is taken as it is.
+// A cube of the area's as light, counted so that a surface mirroring it is
+// to multiply it by the light where the surface is (DaoLocal).
+//
+// In a level lit again the cube is one of ours, in real light, counted in
+// the light that falls on what it sees and kept as the lightmaps are: the
+// square root of its share of kDaoCubeMost (Relighter.cpp's CubeFrom and
+// WriteCubes; LevelFiles.h's kCubeMost).
+//
+// The game's own is a picture of eight bits taken at one spot, by what light
+// nobody knows: dim beside a sunlit village, and the same for a figure in
+// the sun and one in a cellar. Taken as it was, a metal out of doors, which
+// scatters nothing and has only what it mirrors, was a dull grey thing
+// beside the same suit's gilt (a plumed helm of steel, the user, 2026-10-12:
+// "the helm looks gray", and in vanilla "about the same as armor"). So it is
+// counted in its own mean, all round: what is left is the picture's shape,
+// brighter here and dimmer there about 1, and the light where the surface
+// is gives it its brightness and its colour. That light is the mean of what
+// comes to the surface from all about it (a probe's light and a baked light
+// are the light that falls, over pi), which is what a cube's mean should be.
+// It is what is done with a reflection taken at one spot in a level whose
+// light is baked (Lagarde and de Rousiers 2014; Call of Duty's "normalised"
+// cubes, Lazarov 2013).
+static const float kDaoCubeMost = 64.0;
+float3 DaoCubeLight(samplerCUBE cube, float3 stored)
+{
+    const float3 counted = stored / max(DaoCubeMean(cube), 1.0 / 255);
+    return lerp(lerp(stored, counted, saturate(DAO_MATERIALS)), stored * stored * kDaoCubeMost, saturate(DAO_RELIT));
+}
+
+// What a cube is multiplied by where a surface mirrors it: the light that
+// falls where the surface is (`local`: a level's baked light there, a
+// figure's or a prop's probe light), so that the reflection is as bright as
+// the place and in its light, not as the spot the cube was taken at
+// (DaoCubeLight). The game's own arithmetic takes its cube as it is.
 float3 DaoLocal(float3 local)
 {
-    return lerp(1.0, max(local, 0), saturate(DAO_RELIT));
+    return lerp(1.0, max(local, 0), saturate(max(DAO_MATERIALS, DAO_RELIT)));
 }
 
 // The surroundings a surface mirrors, from the area's cube: `way` is where
@@ -220,7 +249,7 @@ float4 DaoReflected(samplerCUBE cube, float4 way, float power)
     const float rough = sqrt(sqrt(2 / (power + 2)));
     const float last = 8 - saturate(DAO_RELIT);
     float4 seen = texCUBElod(cube, float4(way.xyz, lerp(way.w, last * rough * (2 - rough), saturate(DAO_MATERIALS))));
-    seen.rgb = DaoCubeLight(seen.rgb);
+    seen.rgb = DaoCubeLight(cube, seen.rgb);
     return seen;
 }
 
