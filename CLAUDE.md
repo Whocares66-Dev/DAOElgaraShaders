@@ -56,6 +56,7 @@ A test deploys nothing: `game_launch` takes a `plugins` folder to load from in p
 - **Several areas.** Indoors, underground, outdoors; a dark place and a lit one.
 - Find which level a save is really in before testing a level's files (an area's level is named in its `.are`, not by the area's name).
 - A change that touches the Vanilla look is checked against the game with the plugin removed.
+- A setting the options screen holds (the occlusion, the anti-aliasing, the anisotropy, the Relit checkbox, a level's tuning) is switched through the options screen in a test (`build\scratch\elgara-opt.py`), never through `graphics.ini`: the relit look does not read the file for them. And the game's own anti-aliasing changes how a frame is drawn (the distance in a pass of its own, no second target): say which it was, and try both for anything that reads or writes a target.
 - Findings worth keeping go on the issue with a before/after picture of the same frame.
 
 ## Style
