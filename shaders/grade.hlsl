@@ -19,21 +19,96 @@ float DaoOcclusion(float2 uv)
     return tex2D(smpOcclusion, uv).r;
 }
 
+// The glow the chain's passes before this one made of what is brighter than
+// the picture holds (glow_bright.hlsl and the two after it), as light: it is
+// kept as the square root of its light over glow_bright.hlsl's kDaoGlowMost.
+sampler2D smpGlow;
+float fDaoBloom; // how much of the glow is added: 0 to 4
+
+float3 DaoGlow(float2 uv)
+{
+    const float3 kept = tex2D(smpGlow, uv).rgb;
+    return kept * kept * 16.0 * fDaoBloom;
+}
+
+// The air between the eye and what it sees, lit by the sun. The game's fog
+// is one colour whichever way one looks; haze in sunlight is bright towards
+// the sun and dull away from it, and that is most of what says where the
+// sun is and that the air has depth. So light is added by how much air a
+// pixel is seen through (the depth in metres the occlusion's first pass
+// made, occlusion_depth.hlsl; the sky is all of it) and by how nearly the
+// pixel looks at the sun.
+//
+// Where the sun is in the picture is the plugin's to say (Graphics.cpp's
+// KeepAir), each frame: fDaoSunX and fDaoSunY are its place on a plane one
+// unit in front of the eye, or the place straight against it if it is behind
+// (fDaoSunSide -1); fDaoLensX and fDaoLensY are the picture's width and
+// height on that plane. The light's colour is the area's sun's, nothing under
+// a moon, and fDaoHazeThick how much air a metre is.
+sampler2D smpMetres;
+float fDaoSunX;
+float fDaoSunY;
+float fDaoSunSide;
+float fDaoLensX;
+float fDaoLensY;
+float fDaoHazeThick;
+float fDaoSunRed;
+float fDaoSunGreen;
+float fDaoSunBlue;
+float fDaoSunHaze; // how brightly: 0 to 4
+
+// How much of the sun's light haze sends on to the side and back, of what it
+// sends straight on; and how fast that falls off away from the sun.
+static const float kDaoHazeAround = 0.1;
+static const float kDaoHazeForward = 6.0;
+
+float3 DaoAir(float2 uv)
+{
+    const float2 here = (uv - 0.5) * float2(fDaoLensX, fDaoLensY);
+    const float2 sun = float2(fDaoSunX, fDaoSunY);
+    const float toward = fDaoSunSide * (dot(here, sun) + 1) / sqrt((dot(here, here) + 1) * (dot(sun, sun) + 1));
+    const float air = 1 - exp(-tex2D(smpMetres, uv).r * fDaoHazeThick);
+    const float lit = lerp(kDaoHazeAround, 1.0, pow(saturate(0.5 + 0.5 * toward), kDaoHazeForward));
+    return float3(fDaoSunRed, fDaoSunGreen, fDaoSunBlue) * (fDaoSunHaze * lit * air);
+}
+
 // How much of each, 0 for none: values of the chain (build_shaders.py's
 // LOOK), which the plugin sets from graphics.ini.
 float fDaoSharpen;    // 0 to 1
 float fDaoVibrance;   // saturation given to the colours that have least
 float fDaoContrast;   // of an S-curve over the middle tones
 float fDaoHighlights; // how far what is brighter than white is rolled off, not cut: 0 to 1
+float fDaoExposure;   // stops the scene is opened up by before that, each one a doubling of its light: -3 to 3
+float fDaoRange;      // the brightness that comes out white, in whites: 1 to 16
 
 static const float3 kDaoLuma = float3(0.2126, 0.7152, 0.0722);
-// The brightness a colour's strongest channel keeps as it is; above it the
-// channel is bent towards white, which it reaches only at no end of light.
-static const float kDaoKnee = 0.8;
+// A brightness as the picture can hold it: its own to a knee, and above it
+// on a curve that leaves the knee at the same slope and is white at
+// fDaoRange (Reinhard's curve with a white point, begun at the knee). The
+// range is the plugin's to say, by the sun an area has (Graphics.cpp's
+// KeepSun): a room's light is seldom much over white, and a shoulder long
+// enough for ground in a sun four times the area's own bends a room's
+// whites down to grey (the Circle was a third darker with it, measured
+// 2026-10-11); a shoulder short enough for a room makes that ground one pale
+// yellow (seen in Redcliffe the same day). The knee is lower the longer the
+// range: 0.76 at a range of one and a half, 0.61 at four.
+float DaoKnee()
+{
+    return 0.9 / (1 + 0.12 * max(fDaoRange, 1));
+}
+
+float3 DaoRolled(float3 light)
+{
+    const float knee = DaoKnee();
+    const float3 over = max(light - knee, 0) / (1 - knee);
+    const float white = (max(fDaoRange, 1.01) - knee) / (1 - knee);
+    return min(light, knee) + (1 - knee) * saturate(over * (1 + over / (white * white)) / (1 + over));
+}
+
 // How bright a colour keeps its hue as it is rolled off, and from how bright
-// it burns out to white, in whites.
-static const float kDaoBurnFrom = 1.15;
-static const float kDaoBurnTo = 1.8;
+// it burns out to white, in parts of the range.
+static const float kDaoBurnFrom = 0.4;
+static const float kDaoBurnTo = 1.0;
 
 // A colour of the scene as the picture can hold it. With the scene drawn
 // into a 16-bit target (Graphics.cpp's own scene target) a colour may be
@@ -48,31 +123,30 @@ static const float kDaoBurnTo = 1.8;
 // market were pale boxes (the user, 2026-10-11). Such a colour burns out to
 // white as it does on film and as eight bits made it, each channel rolled
 // off on its own. At fDaoHighlights of 0 it is the cut.
-float3 DaoShoulder(float3 colour)
+float3 DaoShoulder(float3 colour, float3 glow)
 {
-    colour = max(colour, 0);
+    colour = max(colour, 0) * exp2(fDaoExposure) + glow;
     const float peak = max(colour.r, max(colour.g, colour.b));
-    const float rolled = kDaoKnee + (1 - kDaoKnee) * (1 - exp(-(peak - kDaoKnee) / (1 - kDaoKnee)));
-    const float3 hued = peak > kDaoKnee ? colour * (rolled / peak) : colour;
-    const float3 each = kDaoKnee + (1 - kDaoKnee) * (1 - exp(-(colour - kDaoKnee) / (1 - kDaoKnee)));
-    const float3 burnt = float3(colour.r > kDaoKnee ? each.r : colour.r, colour.g > kDaoKnee ? each.g : colour.g,
-                                colour.b > kDaoKnee ? each.b : colour.b);
+    const float3 hued = peak > DaoKnee() ? colour * (DaoRolled(peak).x / peak) : colour;
+    const float3 burnt = DaoRolled(colour);
+    const float range = max(fDaoRange, 1.01);
     // From its hue at kDaoBurnFrom times white to burnt out at kDaoBurnTo.
-    const float3 kept = lerp(hued, burnt, saturate((peak - kDaoBurnFrom) / (kDaoBurnTo - kDaoBurnFrom)));
+    const float3 kept =
+        lerp(hued, burnt, saturate((peak / range - kDaoBurnFrom) / (kDaoBurnTo - kDaoBurnFrom)));
     return lerp(saturate(colour), kept, fDaoHighlights);
 }
 
 // The picture at `uv`, sharpened by its four neighbours: contrast-adaptive
 // sharpening (AMD's FidelityFX CAS, the simple form), which sharpens flat
 // detail most and an edge already hard least, so it rings very little.
-float3 DaoSharpen(sampler2D picture, float2 uv)
+float3 DaoSharpen(sampler2D picture, float2 uv, float3 glow)
 {
     const float2 texel = float2(abs(ddx(uv.x)), abs(ddy(uv.y)));
-    const float3 here = DaoShoulder(tex2D(picture, uv).rgb);
-    const float3 up = DaoShoulder(tex2D(picture, uv - float2(0, texel.y)).rgb);
-    const float3 down = DaoShoulder(tex2D(picture, uv + float2(0, texel.y)).rgb);
-    const float3 left = DaoShoulder(tex2D(picture, uv - float2(texel.x, 0)).rgb);
-    const float3 right = DaoShoulder(tex2D(picture, uv + float2(texel.x, 0)).rgb);
+    const float3 here = DaoShoulder(tex2D(picture, uv).rgb, glow);
+    const float3 up = DaoShoulder(tex2D(picture, uv - float2(0, texel.y)).rgb, glow);
+    const float3 down = DaoShoulder(tex2D(picture, uv + float2(0, texel.y)).rgb, glow);
+    const float3 left = DaoShoulder(tex2D(picture, uv - float2(texel.x, 0)).rgb, glow);
+    const float3 right = DaoShoulder(tex2D(picture, uv + float2(texel.x, 0)).rgb, glow);
     const float3 least = min(here, min(min(up, down), min(left, right)));
     const float3 most = max(here, max(max(up, down), max(left, right)));
     const float3 room = sqrt(saturate(min(least, 1 - most) / max(most, 1e-4)));

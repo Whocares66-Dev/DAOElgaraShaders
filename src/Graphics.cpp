@@ -37,9 +37,11 @@
 
 #include "dao/Addresses.h"
 #include "dao/Atmosphere.h"
+#include "dao/Camera.h"
 #include "dao/ClientExoApp.h"
 #include "dao/Frame.h"
 #include "dao/Framebuffer.h"
+#include "dao/GameModes.h"
 #include "dao/Hook.h"
 #include "dao/Log.h"
 #include "dao/Module.h"
@@ -177,7 +179,12 @@ bool CarriesTheScene(UINT width, UINT height, DWORD usage, D3DFORMAT format)
 {
     const bool whole = width == g_backWidth && height == g_backHeight;
     const bool half = width == g_backWidth / 2 && height == g_backHeight / 2;
-    return (usage & D3DUSAGE_RENDERTARGET) != 0 && format == D3DFMT_A8R8G8B8 && (whole || half);
+    // And the glow's own small pictures (build_shaders.py's DaoGlowA to D): in
+    // eight bits a faint glow is laid on in steps.
+    const bool quarter = width == g_backWidth / 4 && height == g_backHeight / 4;
+    const bool sixteenth = width == g_backWidth / 16 && height == g_backHeight / 16;
+    return (usage & D3DUSAGE_RENDERTARGET) != 0 && format == D3DFMT_A8R8G8B8 &&
+           (whole || half || quarter || sixteenth);
 }
 
 HRESULT __stdcall CreateTexture(IDirect3DDevice9 *device, UINT width, UINT height, UINT levels, DWORD usage,
@@ -275,10 +282,22 @@ struct Scene
     IDirect3DTexture9 *shown = nullptr;      // ours resolved, to be drawn onto the back buffer
     IDirect3DSurface9 *shownLevel = nullptr; // that texture's one level
     IDirect3DStateBlock9 *states = nullptr;  // the device's state, kept across our own draw
+    IDirect3DSurface9 *meter = nullptr;      // the picture made small, to be measured
+    IDirect3DSurface9 *read = nullptr;       // and that brought to where it can be read
     UINT width = 0;
     UINT height = 0;
 };
 Scene g_scene;
+// The picture's meter. How much of the picture as it was last shown is burnt
+// out, at white or nearly, as a share of its middle (the corners are the
+// game's own buttons and portraits): the drawing thread's word, for the game
+// thread's keeping of the exposure (KeepSun). Measured every few frames on a
+// copy 128 across, which costs a reading of 80 KB.
+constexpr UINT kMeterWidth = 128;
+constexpr UINT kMeterHeight = 80;
+constexpr int kMeterEvery = 8;        // frames
+constexpr float kMeterBurnt = 0.9F;   // of white: a pixel this bright is burnt out
+std::atomic<float> g_burnt{0};
 IDirect3DDevice9 *g_device = nullptr; // the game's, for the swap chain's Present, which is handed none
 
 template <class T> void Released(T *&object)
@@ -294,6 +313,8 @@ template <class T> void Released(T *&object)
 void DropScene()
 {
     Released(g_scene.states);
+    Released(g_scene.read);
+    Released(g_scene.meter);
     Released(g_scene.shownLevel);
     Released(g_scene.shown);
     Released(g_scene.own);
@@ -329,6 +350,61 @@ void MakeScene(IDirect3DDevice9 *device)
     g_setRenderTarget.Original()(device, 0, g_scene.own);
     spdlog::info("the scene is drawn into a target of our own: {} by {}, format {}, {} samples", is.Width, is.Height,
                  static_cast<int>(format), static_cast<int>(is.MultiSampleType));
+    // The meter reads halves; without the 16-bit target there is nothing over
+    // white to make room for, and no meter.
+    if (format != D3DFMT_A16B16G16R16F ||
+        FAILED(device->CreateRenderTarget(kMeterWidth, kMeterHeight, format, D3DMULTISAMPLE_NONE, 0, FALSE,
+                                          &g_scene.meter, nullptr)) ||
+        FAILED(device->CreateOffscreenPlainSurface(kMeterWidth, kMeterHeight, format, D3DPOOL_SYSTEMMEM, &g_scene.read,
+                                                   nullptr)))
+    {
+        Released(g_scene.read);
+        Released(g_scene.meter);
+    }
+}
+
+// A half-precision float as a float.
+float HalfAsFloat(std::uint16_t half)
+{
+    const int exponent = (half >> 10) & 0x1F;
+    const float mantissa = static_cast<float>(half & 0x3FF) / 1024.0F;
+    const float value = exponent == 0    ? std::ldexp(mantissa, -14)
+                        : exponent == 31 ? 65504.0F
+                                         : std::ldexp(1.0F + mantissa, exponent - 15);
+    return (half & 0x8000) != 0 ? -value : value;
+}
+
+// Measures the picture just resolved: how much of its middle is burnt out.
+void MeterScene(IDirect3DDevice9 *device)
+{
+    static int frames = 0;
+    if (g_scene.meter == nullptr || ++frames % kMeterEvery != 0)
+    {
+        return;
+    }
+    D3DLOCKED_RECT pixels{};
+    if (FAILED(g_stretchRect.Original()(device, g_scene.shownLevel, nullptr, g_scene.meter, nullptr, D3DTEXF_LINEAR)) ||
+        FAILED(device->GetRenderTargetData(g_scene.meter, g_scene.read)) ||
+        FAILED(g_scene.read->LockRect(&pixels, nullptr, D3DLOCK_READONLY)))
+    {
+        return;
+    }
+    std::size_t burnt = 0;
+    std::size_t counted = 0;
+    for (UINT y = kMeterHeight / 8; y < kMeterHeight - (kMeterHeight / 6); ++y)
+    {
+        const auto *row = reinterpret_cast<const std::uint16_t *>(static_cast<const std::byte *>(pixels.pBits) +
+                                                                  (static_cast<std::size_t>(y) * pixels.Pitch));
+        for (UINT x = kMeterWidth / 8; x < kMeterWidth - (kMeterWidth / 8); ++x)
+        {
+            const float most = std::max({HalfAsFloat(row[4 * x]), HalfAsFloat(row[(4 * x) + 1]), HalfAsFloat(row[(4 * x) + 2])});
+            burnt += most >= kMeterBurnt ? 1 : 0;
+            ++counted;
+        }
+    }
+    g_scene.read->UnlockRect();
+    g_burnt.store(static_cast<float>(burnt) / static_cast<float>(std::max<std::size_t>(counted, 1)),
+                  std::memory_order_relaxed);
 }
 
 // The surface the device is to have where the game names `surface`.
@@ -347,6 +423,7 @@ void ShowScene(IDirect3DDevice9 *device)
         return;
     }
     g_stretchRect.Original()(device, g_scene.own, nullptr, g_scene.shownLevel, nullptr, D3DTEXF_NONE);
+    MeterScene(device);
     IDirect3DSurface9 *was = nullptr;
     g_getRenderTarget.Original()(device, 0, &was);
     g_scene.states->Capture();
@@ -1521,6 +1598,24 @@ void LogSunlight()
     }
 }
 
+// The sky as the area has it now, logged when it changes: what there is to
+// work with for the sun's disc, the haze and the fog.
+void LogSky()
+{
+    static std::optional<dao::atmosphere::Sky> last;
+    const std::optional<dao::atmosphere::Sky> now = dao::atmosphere::CurrentSky();
+    if (now && now != last)
+    {
+        last = now;
+        std::string line;
+        for (const dao::core::SkyField &field : dao::core::kSkyFields)
+        {
+            line += fmt::format("{}{} {:.3f}", line.empty() ? "" : ", ", field.name, (*now).*field.member);
+        }
+        spdlog::info("sky: {}", line);
+    }
+}
+
 // One value of a look: its name in graphics.ini and in the game's
 // colour-grade chain, and how much of it the look has.
 struct LookValue
@@ -1714,10 +1809,58 @@ float ChosenValue(std::string_view key, float otherwise = 0)
 // a colour for its ground and buildings, which their shaders add to the
 // baked light by the surface's normal map, its gloss and the shadow maps,
 // and another for its creatures. The first is kept at the area's own times
-// 1 + `sun`; an area with no sun of its own (Orzammar's Commons has the
-// level's colour black, seen 2026-10-11) is given none.
-void KeepSun(float sun)
+// 1 + `sun`, and the second at its own times 1 + `onFigures`: with the first
+// alone at three times, Redcliffe's ground was in bright sun and its people
+// stood on it as dim as before (seen 2026-10-11). An area with no sun of its
+// own (Orzammar's Commons has the level's colour black, seen the same day)
+// is given none.
+//
+// The picture follows the sun too. The look's Exposure is for an area with a
+// sun and counts for nothing in one without, which its makers lit for the
+// picture as it is; and the brightness that comes out white (grade.hlsl's
+// fDaoRange) is one and a half whites with no sun and longer by the sun's
+// strength with one.
+//
+// A moon is a sun to the engine, and three times a moon is a day: the camp
+// by night came out as bright as noon (seen 2026-10-11). What tells them
+// apart in the areas looked at is the light's colour: a moon's has half as
+// much red as blue (the camp's 0.25, 0.37, 0.48), a sun's three quarters or
+// more, the coldest of them over snow (Haven's 0.42, 0.54, 0.57). Under a
+// moon nothing is made stronger and the sky is left as it is.
+//
+// And how bright a day comes out depends on what the sun falls on, which
+// nothing here knows: snow in a sun four times the area's own is all burnt
+// out where a forest's floor in it is well lit (Soldier's Peak, the same
+// day). The exposure brought down for the snow, as a camera's would be, left
+// the shade beside it black and the people in it not to be seen: sun on
+// snow is thirteen times its shade there, more than a picture holds. So it
+// is the sun that is held back: where more than a few parts in a hundred of
+// the picture's middle are at white (ShowScene's meter), the look's sun is
+// taken down, to a fifth at the least, and it comes back slowly as the burn
+// goes. The shade is left as it is.
+// The share of the look's sun in force, by the meter: the game thread's own.
+// The air's light (KeepAir) is the same sun's and is held back with it, or a
+// sky burnt out towards the sun would hold the ground's sun down and stay
+// burnt itself.
+float g_sunHeld = 1;
+
+float Daylight(const dao::atmosphere::Sunlight &own)
 {
+    const float warmth = own.color[0] / std::max(own.color[2], 1e-3F);
+    const float t = std::clamp((warmth - 0.55F) / 0.15F, 0.0F, 1.0F);
+    const float lit = std::clamp(20 * std::max({own.color[0], own.color[1], own.color[2]}), 0.0F, 1.0F);
+    return lit * t * t * (3 - 2 * t);
+}
+
+void KeepSun(float sun, float onFigures, float exposure)
+{
+    constexpr float kRangeIndoors = 1.5F;
+    constexpr float kRangeBySun = 1.2F;
+    constexpr float kBurntMost = 0.04F;   // of the picture's middle: more, and the sun is held back
+    constexpr float kBurntLeast = 0.015F; // less, and it comes back
+    constexpr float kHeldLeast = 0.2F;    // of the look's sun
+    float &held = g_sunHeld;
+    static std::array<float, 4> heldFor{};
     static float logged = -1;
     const std::optional<dao::atmosphere::Sunlight> own = dao::atmosphere::AreaOwnSunlight();
     const std::optional<dao::atmosphere::Sunlight> now = dao::atmosphere::CurrentSunlight();
@@ -1725,16 +1868,48 @@ void KeepSun(float sun)
     {
         return;
     }
+    const float day = Daylight(*own);
+    if (heldFor != own->color)
+    {
+        heldFor = own->color; // another area: the meter starts again
+        held = 1;
+    }
+    const float burnt = g_burnt.load(std::memory_order_relaxed);
+    if (sun * day <= 0)
+    {
+        held = 1;
+    }
+    else if (burnt > kBurntMost)
+    {
+        held = std::max(held - std::min(0.1F, 0.01F + (burnt - kBurntMost)), kHeldLeast);
+    }
+    else if (burnt < kBurntLeast)
+    {
+        held = std::min(held + 0.004F, 1.0F);
+    }
+    sun *= day * held;
+    onFigures *= day * held;
     dao::atmosphere::Sunlight wanted = *now;
     for (std::size_t channel = 0; channel < 3; ++channel)
     {
         wanted.color.at(channel) = own->color.at(channel) * (1 + sun);
+        wanted.characterColor.at(channel) = own->characterColor.at(channel) * (1 + onFigures);
     }
     wanted.color.at(3) = own->color.at(3);
-    if (wanted != *now && dao::atmosphere::SetSunlight(wanted) && sun != logged)
+    wanted.characterColor.at(3) = own->characterColor.at(3);
+    Keep(L"DaoExposure", exposure * day, "Exposure");
+    // Not through Keep: the meter moves it twice a second, which is no news.
+    const float range = kRangeIndoors + (kRangeBySun * sun);
+    if (const std::optional<float> has = dao::framebuffer::Value(kChain, L"DaoRange");
+        has && std::abs(*has - range) > 0.0001F)
+    {
+        dao::framebuffer::SetValue(kChain, L"DaoRange", range);
+    }
+    // Said when it has moved by a fifth: the meter moves it a little at a time.
+    if (wanted != *now && dao::atmosphere::SetSunlight(wanted) && std::abs(sun - logged) > 0.2F)
     {
         logged = sun;
-        spdlog::info("the world: its sun {} times the area's own", 1 + sun);
+        spdlog::info("the world: its sun {:.2f} times the area's own", 1 + sun);
     }
 }
 
@@ -1744,8 +1919,8 @@ void KeepSun(float sun)
 // sun's shadow falls on figures.
 void KeepLookRegisters()
 {
-    constexpr std::array<std::string_view, 6> kKeys{"Relief", "Materials", "ShadowOnFigures",
-                                                    "Lamps",  "FillsLess", "Ambient"};
+    constexpr std::array<std::string_view, 7> kKeys{"Relief", "Materials", "ShadowOnFigures", "Lamps",
+                                                    "FillsLess", "Ambient", "Fire"};
     for (std::size_t i = 0; i < kKeys.size(); ++i)
     {
         // The materials want a scene that holds more than white (materials.hlsl).
@@ -1757,6 +1932,213 @@ void KeepLookRegisters()
     g_fillsLess.store(ChosenValue("FillsLess"), std::memory_order_relaxed);
     g_probeBlend.store(ChosenValue("ProbeBlend"), std::memory_order_relaxed);
     g_ambient.store(ChosenValue("Ambient"), std::memory_order_relaxed);
+}
+
+// Keeps the sky to the sun the look has. An area's fog and clouds have
+// colours of their own, set for the sun the area was made with, and under a
+// sun three times that they stay as dark as they were: Redcliffe's ground lay
+// in bright sun under a slate sky, its mill thirty metres off grey with fog
+// (seen 2026-10-11). Haze lit by a sun takes the sun's colour, and so do
+// clouds. `haze` is how much of the sun's own colour, as the area has it for
+// its ground, is added to the fog's; `clouds` how far the clouds' colour is
+// moved to the sun's and how much thinner they are. An area with no sun has
+// nothing added, and at 0 both are the area's own.
+//
+// And the area's fog hides most of what the engine could draw. Redcliffe's
+// is capped at 0.85, which leaves 15 percent of a castle three hundred
+// metres off, and its sky, the engine's own reckoning of air and haze under
+// a low orange sun, is drawn at one part in a hundred (its "atmosphere
+// alpha"). With the cap at 0.4 and the sky shown whole the village stands
+// under a lit evening sky with its castle in the sun (seen 2026-10-11).
+// `clear` is how much of the fog's cap and thickness is taken away, and
+// `sky` how far the engine's sky is shown.
+void KeepSky(float haze, float clouds, float clear, float sky)
+{
+    const std::optional<dao::atmosphere::Sky> own = dao::atmosphere::AreaOwnSky();
+    const std::optional<dao::atmosphere::Sky> now = dao::atmosphere::CurrentSky();
+    const std::optional<dao::atmosphere::Sunlight> sun = dao::atmosphere::AreaOwnSunlight();
+    if (!own || !now || !sun)
+    {
+        return;
+    }
+    constexpr float kCloudsThinner = 0.5F; // of their density, at the most
+    constexpr float kCapLess = 0.6F;       // of the fog's cap, at the most
+    constexpr float kFogThinner = 0.5F;    // of its thickness
+    dao::atmosphere::Sky wanted = *own;
+    wanted.fogRed += haze * sun->color[0];
+    wanted.fogGreen += haze * sun->color[1];
+    wanted.fogBlue += haze * sun->color[2];
+    const float day = Daylight(*sun);
+    haze *= day;
+    clear *= day;
+    sky *= day;
+    const float lit = std::clamp(clouds, 0.0F, 1.0F) * day;
+    wanted.cloudRed = std::lerp(own->cloudRed, std::max(own->cloudRed, sun->color[0]), lit);
+    wanted.cloudGreen = std::lerp(own->cloudGreen, std::max(own->cloudGreen, sun->color[1]), lit);
+    wanted.cloudBlue = std::lerp(own->cloudBlue, std::max(own->cloudBlue, sun->color[2]), lit);
+    wanted.cloudDensity = own->cloudDensity * (1 - kCloudsThinner * lit);
+    wanted.fogCap = own->fogCap * (1 - kCapLess * std::clamp(clear, 0.0F, 1.0F));
+    wanted.fogIntensity = own->fogIntensity * (1 - kFogThinner * std::clamp(clear, 0.0F, 1.0F));
+    wanted.atmosphereAlpha = std::lerp(own->atmosphereAlpha, std::max(own->atmosphereAlpha, 1.0F), std::clamp(sky, 0.0F, 1.0F));
+    // A look may set any value of the sky outright, to find what a look
+    // should do with it: "SkyFogCap = 0.5" for the sky's "fog cap".
+    constexpr float kUnset = -12345.0F;
+    for (const dao::core::SkyField &field : dao::core::kSkyFields)
+    {
+        std::string key = "Sky";
+        bool start = true;
+        for (const char letter : std::string_view(field.name))
+        {
+            if (letter != ' ')
+            {
+                key += start ? static_cast<char>(std::toupper(static_cast<unsigned char>(letter))) : letter;
+            }
+            start = letter == ' ';
+        }
+        if (const float set = ChosenValue(key, kUnset); set != kUnset)
+        {
+            wanted.*field.member = set;
+        }
+    }
+    if (wanted != *now)
+    {
+        dao::atmosphere::SetSky(wanted);
+    }
+}
+
+// One of the chain's values kept at what it is to be, with nothing said: for
+// those that move every frame.
+void KeepQuietly(std::wstring_view name, float value)
+{
+    if (const std::optional<float> has = dao::framebuffer::Value(kChain, name); has && std::abs(*has - value) > 1e-5F)
+    {
+        dao::framebuffer::SetValue(kChain, name, value);
+    }
+}
+
+// The focal length of the picture, in pixels: what makes the angle between
+// the rays through two pixels the angle between the two ways in the world
+// that were drawn there. `a` and `b` are the pixels from the picture's
+// middle, `cosine` that of the angle between the ways. The rays draw
+// together as the length grows, so it is found by halving.
+float FocalLength(const std::array<float, 2> &a, const std::array<float, 2> &b, float cosine)
+{
+    float low = 16;
+    float high = 65536;
+    for (int step = 0; step < 40; ++step)
+    {
+        const float f = std::sqrt(low * high);
+        const float between = ((a[0] * b[0]) + (a[1] * b[1]) + (f * f)) /
+                              std::sqrt(((a[0] * a[0]) + (a[1] * a[1]) + (f * f)) * ((b[0] * b[0]) + (b[1] * b[1]) + (f * f)));
+        (between < cosine ? low : high) = f;
+    }
+    return std::sqrt(low * high);
+}
+
+// Tells the picture's last passes where the sun is in it, each frame, and
+// what colour its light is, for the air it lights and its shafts (grade.hlsl's
+// DaoAir, glow_shafts.hlsl): the look's SunHaze and Shafts. Nothing of the
+// camera is read but where it is: a point far off along a way in the world
+// is asked its place on the screen (dao::world::ToScreen), which is right
+// whatever camera draws, a conversation's too. Two such ways near the
+// picture's middle give its focal length; the way to the sun gives the sun's
+// place, or the way from it the place straight against the sun when the sun
+// is behind.
+void KeepAir()
+{
+    constexpr float kFar = 20000.0F; // metres: far enough that where the camera is does not matter
+    const float strength =
+        g_chosen < g_looks.size() ? std::max(ChosenValue("SunHaze"), ChosenValue("Shafts")) : 0.0F;
+    const std::optional<dao::atmosphere::Sunlight> sun = dao::atmosphere::AreaOwnSunlight();
+    const std::optional<dao::atmosphere::Sky> sky = dao::atmosphere::CurrentSky();
+    const std::optional<dao::world::ViewSize> size = dao::world::ScreenSize();
+    const dao::CClientExoApp *app = dao::CClientExoApp::Get();
+    const dao::GameModeController *modes = app != nullptr ? app->GameModes() : nullptr;
+    const dao::CameraController *controller = modes != nullptr ? modes->Camera() : nullptr;
+    const dao::SceneCamera *camera = controller != nullptr ? controller->Scene() : nullptr;
+    const float lit = sun && strength > 0 ? Daylight(*sun) : 0.0F;
+    if (lit <= 0 || !sky || !size || camera == nullptr || size->width <= 0 || size->height <= 0)
+    {
+        KeepQuietly(L"DaoSunRed", 0);
+        KeepQuietly(L"DaoSunGreen", 0);
+        KeepQuietly(L"DaoSunBlue", 0);
+        return;
+    }
+    const dao::Vector eye = camera->Position();
+    const std::array<float, 2> middle{static_cast<float>(size->width) / 2, static_cast<float>(size->height) / 2};
+    struct Seen
+    {
+        std::array<float, 3> way;
+        std::array<float, 2> at; // pixels from the middle
+        float off;
+    };
+    const auto see = [&](const std::array<float, 3> &way) -> std::optional<Seen> {
+        const std::optional<dao::world::ScreenPoint> point =
+            dao::world::ToScreen({eye.x + (kFar * way[0]), eye.y + (kFar * way[1]), eye.z + (kFar * way[2])});
+        if (!point || !point->inFront)
+        {
+            return std::nullopt;
+        }
+        const std::array<float, 2> at{point->x - middle[0], point->y - middle[1]};
+        return Seen{way, at, std::hypot(at[0], at[1])};
+    };
+    // The two of fourteen ways about that are drawn nearest the middle.
+    std::optional<Seen> first;
+    std::optional<Seen> second;
+    for (int x = -1; x <= 1; ++x)
+    {
+        for (int y = -1; y <= 1; ++y)
+        {
+            for (int z = -1; z <= 1; ++z)
+            {
+                const int axes = std::abs(x) + std::abs(y) + std::abs(z);
+                if (axes != 1 && axes != 3)
+                {
+                    continue;
+                }
+                const float length = std::sqrt(static_cast<float>(axes));
+                std::optional<Seen> seen = see({static_cast<float>(x) / length, static_cast<float>(y) / length,
+                                                static_cast<float>(z) / length});
+                if (seen && (!first || seen->off < first->off))
+                {
+                    second = first;
+                    first = seen;
+                }
+                else if (seen && (!second || seen->off < second->off))
+                {
+                    second = seen;
+                }
+            }
+        }
+    }
+    if (!first || !second || std::hypot(first->at[0] - second->at[0], first->at[1] - second->at[1]) < 8)
+    {
+        return; // nothing to tell the lens by this frame: the values stay
+    }
+    const float cosine = (first->way[0] * second->way[0]) + (first->way[1] * second->way[1]) +
+                         (first->way[2] * second->way[2]);
+    const float focal = FocalLength(first->at, second->at, cosine);
+    const std::array<float, 3> toSun{-sun->direction[0], -sun->direction[1], -sun->direction[2]};
+    std::optional<Seen> where = see(toSun);
+    float side = 1;
+    if (!where)
+    {
+        where = see({-toSun[0], -toSun[1], -toSun[2]});
+        side = -1;
+    }
+    if (!where)
+    {
+        return;
+    }
+    KeepQuietly(L"DaoSunX", std::clamp(where->at[0] / focal, -64.0F, 64.0F));
+    KeepQuietly(L"DaoSunY", std::clamp(where->at[1] / focal, -64.0F, 64.0F));
+    KeepQuietly(L"DaoSunSide", side);
+    KeepQuietly(L"DaoLensX", static_cast<float>(size->width) / focal);
+    KeepQuietly(L"DaoLensY", static_cast<float>(size->height) / focal);
+    KeepQuietly(L"DaoHazeThick", std::clamp(sky->fogIntensity, 0.0F, 1.0F));
+    KeepQuietly(L"DaoSunRed", lit * g_sunHeld * sun->color[0]);
+    KeepQuietly(L"DaoSunGreen", lit * g_sunHeld * sun->color[1]);
+    KeepQuietly(L"DaoSunBlue", lit * g_sunHeld * sun->color[2]);
 }
 
 // The current area's scene for the lights' chooser, which may be on another thread.
@@ -1803,10 +2185,14 @@ void ApplyLook()
         // in the back buffer's eight bits it would only dim what is nearly
         // white.
         const bool idle = value.key == "Highlights" && g_wideFormat == D3DFMT_UNKNOWN;
-        Keep(value.name, idle ? 0.0F : value.value, value.key);
+        if (value.key != "Exposure") // KeepSun's, by the area's sun
+        {
+            Keep(value.name, idle ? 0.0F : value.value, value.key);
+        }
     }
     Keep(kSmaa, g_smaa ? 1.0F : 0.0F, "Smaa");
-    KeepSun(ChosenValue("Sun"));
+    KeepSun(ChosenValue("Sun"), ChosenValue("SunOnFigures"), ChosenValue("Exposure"));
+    KeepSky(ChosenValue("Haze"), ChosenValue("Clouds"), ChosenValue("Clear"), ChosenValue("Sky"));
     KeepLookRegisters();
 }
 
@@ -1884,6 +2270,8 @@ extern "C" __declspec(dllexport) bool __cdecl DAOLib_Load(const dao::LoaderInfo 
     AddToOptions();
     dao::OnFrame(&LogLights);
     dao::OnFrame(&LogSunlight);
+    dao::OnFrame(&LogSky);
+    dao::OnFrame(&KeepAir);
     dao::OnFrame(&ApplyLook);
     dao::OnFrame(&KeepAreasScene);
     return true;

@@ -8,6 +8,8 @@ Markdown here is not hard-wrapped: one line per paragraph or list item.
 
 Looking good is the goal: more realistic lighting, better materials, better shadows and colours. **Vanilla is the "before" picture, not the target** (the user, 2026-10-11). Judge a frame by what is wrong in it (a black figure, orange hair, white skin), not by how far it is from vanilla. Improve on vanilla without swinging an area's brightness to an extreme. The unmodified game is called "vanilla", never "the game's own".
 
+The bar, since 2026-10-11: "something on the quality of a Minecraft visual overhaul" (the user, with a shader pack's before and after: a low sun, lit haze, soft shadows, bloom). The light probes were judged "good infra work" that "doesn't seem to make any significant visual difference"; what is wanted is "some kind of lighting overhaul to really make the scenes look realistic and punchy". `dev/NOTES.md`'s "Not done" has the steps in the order meant.
+
 ## Layout
 
 ```
@@ -40,6 +42,10 @@ A change DAOLib needs is asked of lib-agent, not made from here (one agent, one 
 Everything is 32-bit, as the game is. The shaders are rebuilt on every build from the installed game's `shaders.erf` (GOG's install, or `DAO_GAME_DIR`) with the Windows SDK's `fxc.exe`. Shaders are not reloaded while the game runs: a shader change needs a restart. `graphics.ini` is read again when it changes, so a look is tuned live.
 
 The game is driven through Eluvian (`.mcp.json`; `C:\project\DAOEluvianMCP\tools\eluvian_bridge.py --call game_launch ...`). One main game at a time, shared with other sessions: say so before launching, check for a running one, take the plugin out of `bin_ship\daolib\plugins` after. When turn-based-agent asks for a gap, close the game, take the plugin out, answer "gap", and start no game and no build until it says "done".
+
+Our game runs as a copy of its own, the named instance `elgara` (Eluvian's `game_instance`; since 2026-10-11, when the main copy was wanted elsewhere): its profile is `%LOCALAPPDATA%\DAOLib\instances\elgara\BioWare\Dragon Age` (logs, baked probes, and the saves the tours load, copied there by hand: Lyna's slots 16, 35, 86, 111, 347, 397, 400, 423, 468, 471, 480, 489, 491, 500 and Lyna2's 4), and its port is 8930 or the next free. The scratch scripts take both from `. build/scratch/elgara-env.sh`. A start of one copy can freeze another for some seconds: say so to whoever is timing something.
+
+A test deploys nothing: `game_launch` takes a `plugins` folder to load from in place of the game's, so the build's plugin and a copy of `eluvian\` are put in `build\stage\plugins` (`build\scratch\elgara-stage.sh`) and the game is started on that. Another session's copy of the game may be running beside ours (its own instance and port); only ours holds the staged files. Screenshots are taken with `source: window`: the game's own screenshot can crash it (an over-read in the engine, reported to DAOLib 2026-10-11). `build\scratch\elgara-tour.py` photographs a list of saves in several looks, `elgara-ab.py` the frame as it stands; a look is tried live as `Lighting only|Sun=2|SkyFogCap=0.4`.
 
 ## Checking the work
 

@@ -1,7 +1,7 @@
 """The game's own shaders, changed: what Elgara Shaders draws with.
 
     python shaders/build_shaders.py <folder to write to> [map size]
-        [show-occlusion] [no-smaa]
+        [show-occlusion] [show-glow] [no-smaa]
 
 Each shader is read from the game's shaders.erf, listed by fxc, turned into
 HLSL (tools/shader_hlsl.py), given a function of ours in place of or after
@@ -33,6 +33,13 @@ sharpness and their mirror colour by the angle it is seen at.
 The colours (grade.hlsl, GRADES). The game's colour grade reads the picture
 with its first `texld <r>, v<N>, s0`, which becomes DaoSharpen's reading of
 it, and DaoGrade has the last word on what the shader writes.
+
+The glow (glow_bright.hlsl, glow_blur.hlsl, glow_shafts.hlsl, glow_sum.hlsl).
+Seven passes of ours in the grade's chain before its own: what of the
+picture is brighter than its range holds, a quarter of its size; that spread
+across and down; spread again into a sixteenth of the size; how open the way
+to the sun is from each pixel, for shafts of light; and all of it made one
+picture the grade adds to its reading.
 
 It needs the game (tools/script_commands.py's GAME, or DAO_GAME_DIR) and
 fxc.exe of the Windows SDK; without either it says so and writes nothing.
@@ -400,8 +407,10 @@ def with_point_lights(shader):
 
 def with_our_grade(shader, occlusion=False, show=False):
     """Read the picture through DaoSharpen, and give DaoGrade the last word.
-    With `occlusion` the picture read is darkened by DaoOcclusion; with `show`
-    the right half of the screen is that darkening alone, to tune it by."""
+    With `occlusion` the picture read is darkened by DaoOcclusion and has the
+    glow added (the grade's own pass, which is given both; the fading form is
+    another chain's and is given neither); with `show` the right half of the
+    screen is that darkening alone, to tune it by."""
     read = shader.find(r"^texld\w* r\d+, v\d+, s0$")
     register, coordinate = re.match(
         r"texld\w* (r\d+), (v\d+),", shader.statements[read].asm
@@ -409,14 +418,20 @@ def with_our_grade(shader, occlusion=False, show=False):
     picture = next(
         p.name for p in shader.parameters.values() if p.set == "s" and p.base == 0
     )
-    colour = f"DaoSharpen({picture}, {coordinate}.xy)"
+    glow = (
+        f"DaoGlow({coordinate}.xy) + DaoAir({coordinate}.xy)" if occlusion else "0"
+    )
+    colour = f"DaoSharpen({picture}, {coordinate}.xy, {glow})"
     open_ = f"DaoOcclusion({coordinate}.xy)"
     if occlusion:
         colour += f" * {open_}"
     shader.replace(read, read, [f"{register} = float4({colour}, 1);"])
     shader.add_input("pixel", "float2", "VPOS")
     last = ["oC0.xyz = DaoGrade(oC0.xyz, input.pixel);"]
-    if occlusion and show:
+    if occlusion and show == "glow":
+        # The glow as it is kept, the square root of its light, whatever the look's Bloom.
+        last.append(f"if ({coordinate}.x > 0.5) oC0.xyz = tex2D(smpGlow, {coordinate}.xy).rgb;")
+    elif occlusion and show:
         last.append(f"if ({coordinate}.x > 0.5) oC0.xyz = {open_};")
     shader.insert(len(shader.statements) - 1, last)
 
@@ -424,12 +439,30 @@ def with_our_grade(shader, occlusion=False, show=False):
 # The look's values, each (its name in the chain, the pass that reads it,
 # what it is when no one sets it, the least and the most it may be). A shader
 # reads one as f<name>; a plugin sets one by its name on da_hsvmatrix
-# (dao/Framebuffer.h), which is how Graphics.cpp applies graphics.ini.
+# (dao/Framebuffer.h), which is how Graphics.cpp applies graphics.ini. A value
+# two passes read names both, with a + between.
 LOOK = [
     ("DaoSharpen", "grade", 0.6, 0, 1),
     ("DaoVibrance", "grade", 0.3, 0, 2),
     ("DaoContrast", "grade", 0.25, 0, 1),
     ("DaoHighlights", "grade", 0.0, 0, 1),
+    ("DaoExposure", "grade+glow", 0.0, -3, 3),
+    ("DaoRange", "grade+glow", 1.5, 1, 16),
+    ("DaoBloom", "grade", 0.0, 0, 4),
+    # The sun as the picture sees it and the air it lights (grade.hlsl's
+    # DaoAir): Graphics.cpp's to set each frame, and no look's.
+    ("DaoSunX", "grade+shafts+sum", 0.0, -64, 64),
+    ("DaoSunY", "grade+shafts+sum", 0.0, -64, 64),
+    ("DaoSunSide", "grade+shafts+sum", 0.0, -1, 1),
+    ("DaoLensX", "grade+shafts+sum", 1.0, 0, 64),
+    ("DaoLensY", "grade+shafts+sum", 1.0, 0, 64),
+    ("DaoHazeThick", "grade", 0.0, 0, 1),
+    ("DaoSunRed", "grade+sum", 0.0, 0, 64),
+    ("DaoSunGreen", "grade+sum", 0.0, 0, 64),
+    ("DaoSunBlue", "grade+sum", 0.0, 0, 64),
+    # And two that are a look's: how brightly the sun lights the air, and its shafts.
+    ("DaoSunHaze", "grade", 0.0, 0, 4),
+    ("DaoShafts", "sum", 0.0, 0, 8),
     ("DaoOcclusion", "occlusion", 1.0, 0, 6),
     ("DaoOcclusionRadius", "occlusion", 0.7, 0.1, 3),
 ]
@@ -446,7 +479,9 @@ def look_resources():
 def look_settings(reader):
     """The lines of a filter that hand one pass its values."""
     return "".join(
-        f"\n                f{name} = {name}" for name, by, *_ in LOOK if by == reader
+        f"\n                f{name} = {name}"
+        for name, by, *_ in LOOK
+        if reader in by.split("+")
     )
 
 
@@ -455,7 +490,7 @@ def look_parameters(reader):
     return [
         f'<Parameter Type="Float" Name="f{name}" Default="{value}"/>'
         for name, by, value, *_ in LOOK
-        if by == reader
+        if reader in by.split("+")
     ]
 
 
@@ -471,7 +506,12 @@ CHAIN_RESOURCES = """
         <target id="DaoOcclusionA" width="BACKBUFFER_WIDTH" height="BACKBUFFER_HEIGHT" format="A8R8G8B8" shared="true"/>
         <target id="DaoOcclusionB" width="BACKBUFFER_WIDTH" height="BACKBUFFER_HEIGHT" format="A8R8G8B8" shared="true"/>
         <float id="DaoAcross" value="0.0" range="0.0 1.0" />
-        <float id="DaoDown" value="1.0" range="0.0 1.0" />"""
+        <float id="DaoDown" value="1.0" range="0.0 1.0" />
+        <target id="DaoGlowA" width="BACKBUFFER_WIDTH/4" height="BACKBUFFER_HEIGHT/4" format="A8R8G8B8" shared="true"/>
+        <target id="DaoGlowB" width="BACKBUFFER_WIDTH/4" height="BACKBUFFER_HEIGHT/4" format="A8R8G8B8" shared="true"/>
+        <target id="DaoGlowC" width="BACKBUFFER_WIDTH/16" height="BACKBUFFER_HEIGHT/16" format="A8R8G8B8" shared="true"/>
+        <target id="DaoGlowD" width="BACKBUFFER_WIDTH/16" height="BACKBUFFER_HEIGHT/16" format="A8R8G8B8" shared="true"/>
+        <target id="DaoGlow" width="BACKBUFFER_WIDTH" height="BACKBUFFER_HEIGHT" format="A8R8G8B8" shared="true"/>"""
 
 # The four passes before the grade's own: the depth in metres, the occlusion
 # into A, blurred across into B, blurred down into A again.
@@ -505,6 +545,57 @@ CHAIN_FILTERS = """<filter id="Dao Depth" library="DAEffects" material="HSLMatri
                 run semantic DaoOcclusionBlur
             </filter>
 
+            <filter id="Dao Glow Bright" library="DAEffects" material="HSLMatrix">
+                Input       = BackBufferCopy
+{glow_look}
+                bind DaoGlowA at 0
+                run semantic DaoGlowBright
+            </filter>
+
+            <filter id="Dao Glow Across" library="DAEffects" material="HSLMatrix">
+                Glow        = DaoGlowA
+                fAxis       = DaoAcross
+                bind DaoGlowB at 0
+                run semantic DaoGlowBlur
+            </filter>
+
+            <filter id="Dao Glow Down" library="DAEffects" material="HSLMatrix">
+                Glow        = DaoGlowB
+                fAxis       = DaoDown
+                bind DaoGlowA at 0
+                run semantic DaoGlowBlur
+            </filter>
+
+            <filter id="Dao Glow Wide Across" library="DAEffects" material="HSLMatrix">
+                Glow        = DaoGlowA
+                fAxis       = DaoAcross
+                bind DaoGlowD at 0
+                run semantic DaoGlowBlur
+            </filter>
+
+            <filter id="Dao Glow Wide Down" library="DAEffects" material="HSLMatrix">
+                Glow        = DaoGlowD
+                fAxis       = DaoDown
+                bind DaoGlowC at 0
+                run semantic DaoGlowBlur
+            </filter>
+
+            <filter id="Dao Shafts" library="DAEffects" material="HSLMatrix">
+                Metres      = DaoDepthMetres
+{shafts_look}
+                bind DaoGlowB at 0
+                run semantic DaoShafts
+            </filter>
+
+            <filter id="Dao Glow Sum" library="DAEffects" material="HSLMatrix">
+                Glow        = DaoGlowA
+                GlowWide    = DaoGlowC
+                Shafts      = DaoGlowB
+{sum_look}
+                bind DaoGlow at 0
+                run semantic DaoGlowSum
+            </filter>
+
             """
 
 # The passes as the material knows them, drawn like the grade's own: a
@@ -535,6 +626,7 @@ METRES_PARAMETER = '<Parameter Type="Texture" Name="Metres" SamplerName="smpDept
 OCCLUSION_PARAMETER = (
     '<Parameter Type="Texture" Name="Occlusion" SamplerName="smpOcclusion" />'
 )
+GLOW_PARAMETER = '<Parameter Type="Texture" Name="Glow" SamplerName="smpGlow" />'
 
 # Our own pixel shaders, compiled as they are: the file here, and the name the
 # material asks for.
@@ -542,7 +634,30 @@ OURS = [
     ("occlusion_depth.hlsl", "daodepth.psh.fxo"),
     ("occlusion.hlsl", "daoocclusion.psh.fxo"),
     ("occlusion_blur.hlsl", "daoocclusionblur.psh.fxo"),
+    ("glow_bright.hlsl", "daoglowbright.psh.fxo"),
+    ("glow_blur.hlsl", "daoglowblur.psh.fxo"),
+    ("glow_shafts.hlsl", "daoshafts.psh.fxo"),
+    ("glow_sum.hlsl", "daoglowsum.psh.fxo"),
 ]
+
+# The state the glow's last pass is drawn with: a pass over the screen like
+# the game's own (hsvmatrixblend.sta.xml), reading three textures between
+# their texels where the game's reads one.
+GLOW_STATE = "DaoGlow.sta"
+GLOW_STATE_FILE = """<?xml version="1.0" encoding="UTF-8"?>
+<MaterialState Name="DaoGlow">
+  <DeviceState State="DS_CULLMODE" Value="CULL_NONE" />
+  <DeviceState State="DS_ZENABLE" Value="ZBUFFERENABLE_FALSE" />
+  <DeviceState State="DS_ZWRITEENABLE" Value="FALSE" />
+  <DeviceState State="DS_ALPHABLENDENABLE" Value="FALSE" />
+""" + "".join(
+    f"""  <SamplerState Stage="{stage}" State="SAMP_MINFILTER" Value="TEXFILT_LINEAR" />
+  <SamplerState Stage="{stage}" State="SAMP_MAGFILTER" Value="TEXFILT_LINEAR" />
+  <SamplerState Stage="{stage}" State="SAMP_ADDRESSU"  Value="TEXADD_CLAMP" />
+  <SamplerState Stage="{stage}" State="SAMP_ADDRESSV"  Value="TEXADD_CLAMP" />
+"""
+    for stage in range(3)
+) + "</MaterialState>\n"
 
 
 def with_our_passes(chain, material, antialias=True):
@@ -572,6 +687,8 @@ def with_our_passes(chain, material, antialias=True):
     chain = chain.replace(
         reads,
         f"Input       = {picture}\n                Occlusion   = DaoOcclusionA"
+        "\n                Glow        = DaoGlow"
+        "\n                Metres      = DaoDepthMetres"
         + look_settings("grade"),
         1,
     )
@@ -586,7 +703,10 @@ def with_our_passes(chain, material, antialias=True):
         chain,
         '<filter id="HSL Filter"',
         (smaa.CHAIN_FILTERS if antialias else "")
-        + CHAIN_FILTERS.replace("\n{occlusion_look}", look_settings("occlusion")),
+        + CHAIN_FILTERS.replace("\n{occlusion_look}", look_settings("occlusion"))
+        .replace("\n{glow_look}", look_settings("glow"))
+        .replace("\n{shafts_look}", look_settings("shafts"))
+        .replace("\n{sum_look}", look_settings("sum")),
         before=True,
     )
     # The picture's parameter comes four times: the grade's pass and its
@@ -601,7 +721,16 @@ def with_our_passes(chain, material, antialias=True):
             f"the game's material reads the picture {len(pieces) - 1} times, not 4"
         )
     values = "".join("\n            " + line for line in look_parameters("grade"))
-    pieces[1] = "\n            " + OCCLUSION_PARAMETER + values + pieces[1]
+    pieces[1] = (
+        "\n            "
+        + OCCLUSION_PARAMETER
+        + "\n            "
+        + GLOW_PARAMETER
+        + "\n            "
+        + '<Parameter Type="Texture" Name="Metres" SamplerName="smpMetres" />'
+        + values
+        + pieces[1]
+    )
     pieces[3] = values + pieces[3]
     material = picture_parameter.join(pieces)
     semantics = (
@@ -614,6 +743,31 @@ def with_our_passes(chain, material, antialias=True):
                 METRES_PARAMETER,
                 '<Parameter Type="Float" Name="fAxis" Default="0.0"/>',
             ],
+        )
+        + semantic(
+            "DaoGlowBright",
+            [
+                '<Parameter Type="Texture" Name="Input" SamplerName="smpPicture" />',
+                *look_parameters("glow"),
+            ],
+        )
+        + semantic(
+            "DaoGlowBlur",
+            [
+                GLOW_PARAMETER,
+                '<Parameter Type="Float" Name="fAxis" Default="0.0"/>',
+            ],
+        )
+        + semantic("DaoShafts", [METRES_PARAMETER, *look_parameters("shafts")])
+        + semantic(
+            "DaoGlowSum",
+            [
+                GLOW_PARAMETER,
+                '<Parameter Type="Texture" Name="GlowWide" SamplerName="smpGlowWide" />',
+                '<Parameter Type="Texture" Name="Shafts" SamplerName="smpShafts" />',
+                *look_parameters("sum"),
+            ],
+            GLOW_STATE,
         )
     )
     if antialias:
@@ -876,6 +1030,17 @@ def with_bounded_bloom(shader):
     shader.insert(len(shader.statements) - 1, ["oC0 = saturate(oC0);"])
 
 
+# The shaders of what burns: the effects' own (a fire, a spell, sparks; smoke
+# and dust too) and lava's.
+HOT = ("vfx0", "vfxchunky", "lava0")
+
+
+def with_hot_light(shader):
+    """Make what burns brighter than its picture (look.hlsl's DaoHot): the
+    last word on the colour the shader writes."""
+    shader.insert(len(shader.statements) - 1, ["oC0.xyz = DaoHot(oC0.xyz);"])
+
+
 def changes_for(stem, listing, map_size, show):
     """What this build changes in one of the game's pixel shaders: the
     functions that change it, and the HLSL they call."""
@@ -912,6 +1077,9 @@ def changes_for(stem, listing, map_size, show):
         preamble += ours("grade.hlsl")
     if stem in BLOOM_MASKS:
         changes.append(with_bounded_bloom)
+    if stem.startswith(HOT) and "ps_3_0" in listing:
+        changes.append(with_hot_light)
+        preamble += ours("look.hlsl")
     if stem in PROPS:
         changes.append(with_ambient_relief)
         preamble += ours("look.hlsl") + ours("bake.hlsl")
@@ -928,7 +1096,7 @@ def main(argv):
         return 2
     out = argv[0]
     map_size = int(argv[1]) if len(argv) > 1 else 1024
-    show = "show-occlusion" in argv
+    show = "glow" if "show-glow" in argv else "show-occlusion" in argv
     antialias = "no-smaa" not in argv
     data = os.path.join(script_commands.GAME, "packages", "core", "data")
     archive = os.path.join(data, "shaders.erf")
@@ -957,6 +1125,13 @@ def main(argv):
     )
     if antialias:
         smaa.write_files(out)
+    with open(
+        os.path.join(out, GLOW_STATE.lower() + ".xml"),
+        "w",
+        encoding="utf-8",
+        newline="",
+    ) as f:
+        f.write(GLOW_STATE_FILE)
     for name, text in (
         ("da_hsvmatrix.ffx.xml", chain),
         ("hslmatrix.mat.xml", material),
