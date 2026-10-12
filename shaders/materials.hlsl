@@ -1,47 +1,169 @@
-// What armour, clothing and weapons do with the light that glances off them.
-// Elgara Shaders puts this into the character shaders that build their
-// highlight the one common way (build_shaders.py's with_materials).
+// What a surface does with light: the standard model of a base colour, a
+// metalness and a roughness (Burley 2012; Karis 2013), read from the game's
+// own textures and from what each material says it is. Elgara Shaders puts
+// this into every shader that lights a surface the game's one common way:
+// bodies, armour, weapons, banners, props and a level's own surfaces
+// (build_shaders.py's with_materials).
 //
-// The game's highlight is pow(N.H, power) times 3, whatever the power, which
-// the specular mask's alpha sets from 1 to 256. A highlight that is narrower
-// gathers the same light into a smaller place and should be brighter by as
-// much; at a fixed 3, polished plate has a pinpoint no brighter than cloth's
-// wide sheen, so metal reads as plastic and cloth as wet. And the mirror
-// colour is the same seen face on as edge on, where every real surface
-// reflects more.
+// What the game has for a surface: its colour (the diffuse texture, tinted),
+// a "specular mask" whose colour it multiplies its highlights and its
+// reflection by and whose alpha is the highlight's power from 1 to 256, and
+// nothing that says whether the surface is metal. What the game does with
+// them is pow(N.H, power) times 3 for each light whatever the power, the
+// area's cube read by the power, the two summed and multiplied by the
+// mask's colour and by a falloff made at each vertex. A stone bench painted
+// with a mask of 0.8 mirrors as chrome does by that; it only never showed,
+// the cube being dim.
 //
-// DAO_MATERIALS (look.hlsl), 0 to 1, is how far towards the corrected forms:
-// 0 is vanilla. It wants the scene drawn into a 16-bit target with its
-// highlights rolled off (Graphics.cpp, grade.hlsl), and the plugin holds it
-// at 0 without one: in eight bits a highlight brighter than vanilla's runs
-// into white a channel at a time and washes gilded plate pale (seen close,
-// in a conversation, 2026-10-11).
+// What this does, and where each number is from:
+//
+// - Metalness is DATA: mml_fDaoMetal, a number the material says of itself,
+//   times a map of it, smpDaoMetal, where one texture is part metal and part
+//   not (data/materials.ini and tools/material_table.py; a material that
+//   says nothing is no metal). It was guessed here once, at each pixel from
+//   the mask's gloss and brightness, and every wrong guess was on the screen:
+//   a shield's painted face dark, a bench a mirror, gilt armour foil (the
+//   user, 2026-10-12: "shouldn't all this be driven by materials? are we
+//   just adding in hacks?").
+// - A surface that is no metal scatters its colour and mirrors a few parts
+//   in a hundred of what falls on it: a third of the mask's colour
+//   (kDaoMirrorOfMask). The mask says how shiny on the game's own scale, and
+//   the scale is measured: over the 638 masks of the game's stone, wood,
+//   cloth, leather and skin the median of a mask's brightness is 0.12 (0.13,
+//   0.13, 0.10, 0.11, 0.08 by class; tools/material_table.py's classes,
+//   counted 2026-10-12), and an ordinary surface that is no metal mirrors
+//   four parts in a hundred, so the one is taken for the other. It was 0.08
+//   times the mask first, the common reading of a "specular" input that is a
+//   half for an ordinary surface (Burley's and Unreal's), which these masks
+//   are not: stone then mirrored one part in a hundred and less, and the
+//   tower's hall was a third darker than by the game's formula.
+// - A metal scatters nothing and mirrors in its own colour, which is the
+//   surface's colour and the mask's together: the game paints a metal's
+//   colour into both (gilt's yellow in its diffuse texture, dragonbone's red
+//   in its mask's tint), and all a metal sends back, it sends back as a
+//   mirror does. Where the two together are more than all that falls on it
+//   (a sixth of the tower's iron gates), it is all of it, in their colour.
+// - Roughness is the highlight's power: alpha squared is 2 / (power + 2),
+//   the width at which a GGX lobe matches a Blinn-Phong lobe of that power
+//   (Walter et al. 2007). The lobe is the whole of it, so a narrow one is as
+//   bright as it is narrow. The cube is read at the mip that roughness
+//   blurs to (Lagarde and de Rousiers 2014).
+// - How much is mirrored grows towards the edge (Schlick 1994), at each
+//   pixel, in place of the game's falloff at each vertex. A light's
+//   highlight grows by the angle between the light and the eye (V.H), the
+//   surroundings' reflection by the eye's angle to the surface and by its
+//   roughness: the share of a cube a rough surface mirrors, as Karis fitted
+//   it (2014; his split sum of 2013, in two lines). The edge mirrors all
+//   that falls on it, but less where the mask says under two parts in a
+//   hundred face on, which no surface is: that is shade painted into the
+//   mask (Unreal's rule, 50 times the green). The edge was first one gain
+//   by N.V for lights and cube alike and "what the roughness leaves" for a
+//   rough surface: a lamp overhead then lit a floor seen at a low angle 75
+//   times too brightly and the cube four times, which was the tower's floor
+//   in white streaks (seen 2026-10-12, the floor's mask 0.08 and power 27).
+// - The power is made less where a pixel holds more ways for the surface
+//   to face than one: where the surface itself turns fast across the pixel
+//   (Kaplanyan et al. 2016; Tokuyoshi and Kaplanyan 2019), and where the
+//   pixel covers many texels of its normal map, by how far apart the map's
+//   normals are over a patch that size. That is measured from each normal
+//   map and said by the material (mml_vDaoBumps; tools/material_table.py's
+//   bumps). The game's normal maps keep two of a normal's three numbers, so
+//   their smaller pictures hold the mean way a patch faces and nothing of
+//   how its facets differ; without it a flagstone floor seen low was a
+//   smooth one in streaks, each pixel mirroring by whichever facet its
+//   middle fell on (the tower's, seen 2026-10-12, and gone with every pixel
+//   given the same width).
+//
+// DAO_MATERIALS (look.hlsl) is the look's switch: at 0, the Vanilla look,
+// every function here is the game's own arithmetic. It wants the scene drawn
+// into a 16-bit target with its highlights rolled off (Graphics.cpp,
+// grade.hlsl), and the plugin holds it at 0 without one.
 
-// The brightest a highlight's lobe is at its middle, in whites of the light:
-// a mirror's is past any picture, and what is past the picture's range is
-// only bloom.
-static const float kDaoHighlightMost = 6.0;
-static const float kDaoSharpestPower = 96.0;
+// What of the surroundings' reflection the surface last worked out sends to
+// the eye (DaoMirror): for the ambient share, which is of what a surface
+// really sends (look.hlsl's DaoShare; build_shaders.py's with_ambient_share).
+static float3 gDaoEnvSent = 0;
+float3 DaoEnvSent()
+{
+    return gDaoEnvSent;
+}
 
-// A light's highlight on a surface, in place of the game's pow(N.H, power):
-// the GGX lobe (Walter et al. 2007, Trowbridge and Reitz), which is what a
-// rough surface's highlight is shaped like, a bright middle with a long soft
-// skirt where the game's falls to nothing. Its width is the power's:
-// alpha squared is 2 / (power + 2), the width a Blinn-Phong lobe of that
-// power has. And it is the lobe whole, pi D / 4, so a narrower one is
-// brighter by as much as it is narrower: (power + 2) / 8 at its middle, which
-// is the game's 3 at a power of 22. The game's own tripling is taken off
-// where it joins the sum (DaoTripled).
+// What the material says it is (build_shaders.py's MATERIAL_PARAMETERS puts
+// both into the game's material definitions; a material object's own file
+// sets them).
+float mml_fDaoMetal;
+sampler2D smpDaoMetal;
+// And of its normal map: its width and height in texels, and then how far
+// apart its normals are, in the mean, over a patch 2 and 4 texels across;
+// over 8, 16, 32 and 64 in the second. Each is twice the larger of the two
+// spreads of the normals' x and y in the patch, which is what the patch adds
+// to the square of a lobe's width.
+float4 mml_vDaoBumps;
+float4 mml_vDaoBumpsFar;
+
+// What a surface that is no metal mirrors face on, of its mask's colour.
+static const float kDaoMirrorOfMask = 0.04 / 0.12;
+
+// How much of the surface at `uv` is metal, 0 to 1.
+float DaoMetal(float2 uv)
+{
+    return saturate(mml_fDaoMetal * tex2D(smpDaoMetal, uv).g) * saturate(DAO_MATERIALS);
+}
+
+// What the normal map at `uv` adds to the square of a lobe's width: the
+// spread of its normals over as many texels as the pixel covers the long
+// way, between the patches the material has the measure of. Nothing where
+// a texel is a pixel or more, and nothing for a material that says nothing.
+float DaoBumps(float2 uv)
+{
+    const float2 across = ddx(uv) * mml_vDaoBumps.xy;
+    const float2 down = ddy(uv) * mml_vDaoBumps.xy;
+    const float texels = sqrt(max(dot(across, across), dot(down, down)));
+    const float level = min(log2(max(texels, 1.0)), 6.0);
+    const float2 near = saturate(1 - abs(level - float2(1, 2)));
+    const float4 far = saturate(1 - abs(level - float4(3, 4, 5, 6)));
+    return dot(near, mml_vDaoBumps.zw) + dot(far, mml_vDaoBumpsFar);
+}
+
+// The power a surface's highlights and its reflection are made by: its own,
+// less where a pixel holds more ways for the surface to face than the one
+// its middle has, since what it mirrors is all of them, a wider lobe. Two
+// things widen it. One is how fast the normal the pixel is lit by turns
+// from this pixel to the next (`normal`, with its normal map): the paper's
+// measure, half the turn's square, for a pixel's footprint a half across
+// each way. The other is what the pixel cannot see at all, the map's
+// normals inside it where it covers many texels (`bumps`: DaoBumps). 0.18
+// of the width at the most, for both together.
+//
+// Where a texel is a pixel or more, nothing is added for the map: what it
+// says there is seen, not averaged. A shield's rim in the sun shows its
+// normal map's packing so, in dashes along a bevel two texels wide (DXT5:
+// blocks of four texels by four), in the unmodified game too. A lobe
+// widened by the spread of the map's normals two texels to each side hid
+// them (tried 2026-10-12) and was taken out again: it measured the bevel
+// itself and not the packing's error, and made every embossed surface
+// rougher than its material says (the user: "is the highlight spreading the
+// correct fix for the marching ants or just a hack?"). The fault is the
+// data's, and the mending is the data's.
+float DaoCalmed(float power, float3 normal, float bumps)
+{
+    const float3 across = ddx(normal);
+    const float3 down = ddy(normal);
+    const float turns = min(0.5 * (dot(across, across) + dot(down, down)) + bumps, 0.18);
+    const float width = min(2 / (power + 2) + turns, 1.0);
+    return lerp(power, max(2 / width - 2, 1.0), saturate(DAO_MATERIALS));
+}
+
+// A light's highlight, in place of the game's pow(N.H, power): the GGX lobe
+// of that width, whole (D over four, in the game's own measure of a light,
+// by which a white light makes a white surface facing it white). It is 3,
+// the game's own number, at a power of 22. `facing` is N.H.
 float DaoLobe(float facing, float power)
 {
     const float theirs = pow(facing, power);
-    // No narrower than a power of 96 makes it: a blade's bevel is painted at
-    // a gloss of 1 a texel wide, and a lobe that narrow is on one pixel and
-    // off the next along the edge, dashes that crawl as the blade moves (the
-    // user, 2026-10-12: "it's like a marching ants effect").
-    const float width = 2 / (min(power, kDaoSharpestPower) + 2);
+    const float width = 2 / (power + 2);
     const float under = facing * facing * (width - 1) + 1;
-    const float ours = facing > 0 ? min(width / (4 * under * under), kDaoHighlightMost) : 0;
+    const float ours = facing > 0 ? width / (4 * under * under) : 0;
     return lerp(theirs, ours, saturate(DAO_MATERIALS));
 }
 
@@ -52,201 +174,95 @@ float DaoTripled()
     return lerp(3.0, 1.0, saturate(DAO_MATERIALS));
 }
 
-// The game's own falling off of a surface's mirror light by the angle it is
-// seen at, made at each vertex with the vertex's normal (0.39 face on to 1.5
-// edge on, for nearly every material: read 2026-10-12): left out, DaoFresnel
-// being that at each pixel with the pixel's normal.
+// The game's own falloff of the mirrored light by the angle, made at each
+// vertex: left out, DaoMirror's being that at each pixel.
 float DaoFalloff(float theirs)
 {
     return lerp(theirs, 1.0, saturate(DAO_MATERIALS));
 }
 
-// How much a surface is metal, 0 to 1. The game's textures have no map that
-// says so, and two that between them do: the specular mask's alpha, the
-// gloss, and its colour, the mirror colour. Measured pixel by pixel over the
-// game's armour (2026-10-12): two fifths of plate's pixels have a gloss over
-// 0.2 with a mirror colour over 0.2, a seventh of mail's and scale's and a
-// tenth of leather's and cloth's. There is no clean line between them, so
-// it is a matter of degree, and a material it is wrong for wants saying so
-// itself.
-// (Wide, since the user's first look, 2026-10-12: from 0.15 to 0.40 and 0.15
-// to 0.35 a suit's pixels were metal or not by the mask's own grain, one dark
-// and mirroring beside one painted, and the surface crawled: "lots of dark
-// flickering on the surface".)
-static const float kDaoMetalGlossFrom = 0.10;
-static const float kDaoMetalGlossTo = 0.55;
-static const float kDaoMetalMirrorFrom = 0.10;
-static const float kDaoMetalMirrorTo = 0.50;
-// How much less light a full metal scatters: it has no colour of its own to
-// scatter, its colour is the colour of what it mirrors. The game gives gilded
-// plate a bright yellow of its own under a soft highlight, which is how
-// plastic is lit (the user, 2026-10-11: "looks like yellow plastic ... it's
-// supposed to be metallic gold"). Half, not the quarter it was: the game's
-// metals are painted, their dents and dirt and trim are in the colour they
-// scatter, and at a quarter a suit lost them.
-// (A fifth for a surface sure to be metal was tried for an hour, and was
-// tin foil: "let's have the metal take more of its base color, so it doesn't
-// look tin-foil", the user, 2026-10-12. The game's metals are coloured, red
-// steel and gilt and silverite, and that colour is in what they scatter.)
-static const float kDaoMetalScatters = 0.8;
-// How far a metal's mirror colour takes the hue of what it scatters, which
-// is what a coloured metal's does.
-static const float kDaoMetalOwnHue = 0.85;
-// And how much more it mirrors than it is painted to: the mirror colours are
-// dim, plate's a fifth to two fifths where steel's is over a half.
-static const float kDaoMetalMirrors = 1.25;
-
-// How far a colour is from grey, 0 to 1.
-float DaoColoured(float3 colour)
-{
-    const float most = max(colour.r, max(colour.g, colour.b));
-    return (most - min(colour.r, min(colour.g, colour.b))) / max(most, 1e-3);
-}
-
-// `own` is the colour the surface scatters, which says what the mask cannot:
-// paint. A shield's arms are lacquered, glossy and bright in the mask as
-// plate is, and taken for metal the white of its field went dark and its
-// lions dull (seen in Redcliffe, 2026-10-12). Paint is a colour the mirror
-// colour does not share (a gilded thing mirrors its own yellow; a painted
-// one mirrors grey), or a white brighter than a metal is painted.
-float DaoMetal(float3 mirror, float power, float3 own)
-{
-    const float bright = max(mirror.r, max(mirror.g, mirror.b));
-    const float painted = max(saturate((DaoColoured(own) - DaoColoured(mirror) - 0.1) * 4),
-                              smoothstep(0.55, 0.8, max(own.r, max(own.g, own.b))));
-    return DAO_MATERIALS * smoothstep(kDaoMetalGlossFrom, kDaoMetalGlossTo, power / 256) *
-           smoothstep(kDaoMetalMirrorFrom, kDaoMetalMirrorTo, bright) * (1 - painted);
-}
-
-// What the light a surface scatters is multiplied by.
+// What the light a surface scatters is multiplied by: a metal scatters none.
 float DaoScattered(float metal)
 {
-    return lerp(1.0, kDaoMetalScatters, saturate(metal));
+    return 1 - saturate(metal);
+}
+
+// A cube of the area's as light. In a level lit again it is one of ours, in
+// real light and kept as the lightmaps are: the square root of the light's
+// share of kDaoCubeMost (Relighter.cpp's WriteCubes; LevelFiles.h's
+// kCubeMost). The game's own is eight bits of a picture, taken as it is.
+static const float kDaoCubeMost = 64.0;
+float3 DaoCubeLight(float3 stored)
+{
+    return lerp(stored, stored * stored * kDaoCubeMost, saturate(DAO_RELIT));
+}
+
+// What a cube of ours is multiplied by where a surface mirrors it: the
+// light that falls where the surface is (`local`: a level's baked light
+// there, a figure's or a prop's probe light). A cube of ours is counted in
+// the light that falls on what it sees, colour by colour (Relighter.cpp's
+// CubeFrom, which has why), so the reflection is as bright as the place and
+// in its light, not as the spot the cube was taken at. The game's own cube
+// is taken as it is.
+float3 DaoLocal(float3 local)
+{
+    return lerp(1.0, max(local, 0), saturate(DAO_RELIT));
 }
 
 // The surroundings a surface mirrors, from the area's cube: `way` is where
-// the reflection goes and, in w, the mip the game would read, nine times
-// what the gloss lacks of 1. The cube is a picture of the room from where
-// its probe stands, 256 pixels a face (read 2026-10-12: its walls, windows
-// and lamps are all there), and the game reads plate, whose gloss is a fifth
-// to a half, at its seventh mip of nine: two pixels a face, one flat colour,
-// which is why its metal has nothing in it to be metal by. So a glossy
-// surface reads it sharper, by the square of what the gloss lacks (plate
-// from the fifth mip to the second), and what it reads is set further from
-// the room's mean than the picture has it: the cube is eight bits and a lamp
-// in it is no brighter than a white wall, where to a mirror it is many times
-// so. Sharper and further apart than this (the cube of what it lacks, two and
-// a half times apart) every dent of the normal map read another part of the
-// room, dark beside bright, and the armour crawled as it moved.
-static const float kDaoCubeMips = 8.0;
-// The sharpest it is read, whatever the gloss: its fourth mip, 32 pixels a
-// face. A helm's dome painted at a gloss of 1 read the cube whole, and was a
-// picture of the room so clear that it looked like glass (the user,
-// 2026-10-12: "cailan's helmet looks transparent for some reason"). The cube
-// is one picture from one place, good for the light and dark of a room and
-// not for its image.
-static const float kDaoCubeSharpest = 3.0;
-static const float kDaoMirrorApart = 1.25;
-
-// In a level lit again (DAO_RELIT) the cube is the relighter's own, of the
-// level as its lightmaps have it, and kept as they are: the square root of
-// the light's share of kDaoRelitMost whites, a lamp in it as bright as the
-// file can say (Relighter.cpp's WriteCubes; issue 9, 2026-10-12). It is
-// brought back to light here, whatever DAO_MATERIALS is, the file being ours
-// in every look; and being real light already it is not set apart from its
-// mean. It is 128 pixels a face where vanilla's is 256, so the same mip is
-// half as sharp: the fourth is 16 pixels a face.
-float3 DaoCubeLight(float3 stored)
-{
-    return lerp(stored, stored * stored * kDaoRelitMost, saturate(DAO_RELIT));
-}
-
+// the reflection goes and, in w, the mip the game would read. Ours is the
+// mip a surface of that roughness blurs the cube to: the cube's last mip
+// times r (2 - r), r the square root of the lobe's width alpha (Lagarde and
+// de Rousiers 2014). The game's cubes are 256 pixels a face, their last mip
+// the eighth; ours are 128, a mip fewer.
 float4 DaoReflected(samplerCUBE cube, float4 way, float power)
 {
-    const float much = saturate(DAO_MATERIALS);
-    const float gloss = saturate((power - 1) / 255);
-    const float lacks = 1 - gloss;
-    float4 seen = texCUBElod(cube, float4(way.xyz, lerp(way.w, max(kDaoCubeMips * lacks * lacks, kDaoCubeSharpest), much)));
+    const float rough = sqrt(sqrt(2 / (power + 2)));
+    const float last = 8 - saturate(DAO_RELIT);
+    float4 seen = texCUBElod(cube, float4(way.xyz, lerp(way.w, last * rough * (2 - rough), saturate(DAO_MATERIALS))));
     seen.rgb = DaoCubeLight(seen.rgb);
-    const float3 mean = DaoCubeLight(texCUBElod(cube, float4(way.xyz, kDaoCubeMips - 1)).rgb);
-    const float apart = lerp(1.0, kDaoMirrorApart, smoothstep(0.1, 0.4, gloss) * much * (1 - saturate(DAO_RELIT)));
-    // Its brightness is set apart, not its colour: with the colours set
-    // apart too, gilded plate under a blue sky wore patches of green and
-    // cyan (seen in Redcliffe, 2026-10-12).
-    const float was = dot(seen.rgb, float3(0.2126, 0.7152, 0.0722));
-    const float room = dot(mean, float3(0.2126, 0.7152, 0.0722));
-    seen.rgb *= max(room + (was - room) * apart, 0) / max(was, 1e-4);
     return seen;
 }
 
-// The mirror colour as seen at an angle (Schlick 1994): `colour` face on,
-// and edge on more, by the surface's polish. `facing` is N.V, 1 face on;
-// `power` the highlight's, whose share of 256 is the polish.
-//
-// Edge on it is no white mirror, as the formula has it for a perfect
-// surface: it is two fifths at most and in the mirror colour's own hue. A
-// helm's dome and a blade's bevel are painted at a gloss of 1, and with a
-// white mirror at their edges the side of the dome that turned from the eye
-// was a clear picture of the sky where the sun did not reach it, with a hard
-// edge where the sun began (the user, 2026-10-12: "cailan's helmet looks
-// transparent", and of a sword, "only looks bad when viewed from sharp
-// angle"). Found by taking the change out of the shaders a few at a time:
-// the patch is the unlit side of the dome, and what was seen there was the
-// reflection alone.
-static const float kDaoEdgeMost = 0.4;
-
-float3 DaoFresnel(float3 colour, float facing, float power)
+// How far towards its edge's mirroring a light's highlight is: Schlick's
+// weight. `along` is V.H, the same as L.H.
+float DaoEdge(float along)
 {
-    const float edge = pow(1 - saturate(facing), 5);
-    const float polish = min(saturate(power / 256), kDaoEdgeMost);
-    const float bright = max(colour.r, max(colour.g, colour.b));
-    const float3 rim = max(colour, colour * (polish / max(bright, 1e-3)));
-    return colour + (rim - colour) * edge * saturate(DAO_MATERIALS);
+    return pow(1 - saturate(along), 5);
 }
 
-// What a level's own surface mirrors of its room, in a level lit again: two
-// fifths. The cube there is ours and in real light, its windows and flames
-// many times white, and a wall's or a floor's mirror colour was painted for
-// vanilla's dim eight-bit cube under a falloff that left two fifths of it
-// face on (DaoFalloff): with all of it the tower's hall was a quarter
-// brighter, a sheen on every flagstone (mean 0.105 to 0.131, seen
-// 2026-10-12), in a level the user had set to their liking as it was. A
-// figure's armour takes the cube whole: that is where it is wanted.
-static const float kDaoRoomMirror = 0.4;
-
-float DaoRoomMirrored()
+// The share of its surroundings a surface of roughness `rough` mirrors, seen
+// at `facing` (N.V): x times what it mirrors face on, plus y times what it
+// mirrors at its edge. Karis's fit (2014) of the split sum's second half,
+// its numbers as he gives them.
+float2 DaoSurround(float rough, float facing)
 {
-    return lerp(1.0, kDaoRoomMirror, saturate(DAO_RELIT));
+    const float4 byRough = float4(-1, -0.0275, -0.572, 0.022);
+    const float4 smooth = float4(1, 0.0425, 1.04, -0.04);
+    const float4 fit = rough * byRough + smooth;
+    const float part = min(fit.x * fit.x, exp2(-9.28 * facing)) * fit.x + fit.y;
+    return float2(-1.04, 1.04) * part + fit.zw;
 }
 
 // The light a surface mirrors: the lights' highlights and the surroundings'
-// reflection (`env`, from the area's cubemap), through the mirror colour.
-// A metal has more of that than it is painted with, in the same hue (a
-// mirror colour scaled past white went white, and gilt was foil), and it
-// takes the hue of `own`, the colour the surface scatters.
-float3 DaoSpecular(float3 lights, float3 env, float3 colour, float metal, float facing, float power, float3 own)
+// reflection, through what the surface mirrors face on (`mirror`, the mask's
+// colour, and `own`, the surface's colour, by how much it is metal) and more
+// towards its edge. `facing` is N.V, the surface's own and not its normal
+// map's where the two are told apart (with_materials has why); `edge` is the
+// lights' own weight
+// towards the edge, DaoEdge's, the mean of it over the lights by their
+// lobes (the lights are summed before this is reached; with one light, or
+// lights the same way off, the mean is the thing itself).
+float3 DaoMirror(float3 lights, float3 env, float3 mirror, float3 own, float metal, float facing, float power,
+                 float edge)
 {
-    const float sure = saturate(metal);
-    const float bright = max(colour.r, max(colour.g, colour.b));
-    float3 mirror = colour * min(lerp(1.0, kDaoMetalMirrors, sure), 1 / max(bright, 1e-3));
-    // By how bright the mirror colour is, not by how sure the metal: a
-    // gilded pauldron the telling was unsure of mirrored a white sky in grey
-    // and was silver, where a mirror colour that bright is a metal's whatever
-    // its gloss (seen in Redcliffe, 2026-10-12).
-    // Unless the mirror colour has a hue of its own, which is then the
-    // metal's: dragonbone plate's red is in its mirror colour (an armour's
-    // tint gives it one) over a dull brown, and given the brown's hue its
-    // red went, twice over (the user, 2026-10-12, after the first try:
-    // "reflection seems same to me").
-    const float3 ownHue = own / max(max(own.r, max(own.g, own.b)), 1e-3);
-    const float3 hue = lerp(ownHue, colour / max(bright, 1e-3), saturate(DaoColoured(colour) * 4));
-    // And by its gloss as much as by its mirror colour: dragonbone plate is
-    // a wine red with a dim grey mirror colour and a high gloss, and what it
-    // mirrored it mirrored grey, a steel suit with red beads (the user,
-    // 2026-10-12: "the metal can / should reflect light more in accordance
-    // w/ its base color").
-    const float glossy = smoothstep(0.1, 0.4, saturate(power / 256));
-    const float tinted = kDaoMetalOwnHue * max(smoothstep(0.08, 0.3, bright), glossy) * saturate(DAO_MATERIALS);
-    mirror = lerp(mirror, hue * max(mirror.r, max(mirror.g, mirror.b)), tinted);
-    return (lights + env) * DaoFresnel(mirror, facing, power);
+    const float3 theirs = (lights + env) * mirror;
+    const float3 both = own + mirror;
+    const float3 asMetal = both / max(1.0, max(both.r, max(both.g, both.b)));
+    const float3 faceOn = lerp(kDaoMirrorOfMask * mirror, asMetal, saturate(metal));
+    const float edgeOn = saturate(50 * faceOn.g);
+    const float2 share = DaoSurround(sqrt(sqrt(2 / (power + 2))), saturate(facing));
+    const float3 sent = env * (faceOn * share.x + edgeOn * share.y);
+    gDaoEnvSent = lerp(env * mirror, sent, saturate(DAO_MATERIALS));
+    return lerp(theirs, lights * (faceOn + (edgeOn - faceOn) * saturate(edge)) + sent, saturate(DAO_MATERIALS));
 }

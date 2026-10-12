@@ -2699,10 +2699,19 @@ void BringToSurfaces(Scene &scene, const Painted &painted, std::span<const CubeA
 // pictures; and what an area places in a level, which the level's rooms do
 // not have: no door's leaf and no chest is among the models the tower's
 // rooms place.
-Colour SeenAlong(const Scene &scene, std::uint32_t room, const core::Point &from, const core::Point &way,
-                 const Options &options)
+struct Sight
 {
     Colour seen{};
+    Colour falls{};      // the light that falls where the ray lands, as the lightmap has it
+    bool landed = false; // whether it landed on a lightmap at all
+};
+
+Sight SeenAlong(const Scene &scene, std::uint32_t room, const core::Point &from, const core::Point &way,
+                const Options &options)
+{
+    Colour seen{};
+    Colour falls{};
+    bool landed = false;
     const std::optional<Landing> landing = Cast(scene, room, from, way, std::numeric_limits<float>::infinity());
     if (landing)
     {
@@ -2720,15 +2729,17 @@ Colour SeenAlong(const Scene &scene, std::uint32_t room, const core::Point &from
                 landing->room < scene.sends.size() && landing->hit.triangle < scene.sends[landing->room].size();
             const Colour sends = painted ? scene.sends[landing->room][landing->hit.triangle]
                                          : Colour{options.surfaces, options.surfaces, options.surfaces};
+            landed = true;
             for (std::size_t channel = 0; channel < 3; ++channel)
             {
-                seen.at(channel) = sends.at(channel) * (lit.at(channel) + (options.kept * own.at(channel)));
+                falls.at(channel) = lit.at(channel) + (options.kept * own.at(channel));
+                seen.at(channel) = sends.at(channel) * falls.at(channel);
             }
         }
     }
     if (!scene.shining.tree)
     {
-        return seen;
+        return {seen, falls, landed};
     }
     // What glows, where it is the first thing in the ray's way: a glowing
     // thing that is lightmapped too, a crystal, is at the landing itself.
@@ -2737,12 +2748,12 @@ Colour SeenAlong(const Scene &scene, std::uint32_t room, const core::Point &from
     const std::optional<core::RayHit> shines = scene.shining.tree->Cast(from, way, 1e-3F, within);
     if (!shines)
     {
-        return seen;
+        return {seen, falls, landed};
     }
     const Glowing &glow = scene.glows[scene.shining.glow[shines->triangle]];
     if (!glow.sky)
     {
-        return glow.colour;
+        return {glow.colour, falls, landed};
     }
     // The sky through a window is seen from the room alone, and by how far
     // the way to it is upward, as it lights (Glowed): the sky sends its
@@ -2753,7 +2764,7 @@ Colour SeenAlong(const Scene &scene, std::uint32_t room, const core::Point &from
     {
         seen.at(channel) = std::max(seen.at(channel), sends * glow.colour.at(channel));
     }
-    return seen;
+    return {seen, falls, landed};
 }
 
 // How much of a texel a lamp's disc covers: all of it within the disc, the
@@ -2768,16 +2779,45 @@ float Covered(float between, float wide, float texel)
     return edge * std::min(1.0F, (wide * wide) / (texel * texel));
 }
 
-// The picture of the level all round a place: six faces of `side` texels
-// each way, face by face and row by row, each texel the light seen along
-// the way out through its middle, with the lamps in sight drawn over it.
-std::vector<Colour> CubeFrom(const Scene &scene, std::uint32_t room, const core::Point &from, std::uint32_t side,
-                             std::span<const LampSeen> lamps, const Options &options)
+// The picture of the level all round a place, and the light it is counted in.
+struct Cube
+{
+    std::vector<Colour> texels; // six faces of `side` each way, face by face and row by row
+    // The light that falls on what the picture sees, in the mean over all
+    // the ways out of its middle that land on a lightmap, each colour by
+    // itself; 1 where none does, or no light.
+    Colour falls{1, 1, 1};
+};
+
+// The picture of the level all round a place: each texel the light seen
+// along the way out through its middle, with the lamps in sight drawn over
+// it, counted in the light that falls on what the picture sees (Cube::falls):
+// a wall lit as the picture's walls are in the mean, and white, is 1.
+//
+// Counted so because a level has a cube or two and a surface mirrors its
+// cube wherever it is: a gate in a dark corner mirrored the lit middle of
+// its hall, and a floor in shade the hall's windows (seen 2026-10-12). The
+// shader has the light that falls where the surface is, its lightmap's or a
+// figure's probe's, and multiplies the cube by it (materials.hlsl's
+// DaoLocal): the reflection is then the cube's picture, as bright as the
+// place. It is what an engine with baked light does with a cube taken at
+// one spot (Unreal's reflection captures, by the lightmap's brightness).
+// Here each colour is counted by itself, so the reflection is in the
+// place's light too: by brightness alone an iron gate with a candle before
+// it mirrored the hall's cold windows, dimly, and nothing of the candle
+// (seen 2026-10-12).
+Cube CubeFrom(const Scene &scene, std::uint32_t room, const core::Point &from, std::uint32_t side,
+              std::span<const LampSeen> lamps, const Options &options)
 {
     std::vector<Colour> cube(std::size_t{side} * side * 6);
+    std::vector<Colour> fell(cube.size());
+    std::vector<char> landed(cube.size(), 0);
     ForEach(cube.size(), [&](std::size_t i) {
         const auto [way, out] = TexelOf(i, side);
-        Colour seen = SeenAlong(scene, room, from, way, options);
+        const Sight sight = SeenAlong(scene, room, from, way, options);
+        Colour seen = sight.seen;
+        fell[i] = sight.falls;
+        landed[i] = sight.landed ? 1 : 0;
         // The angle of a round as large as the texel is (CubeTexel::out).
         const float texel =
             (2 / static_cast<float>(side)) / std::sqrt(std::numbers::pi_v<float> * out * std::sqrt(out));
@@ -2793,14 +2833,47 @@ std::vector<Colour> CubeFrom(const Scene &scene, std::uint32_t room, const core:
         }
         cube[i] = seen;
     });
-    return cube;
+    // The mean, each texel by how much of all round it is (CubeTexel::out).
+    std::array<double, 3> light{};
+    double round = 0;
+    for (std::size_t i = 0; i < cube.size(); ++i)
+    {
+        if (landed[i] != 0)
+        {
+            const double out = TexelOf(i, side).out;
+            const double share = 1 / (out * std::sqrt(out));
+            for (std::size_t channel = 0; channel < 3; ++channel)
+            {
+                light.at(channel) += share * double{fell[i].at(channel)};
+            }
+            round += share;
+        }
+    }
+    constexpr double kNoLight = 1e-4;
+    Colour falls{1, 1, 1};
+    for (std::size_t channel = 0; channel < 3; ++channel)
+    {
+        if (round > 0 && light.at(channel) / round > kNoLight)
+        {
+            falls.at(channel) = static_cast<float>(light.at(channel) / round);
+        }
+    }
+    for (Colour &texel : cube)
+    {
+        for (std::size_t channel = 0; channel < 3; ++channel)
+        {
+            texel.at(channel) /= falls.at(channel);
+        }
+    }
+    return {std::move(cube), falls};
 }
 
 // A cube's picture as a DDS file as the game's own cubes are (read
 // 2026-10-12: textures.erf's bad_cubemap.dds, 32 bits and not packed, and a
 // level's own, DXT1): the header, then each face's pictures from the largest
 // to one texel, the faces in Direct3D's order. Each smaller picture is the
-// mean of the light, and is then kept as the lightmaps are (DdsOf).
+// mean of the light, and is then kept as the lightmaps are (DdsOf), of
+// kCubeMost.
 std::vector<std::byte> DdsOfCube(const std::vector<Colour> &cube, std::uint32_t side)
 {
     const auto pictures = static_cast<std::uint32_t>(std::bit_width(side));
@@ -2838,7 +2911,7 @@ std::vector<std::byte> DdsOfCube(const std::vector<Colour> &cube, std::uint32_t 
                 for (const std::size_t channel : {std::size_t{2}, std::size_t{1}, std::size_t{0}})
                 {
                     file.push_back(static_cast<std::byte>(
-                        NearestByte(std::sqrt(std::clamp(pixel.at(channel) / kRelitMost, 0.0F, 1.0F)) * 255.0F)));
+                        NearestByte(std::sqrt(std::clamp(pixel.at(channel) / kCubeMost, 0.0F, 1.0F)) * 255.0F)));
                 }
                 file.push_back(std::byte{255});
             }
@@ -3027,7 +3100,8 @@ void WriteCubes(const Scene &scene, std::span<const CubeAt> cubes, std::uint32_t
     for (const CubeAt &at : cubes)
     {
         const std::vector<LampSeen> lamps = LampsSeenFrom(scene, at.room, at.at, options);
-        const std::vector<Colour> cube = CubeFrom(scene, at.room, at.at, side, lamps, options);
+        const Cube made = CubeFrom(scene, at.room, at.at, side, lamps, options);
+        const std::vector<Colour> &cube = made.texels;
         const std::vector<std::byte> bytes = DdsOfCube(cube, side);
         std::ofstream stream(out / at.file, std::ios::binary);
         stream.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
@@ -3048,9 +3122,10 @@ void WriteCubes(const Scene &scene, std::span<const CubeAt> cubes, std::uint32_t
             most = std::max(most, luma);
         }
         spdlog::info("relight: {}: the cube {} from {:.2f} {:.2f} {:.2f}, room {}: {} of {} lamps in sight, "
-                     "its light {:.3f} in the mean and {:.1f} at the most",
+                     "the light on what it sees {:.3f} {:.3f} {:.3f} in the mean; counted in that, its own {:.3f} in "
+                     "the mean and {:.1f} at the most",
                      name, Text(at.file), at.at[0], at.at[1], at.at[2], Text(ids[at.room]), lamps.size(),
-                     scene.lamps.size(), mean, most);
+                     scene.lamps.size(), made.falls[0], made.falls[1], made.falls[2], mean, most);
     }
 }
 

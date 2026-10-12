@@ -53,6 +53,11 @@ inline constexpr std::size_t kNodesDeep = 64;
 // it, look.hlsl's kDaoRelitMost reads it): what is stored is the square root
 // of the light's share of this.
 inline constexpr float kRelitMost = 8.0F;
+// The most a reflection cube of our own holds (Relighter.cpp's WriteCubes
+// writes it, materials.hlsl's kDaoCubeMost reads it), kept as a lightmap's
+// light is. A cube's light is counted in the light that falls, in the mean,
+// on what the cube sees, and a flame is some tens of times a wall beside it.
+inline constexpr float kCubeMost = 64.0F;
 // And for what it says of a lamp, and a model's tree of a mesh's material.
 inline constexpr std::uint32_t kMaterial = 6001;   // MMHMaterialObject
 inline constexpr std::uint32_t kMeshChunk = 6006;  // the chunk of the mesh file a node draws

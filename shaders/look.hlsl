@@ -46,30 +46,16 @@ float3 DaoCut(float3 colour)
 // beside it still has steps fine enough (bake.hlsl's DaoShapedBake).
 #define DAO_RELIT daoLook[3].z
 static const float kDaoRelitMost = 8.0;
-// What a figure's mirrored surroundings are multiplied by. What metal mirrors
-// is the level's own cube map, a photograph of the place as the game lit it;
-// in a level lit again the place is darker than its photograph wherever no
-// light of ours reaches, and armour's studs shone with a bright room in a
-// dark one (the user, 2026-10-11: "weird glow around armor"). So the
-// mirrored light is held to the light the figure stands in: `ambient` is its
-// ambient light, which is its place's own (the probes baked from our
-// lightmaps), and a place a fifth of white bright mirrors its photograph
-// whole.
-float DaoMirrored(float3 ambient)
-{
-    const float lit = saturate(dot(ambient, float3(0.2126, 0.7152, 0.0722)) / 0.2);
-    return lerp(1.0, lit, saturate(daoLook[3].z));
-}
 // How much of the light baked into a level is taken away, to see the level
 // by its real lights alone (bake.hlsl's DaoShapedBake): the look's BakedLess.
 #define DAO_BAKED_LESS daoLook[3].y
 // How much of a surface's light is ambient, 0 to 1: what the ambient
-// occlusion may shade (issue 8). `ambient` is the surface's ambient light
-// through its own colour (a figure's probe light, a level's baked light) and
-// `lit` all it sends to the eye. Written to the distance target's alpha,
-// which is a literal 1 in every one of vanilla's shaders and read by none of
-// them (its depth of field, soft particles and distortion take the three
-// bytes of the distance: read 2026-10-12).
+// occlusion may shade (issue 8). `ambient` is what the surface sends of its
+// ambient light, scattered (a figure's probe light, a level's baked light,
+// through its own colour) and mirrored (its surroundings' reflection), and
+// `lit` all it sends to the eye. Written to the picture's own alpha, which
+// in vanilla's solid shaders is their opacity, 1, and blended by nothing
+// (build_shaders.py's with_ambient_share has where it was first and why not).
 float DaoShare(float3 ambient, float3 lit)
 {
     const float3 luma = float3(0.2126, 0.7152, 0.0722);

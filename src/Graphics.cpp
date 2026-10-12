@@ -2926,16 +2926,27 @@ void ApplyLook()
         // in the back buffer's eight bits it would only dim what is nearly
         // white.
         const bool idle = value.key == "Highlights" && g_wideFormat == D3DFMT_UNKNOWN;
-        if (value.key != "Exposure") // KeepSun's, by the area's sun
+        // The ambient occlusion's strength is the options screen's, but in
+        // the Vanilla look: a value a relit look's section may still have for
+        // it is not read.
+        const bool sliders = value.key == "Occlusion" && !VanillaChosen();
+        if (value.key != "Exposure" && !sliders) // Exposure is KeepSun's, by the area's sun
         {
             const float tuned = value.key == "Contrast" ? TunedBy(kTuneContrast) : 0.0F;
-            // The ambient occlusion's strength is the options screen's, but in the Vanilla look.
-            const bool slider = value.key == "Occlusion" && !VanillaChosen();
-            const float is = slider ? kOcclusionStops.at(static_cast<std::size_t>(
-                                          g_occlusionStop.load(std::memory_order_relaxed)))
-                                    : value.value;
-            Keep(value.name, idle ? 0.0F : is + tuned, value.key);
+            Keep(value.name, idle ? 0.0F : value.value + tuned, value.key);
         }
+    }
+    // One place says how dark the occlusion is, the options screen's slider
+    // (graphics.chosen), and the relit look's section has no line for it.
+    // It had one that nothing read, and a test that set it compared a frame
+    // with itself four times (2026-10-12; the user: "shouldn't the slider
+    // write value to the ini, and vice versa? how do the two stay
+    // consistent?").
+    if (!VanillaChosen())
+    {
+        Keep(L"DaoOcclusion",
+             kOcclusionStops.at(static_cast<std::size_t>(g_occlusionStop.load(std::memory_order_relaxed))),
+             "Occlusion");
     }
     Keep(L"DaoSaturation", TunedBy(kTuneSaturation), "Saturation");
     Keep(L"DaoWarmth", TunedBy(kTuneWarmth), "Warmth");

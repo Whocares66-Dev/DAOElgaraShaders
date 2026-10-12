@@ -21,9 +21,9 @@
 // 1, which the pass's state reads unfiltered.
 
 sampler2D smpDepth : register(s1);
-// The game's own distance target, for its alpha alone: how much of the
-// pixel's light is ambient, as its shader said (look.hlsl's DaoShare). It
-// goes on in this pass's green, beside the openness in its red.
+// The picture, for its alpha alone: how much of the pixel's light is
+// ambient, as its shader said (look.hlsl's DaoShare). It goes on in this
+// pass's green, beside the openness in its red.
 sampler2D smpScene : register(s2);
 
 // Values of the chain (build_shaders.py's LOOK), set from graphics.ini and by
@@ -168,5 +168,5 @@ float4 main(float2 uv : TEXCOORD0, float2 pixel : VPOS) : COLOR0
     // Too far for the radius to span two pixels: nothing to tell there.
     open = reach < 2 * texel.y ? 1 : open;
     open = lerp(open, 1, saturate(here.z / kDaoAoFar));
-    return float4(open, tex2Dlod(smpScene, float4(uv, 0, 0)).a, 0, 1);
+    return float4(open, saturate(tex2Dlod(smpScene, float4(uv, 0, 0)).a), 0, 1);
 }
