@@ -90,6 +90,27 @@ if(Python3_Interpreter_FOUND)
     )
 endif()
 
+# What each material is, as the game reads it: data/materials.ini made into
+# material objects' overrides and metalness maps beside the shaders
+# (tools/material_table.py --objects), when the table or the tool changes.
+if(Python3_Interpreter_FOUND)
+    add_custom_command(
+        OUTPUT "${CMAKE_BINARY_DIR}/materials.stamp"
+        COMMAND
+            "${CMAKE_COMMAND}" -E env "DAOLIB_TOOLS=${ELGARA_DAOLIB}/tools"
+            "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/material_table.py" --objects
+            "${CMAKE_BINARY_DIR}/daolib/plugins/elgarashaders/override"
+        COMMAND "${CMAKE_COMMAND}" -E touch "${CMAKE_BINARY_DIR}/materials.stamp"
+        DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/data/materials.ini"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/material_table.py"
+        COMMENT "elgarashaders: the materials' table, as the game reads it"
+        VERBATIM
+    )
+    add_custom_target(elgarashaders_materials ALL DEPENDS "${CMAKE_BINARY_DIR}/materials.stamp")
+endif()
+
 # The plugin's baker of light probes as a command of its own: a level baked
 # with no game running, to look at what it makes and how long it takes.
 add_executable(elgarashaders_bake src/BakeTool.cpp src/ProbeBaker.cpp)
