@@ -317,13 +317,19 @@ USES = {}
 CUTS = {}
 
 
+# The shaders that can say an ambient share: those of the materials' model,
+# and a face's, hair's and an eye's, which say it of what they scatter
+# (with_scattered_share).
+SHARE_SHADERS = MATERIAL_SHADERS[:-len(r")\.psh$")] + r"|face[02]|hair[02]|eye0)\.psh$"
+
+
 def passes_of(material):
-    """A material definition's passes for shader model 3: (the pass's text,
-    its pixel shader, its state)."""
+    """A material definition's passes for shader model 3 that a shader which
+    can say a share draws: (the pass's text, its pixel shader, its state)."""
     for found in re.finditer(r"<Pass\b[^>]*>", material):
         drawn_by = re.search(r'PixelShader\s*=\s*"([^"]+)"', found.group(0))
         state = re.search(r'State\s*=\s*"([^"]+)"', found.group(0))
-        if drawn_by and state and re.match(MATERIAL_SHADERS, drawn_by.group(1), re.IGNORECASE):
+        if drawn_by and state and re.match(SHARE_SHADERS, drawn_by.group(1), re.IGNORECASE):
             yield found.group(0), drawn_by.group(1), state.group(1)
 
 
@@ -1557,6 +1563,39 @@ def with_hot_light(shader):
     shader.insert(len(shader.statements) - 1, ["oC0.xyz = DaoHot(oC0.xyz);"])
 
 
+def with_scattered_share(shader):
+    """Work out the ambient share of a shader the materials' model does not
+    reach, a face's, hair's or an eye's, from what it scatters: these add
+    their ambient light, a colour input, to the sum of their lights' light
+    in one statement (`add <all>.xyz, <lights>, v<C>`: read in face0, face2,
+    hair0, hair2 and eye0, 2026-10-12), and all of it is then scattered
+    through the surface's colour, so the ambient part of what they send is
+    the ambient light's part of that sum. Their highlights, which are the
+    lights' own, are left out of the count, and are small beside it.
+
+    They said nothing, so the occlusion shaded all of their light: a face
+    in the sun, in a high collar, was half as bright again with the
+    occlusion off (the user, 2026-10-12: "is something wrong w/ the skin
+    material such that it's not taking light?")."""
+    if getattr(shader, "share", None) is not None:
+        return
+    ambient = next(
+        (register for _, _, semantic, register, _ in shader.inputs if semantic.startswith("COLOR")),
+        None,
+    )
+    if ambient is None:
+        return
+    for index, statement in enumerate(shader.statements):
+        found = re.match(rf"^add(?:_pp)? (r\d+)\.xyz, (r\d+), {ambient}$", statement.asm)
+        if found and statement.depth == 0:
+            shader.insert(
+                index + 1, [f"daoScatteredShare = DaoShare({ambient}.xyz, {found.group(1)}.xyz);"]
+            )
+            shader.insert(-1, ["float daoScatteredShare = 1;"])
+            shader.scattered = True
+            return
+
+
 def alpha_as(mode, least=None, seen=False):
     """A change that says what a build of a shader does with its alpha
     (with_ambient_share): "share", "keep", or "cut" at `least` of 255, and
@@ -1619,6 +1658,8 @@ def with_ambient_share(shader):
     share = (
         f"oC0.w = DaoShare({ambient} * daoAlbedo * DaoScattered(daoMetal) + DaoEnvSent(), daoLit);"
         if ambient is not None
+        else "oC0.w = daoScatteredShare;"
+        if getattr(shader, "scattered", False)
         else None
     )
     said = []
@@ -1685,7 +1726,7 @@ def changes_for(stem, listing, map_size, show):
     # The ambient share, last: what it writes is the build's to say
     # (alpha_as), and nothing where none is said.
     if with_materials in changes:
-        changes.append(with_ambient_share)
+        changes += [with_scattered_share, with_ambient_share]
     return changes, preamble
 
 
