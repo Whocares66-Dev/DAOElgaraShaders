@@ -129,7 +129,7 @@ void __cdecl SetPartitions(const Partition *partitions, std::uint32_t count)
 // Direct3D device, taken as the game creates it, at the start of every
 // scene, on the thread that draws.
 constexpr UINT kLookRegister = 220;
-constexpr std::size_t kLookRegisters = 2;
+constexpr std::size_t kLookRegisters = 4;
 std::array<std::atomic<float>, kLookRegisters * 4> g_look{};
 
 using CreateFn = IDirect3D9 *(__stdcall *)(UINT);
@@ -866,6 +866,129 @@ std::unordered_set<void *> g_statesWritten; // the light states whose matrices a
 // shaders' until the table came (a multiplication where the ambient light
 // joins a figure's lights), which could not tell the two apart.
 std::atomic<float> g_ambient{0};
+// The look's LightContrast, the game thread's word, and the brightness of
+// baked light it turns about. The look may name that brightness (LightPivot);
+// left at 0 it is the level's own middle, which the baker measured (a room's
+// levelSeen) and the lights' chooser notes here when a figure of the area is
+// given a baked room. A probe that holds all the light of its place is baked
+// from the same lightmaps the walls are lit by, and is given the same
+// contrast: its light by the power of how far its mean is from the pivot.
+std::atomic<float> g_lightContrast{0};
+std::atomic<float> g_lightPivot{0}; // the pivot in force: the look's, or the level's
+std::atomic<float> g_levelSeen{0};  // the level's, or 0 while it is not known
+// Whether the area's level has lightmaps of our own (Relighter.h), by the
+// word of the baked room a figure of the area is given. Such lightmaps hold
+// the level's lamps with their shadows and want no flat colour beside them:
+// the level's ambient colour is taken away whole and its lamps are not added
+// a second time by the shaders, whatever the look says of a level as the
+// game baked it.
+std::atomic<bool> g_levelRelit{false};
+
+// The rooms lit again that the area's figures have been matched to since the
+// area was come into, with the table that holds them: what a door's light is
+// the mean of (RelitMean). A room is noted as its probes are chosen for a
+// figure, when the engine has just handed over a probe that is alive.
+std::mutex g_relitLock;
+ProbeRooms g_relitTable;
+std::vector<const ProbeRoom *> g_relitSeen;
+bool g_relitMeanKnown = false;
+
+// How many stops more a level lit again is exposed by for how dark it is,
+// beside the look's InteriorExposure. A level's lights are what they are, and
+// one level is ten times as dark as another: Orzammar's Commons, lit by fire
+// and lava across a cave, has a quarter of the light where its people walk
+// that the Circle's tower has by its candles and windows. One exposure for
+// both left the Commons' doors and shop fronts black with their figures
+// (toured 2026-10-11), and more light with no source is not the answer. So
+// the picture is opened half way to what the eye would do: half the stops
+// between the level's light and the tower's, the tower being what the look's
+// InteriorExposure was set by. The level's light is the upper quartile of
+// its probes', each the light on a surface whichever way it faces.
+//
+// Tried so, the Commons at 1.35 stops was "way too bright" (the user, the
+// same day, of the agent's own window). So it is by the look's InteriorAdapt,
+// a share of what is reckoned here, and that is 0: a dark level is dark.
+std::atomic<float> g_relitAdapt{0};
+
+float AdaptFor(std::span<const ProbeRoom *const> rooms)
+{
+    constexpr float kTowers = 0.12F; // the same quartile in the Circle's tower (lak303d, measured 2026-10-11)
+    constexpr float kShare = 1.0F; // the whole of it; the look's InteriorAdapt says how much is used
+    std::vector<float> lumas;
+    for (const ProbeRoom *room : rooms)
+    {
+        for (const dao::core::probes::Probe &probe : room->probes)
+        {
+            const auto whichever = [&](std::size_t channel) {
+                const float *m = probe.light.data() + (channel * 16);
+                return m[15] + ((m[0] + m[5] + m[10]) / 3);
+            };
+            lumas.push_back((0.2126F * whichever(0)) + (0.7152F * whichever(1)) + (0.0722F * whichever(2)));
+        }
+    }
+    if (lumas.empty())
+    {
+        return 0;
+    }
+    const auto quartile = lumas.begin() + static_cast<std::ptrdiff_t>(lumas.size() * 3 / 4);
+    std::ranges::nth_element(lumas, quartile);
+    return std::clamp(kShare * std::log2(kTowers / std::max(*quartile, 1e-3F)), -2.0F, 3.0F);
+}
+
+void NoteRelitRoom(const ProbeRooms &rooms, const ProbeRoom *room)
+{
+    const std::scoped_lock lock(g_relitLock);
+    if (g_relitTable != rooms)
+    {
+        g_relitTable = rooms;
+        g_relitSeen.clear();
+        g_relitMeanKnown = false;
+    }
+    if (std::ranges::find(g_relitSeen, room) == g_relitSeen.end())
+    {
+        g_relitSeen.push_back(room);
+        g_relitMeanKnown = false;
+        g_relitAdapt.store(AdaptFor(g_relitSeen), std::memory_order_relaxed);
+    }
+}
+
+// Whether each area come into since the game started is lit again, by the
+// area's id, as the last of its figures to be matched said. That a level is
+// lit again is learnt when a figure's probes are next chosen, which is not
+// at once: back in the Commons from a shop, the hall was drawn for a moment
+// with its lightmaps read as the game's own (the user, 2026-10-11: "when
+// transitioning area it takes a brief moment for lighting to change?"). An
+// area that has been in before is known from its first frame. One come into
+// for the first time by a door still has the moment: knowing it sooner
+// wants the area's level by name, which the library does not yet say.
+std::mutex g_areasLock;
+std::unordered_map<std::uint32_t, bool> g_areasRelit;
+std::atomic<std::uint32_t> g_areaNow{0};
+
+void NoteAreaRelit(bool relit)
+{
+    g_levelRelit.store(relit, std::memory_order_relaxed);
+    if (const std::uint32_t area = g_areaNow.load(std::memory_order_relaxed); area != 0)
+    {
+        const std::scoped_lock lock(g_areasLock);
+        g_areasRelit[area] = relit;
+    }
+}
+
+void ForgetRelitRooms()
+{
+    const std::scoped_lock lock(g_relitLock);
+    g_relitTable.reset();
+    g_relitSeen.clear();
+    g_relitMeanKnown = false;
+}
+// How far the light of the shade is the sky's colour, under a sun: the look's
+// CoolShade by the area's daylight, the game thread's word (KeepSun). The
+// level's shaders tint their baked light by it (look.hlsl's kDaoSkyLight,
+// which this is the same as), and a figure's ambient light is tinted here
+// where it is not a room's.
+std::atomic<float> g_coolShade{0};
+constexpr std::array<float, 3> kSkyLight{0.70F, 0.95F, 1.40F};
 // In a light state: the colour of the area's sun on this figure, the fourth
 // register of the lights' block (+0x40), which the chooser writes before the
 // state fills the rest (0x0046BB80).
@@ -962,6 +1085,15 @@ void LightsToMix(const ProbeRooms &rooms, const std::vector<ScoredProbe> &scored
             }
             baked = true;
             whole = whole && room->whole;
+            if (room->levelSeen > 0)
+            {
+                g_levelSeen.store(room->levelSeen, std::memory_order_relaxed);
+            }
+            NoteAreaRelit(room->relit);
+            if (room->relit)
+            {
+                NoteRelitRoom(rooms, room);
+            }
             probebaker::Nearest(*room, place, lights);
         }
         else if (const float *light = baked ? nullptr : LightOfProbe(probe.node))
@@ -970,6 +1102,10 @@ void LightsToMix(const ProbeRooms &rooms, const std::vector<ScoredProbe> &scored
         }
     }
     whole = whole && baked;
+    if (!baked && !lights.empty())
+    {
+        NoteAreaRelit(false); // probes of the level's own and no room of ours: not a level lit again
+    }
 }
 
 // Keeps the mix for the light state whose probes were just chosen into
@@ -1090,9 +1226,88 @@ std::optional<Irradiance> OwnProbesLight(const void *state)
     return light;
 }
 
+// In a level lit again, the light for a state that has no mix of probes: the
+// mean of the probes of the level's rooms that its figures have been matched
+// to, with nothing lifted. Only what moves is given a mix as its probes are
+// chosen; a door, a chest, a banner has the level's own probe's light from
+// the engine, which is a photograph of the level as the game lit it.
+// Orzammar's great doors stood red, and the Proving's pink, in corners where
+// nothing else was lit (toured 2026-10-11). Where such a thing stands the
+// state does not say, so it has the level's mean: dim in a dim level, and
+// never the photograph.
+//
+// The probe a state keeps a pointer to is NOT asked which room it is of. The
+// first form did, and the pointer outlives its probe: back in the Commons
+// from a house, a state still held a probe of the level before, the probe's
+// light was called through an empty table of functions, and the user's game
+// was gone (2026-10-11 18:31, RoomOf under RelitMeanOf under StateFill).
+// Nothing here follows a pointer the engine may have let go.
+//
+// No probe counts for more than a dim light in the mean: the few that stand
+// by a brazier or over the lava are a hundred times the rest, and with them
+// in whole the mean was a bright one, the Proving's doors pale pink between
+// dark walls. At a fifth of white they were black doors in lit doorways, and
+// at one and a half they read as the stone about them does; the look's
+// StillMost says how much, so that it is set with the game running (of
+// white, the light on a surface whichever way it faces).
+std::atomic<float> g_stillMost{1.5F};
+
+std::optional<Blend> RelitMean()
+{
+    if (!g_levelRelit.load(std::memory_order_relaxed))
+    {
+        return std::nullopt;
+    }
+    static Irradiance mean{};
+    static float mostWas = 0;
+    const float most = g_stillMost.load(std::memory_order_relaxed);
+    const std::scoped_lock lock(g_relitLock);
+    if (g_relitSeen.empty())
+    {
+        return std::nullopt;
+    }
+    if (!g_relitMeanKnown || most != mostWas)
+    {
+        std::array<double, 48> sum{};
+        std::size_t count = 0;
+        for (const ProbeRoom *room : g_relitSeen)
+        {
+            for (const dao::core::probes::Probe &probe : room->probes)
+            {
+                const auto whichever = [&](std::size_t channel) {
+                    const float *m = probe.light.data() + (channel * 16);
+                    return m[15] + ((m[0] + m[5] + m[10]) / 3);
+                };
+                const float luma = (0.2126F * whichever(0)) + (0.7152F * whichever(1)) + (0.0722F * whichever(2));
+                const double by = luma > most ? double{most} / double{luma} : 1.0;
+                for (std::size_t at = 0; at < sum.size(); ++at)
+                {
+                    sum.at(at) += by * double{probe.light.at(at)};
+                }
+                ++count;
+            }
+        }
+        if (count == 0)
+        {
+            return std::nullopt;
+        }
+        for (std::size_t at = 0; at < sum.size(); ++at)
+        {
+            mean.at(at) = static_cast<float>(sum.at(at) / static_cast<double>(count));
+        }
+        g_relitMeanKnown = true;
+        mostWas = most;
+    }
+    return Blend{mean, true, true};
+}
+
 std::uintptr_t __fastcall StateFill(void *state, int unused, std::uintptr_t argument)
 {
-    const std::optional<Blend> mix = BlendOf(state);
+    std::optional<Blend> mix = BlendOf(state);
+    if (!mix)
+    {
+        mix = RelitMean();
+    }
     const float lift = AmbientLift(state);
     const bool ours = mix.has_value() || lift != 1.0F;
     if (!ours)
@@ -1116,9 +1331,26 @@ std::uintptr_t __fastcall StateFill(void *state, int unused, std::uintptr_t argu
     }
     if (!mix || !mix->whole)
     {
+        const float cool = g_coolShade.load(std::memory_order_relaxed);
+        for (std::size_t at = 0; at < light->size(); ++at)
+        {
+            light->at(at) *= lift * std::lerp(1.0F, kSkyLight.at(at / 16), cool);
+        }
+    }
+    else if (const float pivot = g_lightPivot.load(std::memory_order_relaxed); pivot > 0)
+    {
+        // The light a surface gets there whichever way it faces: each
+        // matrix's last term and a third of its first three down the diagonal.
+        const auto mean = [&](std::size_t channel) {
+            const float *m = light->data() + (channel * 16);
+            return m[15] + ((m[0] + m[5] + m[10]) / 3);
+        };
+        const float luma = (0.2126F * mean(0)) + (0.7152F * mean(1)) + (0.0722F * mean(2));
+        const float contrast = std::clamp(
+            std::pow(std::max(luma, 1e-3F) / pivot, g_lightContrast.load(std::memory_order_relaxed)), 0.3F, 3.0F);
         for (float &value : *light)
         {
-            value *= lift;
+            value *= contrast;
         }
     }
     std::memcpy(static_cast<std::byte *>(state) + kStateIrradiance, light->data(), sizeof *light);
@@ -1126,6 +1358,8 @@ std::uintptr_t __fastcall StateFill(void *state, int unused, std::uintptr_t argu
     g_statesWritten.insert(state);
     return result;
 }
+
+std::atomic<void *> g_probesList{nullptr};
 
 std::uintptr_t __fastcall ChooseForMoving(void *manager, int unused, void *node, void *sun, void *colour,
                                           std::uintptr_t more)
@@ -1146,7 +1380,20 @@ std::uintptr_t __fastcall ChooseFromList(void *list, int unused, void *place, fl
                         : list == ListOf(t_figuresManager, kFiguresUnflagged) ? FiguresList::Unflagged
                                                                               : FiguresList::None;
     }
-    const bool probes = t_figuresManager != nullptr && list == ListOf(t_figuresManager, kLightsProbes) &&
+    // The probes' list of the manager last seen, which is the area's: a thing
+    // that does not move (a door, a shop's goods, a banner) has its probes
+    // chosen from the same list by another caller, with no manager said. It
+    // is given a mix by its own place as a figure is, where before it had
+    // the level's mean, and a counter's goods glowed in a dark shop as if
+    // the lava were beside them (the user, 2026-10-11: "more random glowing
+    // from a shop front"). The pointer is only compared, never followed.
+    if (t_figuresManager != nullptr)
+    {
+        g_probesList.store(ListOf(t_figuresManager, kLightsProbes), std::memory_order_relaxed);
+    }
+    const bool still = t_figuresManager == nullptr && list == g_probesList.load(std::memory_order_relaxed) &&
+                       g_levelRelit.load(std::memory_order_relaxed);
+    const bool probes = ((t_figuresManager != nullptr && list == ListOf(t_figuresManager, kLightsProbes)) || still) &&
                         g_probeBlend.load(std::memory_order_relaxed) > 0;
     thread_local std::vector<ScoredProbe> scored;
     if (probes)
@@ -1161,6 +1408,12 @@ std::uintptr_t __fastcall ChooseFromList(void *list, int unused, void *place, fl
     {
         t_probesScored = nullptr;
         KeepBlend(group, scored, static_cast<const float *>(place));
+        if (static std::atomic<int> said{0}; still && said.fetch_add(1) < 3)
+        {
+            const float *at = static_cast<const float *>(place);
+            spdlog::info("light probes: a thing that does not move had its probes chosen at ({:.1f}, {:.1f}, {:.1f}), {} scored",
+                         at[0], at[1], at[2], scored.size());
+        }
     }
     return result;
 }
@@ -1889,6 +2142,9 @@ void KeepSun(float sun, float onFigures, float exposure)
     }
     sun *= day * held;
     onFigures *= day * held;
+    const float cool = std::clamp(ChosenValue("CoolShade"), 0.0F, 1.0F) * day;
+    g_coolShade.store(cool, std::memory_order_relaxed);
+    g_look.at(9).store(cool, std::memory_order_relaxed);
     dao::atmosphere::Sunlight wanted = *now;
     for (std::size_t channel = 0; channel < 3; ++channel)
     {
@@ -1897,9 +2153,46 @@ void KeepSun(float sun, float onFigures, float exposure)
     }
     wanted.color.at(3) = own->color.at(3);
     wanted.characterColor.at(3) = own->characterColor.at(3);
-    Keep(L"DaoExposure", exposure * day, "Exposure");
+    // An area with no sun still has one for its figures alone, a warm light
+    // to show them off by (the Circle's is 0.71, 0.50, 0.29 where its
+    // ground's is black): in a hall lit by its candles they stood as bright
+    // as in a studio. The look's KeyLess takes of it.
+    if (std::max({own->color[0], own->color[1], own->color[2]}) <= 0)
+    {
+        // In a level lit again the room is as dark as its lights leave it, and
+        // most of that light goes: at the look's own a party stood pale in the
+        // dark between a hall's candles (seen in the Circle, 2026-10-11).
+        // All of it, since the same day: what was left of it, a sixth, lit
+        // Orzammar's great doors red in corners where nothing else was lit
+        // (a door is lit as a figure is), and went dark with it gone.
+        constexpr float kRelitKeyLess = 1.0F;
+        const float less = g_levelRelit.load(std::memory_order_relaxed)
+                               ? std::max(ChosenValue("KeyLess"), kRelitKeyLess)
+                               : ChosenValue("KeyLess");
+        const float left = 1 - std::clamp(less, 0.0F, 1.0F);
+        for (std::size_t channel = 0; channel < 3; ++channel)
+        {
+            wanted.characterColor.at(channel) = own->characterColor.at(channel) * left;
+        }
+    }
+    // A level lit again is lit as light is: a lamp is many times brighter on
+    // the pillar it hangs from than on the floor across the room, more than a
+    // picture made for a room's even light can hold. So such a room is
+    // exposed for its shade, a stop up, and the picture's range is long
+    // enough for what is near a lamp to roll off and not burn (the user,
+    // 2026-10-11, of a hall lit by its lanterns alone: "too dark now").
+    // How many stops is the look's InteriorExposure, so that it is set with
+    // the game running: one where a look has none.
+    constexpr float kRelitExposure = 1.0F; // stops
+    constexpr float kRelitRange = 8.0F;    // whites
+    const bool relit = day <= 0 && g_levelRelit.load(std::memory_order_relaxed);
+    Keep(L"DaoExposure",
+         relit ? ChosenValue("InteriorExposure", kRelitExposure) +
+                     (ChosenValue("InteriorAdapt", 0.0F) * g_relitAdapt.load(std::memory_order_relaxed))
+               : exposure * day,
+         "Exposure");
     // Not through Keep: the meter moves it twice a second, which is no news.
-    const float range = kRangeIndoors + (kRangeBySun * sun);
+    const float range = relit ? kRelitRange : kRangeIndoors + (kRangeBySun * sun);
     if (const std::optional<float> has = dao::framebuffer::Value(kChain, L"DaoRange");
         has && std::abs(*has - range) > 0.0001F)
     {
@@ -1919,19 +2212,50 @@ void KeepSun(float sun, float onFigures, float exposure)
 // sun's shadow falls on figures.
 void KeepLookRegisters()
 {
-    constexpr std::array<std::string_view, 7> kKeys{"Relief", "Materials", "ShadowOnFigures", "Lamps",
-                                                    "FillsLess", "Ambient", "Fire"};
+    // A look's value by its place in the registers (look.hlsl); those with no
+    // name here are reckoned, below and in KeepSun.
+    constexpr std::array<std::string_view, 14> kKeys{
+        "Relief", "Materials", "ShadowOnFigures", "Lamps",        "FillsLess",   "Ambient",   "Fire",
+        "",       "",          "",                "Highlights",   "LampsOnLevel", "AmbientLess", "BakedLess"};
     for (std::size_t i = 0; i < kKeys.size(); ++i)
     {
-        // The materials want a scene that holds more than white (materials.hlsl).
-        const bool idle = kKeys.at(i) == "Materials" && g_wideFormat == D3DFMT_UNKNOWN;
+        if (kKeys.at(i).empty())
+        {
+            continue;
+        }
+        // The materials and a surface left uncut want a scene that holds more
+        // than white (materials.hlsl, look.hlsl's DaoCut).
+        const bool idle = (kKeys.at(i) == "Materials" || kKeys.at(i) == "Highlights") && g_wideFormat == D3DFMT_UNKNOWN;
         g_look.at(i).store(idle ? 0.0F : ChosenValue(kKeys.at(i)), std::memory_order_relaxed);
     }
     g_anisotropy.store(static_cast<int>(ChosenValue("Anisotropy")), std::memory_order_relaxed);
     g_lampStrength.store(ChosenValue("Lamps"), std::memory_order_relaxed);
-    g_fillsLess.store(ChosenValue("FillsLess"), std::memory_order_relaxed);
+    // The fills, the same: a level lit again has the light of its place in
+    // its probes, and the fills are what it would be flat by.
+    constexpr float kRelitFillsLess = 1.0F; // all of them: see kRelitKeyLess
+    g_fillsLess.store(g_levelRelit.load(std::memory_order_relaxed)
+                          ? std::max(ChosenValue("FillsLess"), kRelitFillsLess)
+                          : ChosenValue("FillsLess"),
+                      std::memory_order_relaxed);
     g_probeBlend.store(ChosenValue("ProbeBlend"), std::memory_order_relaxed);
     g_ambient.store(ChosenValue("Ambient"), std::memory_order_relaxed);
+    g_stillMost.store(ChosenValue("StillMost", 1.5F), std::memory_order_relaxed);
+    // The contrast's pivot: the look's own, or the level's middle; and with
+    // neither known, no contrast.
+    const float named = ChosenValue("LightPivot");
+    const float pivot = named > 0 ? named : g_levelSeen.load(std::memory_order_relaxed);
+    const float contrast = pivot > 0 ? ChosenValue("LightContrast") : 0.0F;
+    g_look.at(7).store(contrast, std::memory_order_relaxed);
+    g_look.at(8).store(pivot, std::memory_order_relaxed);
+    g_lightContrast.store(contrast, std::memory_order_relaxed);
+    g_lightPivot.store(contrast > 0 ? pivot : 0.0F, std::memory_order_relaxed);
+    if (g_levelRelit.load(std::memory_order_relaxed))
+    {
+        g_look.at(11).store(-1.0F, std::memory_order_relaxed); // LampsOnLevel: they are in the lightmaps
+        g_look.at(12).store(1.0F, std::memory_order_relaxed);  // AmbientLess: all of it
+    }
+    // And the lightmaps are read as ours are written (look.hlsl's DAO_RELIT).
+    g_look.at(14).store(g_levelRelit.load(std::memory_order_relaxed) ? 1.0F : 0.0F, std::memory_order_relaxed);
 }
 
 // Keeps the sky to the sun the look has. An area's fog and clouds have
@@ -1939,8 +2263,8 @@ void KeepLookRegisters()
 // sun three times that they stay as dark as they were: Redcliffe's ground lay
 // in bright sun under a slate sky, its mill thirty metres off grey with fog
 // (seen 2026-10-11). Haze lit by a sun takes the sun's colour, and so do
-// clouds. `haze` is how much of the sun's own colour, as the area has it for
-// its ground, is added to the fog's; `clouds` how far the clouds' colour is
+// clouds. `haze` is how much of the sun's light, as the area has it for
+// its ground, is added to the fog's, in the sky's colour; `clouds` how far the clouds' colour is
 // moved to the sun's and how much thinner they are. An area with no sun has
 // nothing added, and at 0 both are the area's own.
 //
@@ -1965,9 +2289,15 @@ void KeepSky(float haze, float clouds, float clear, float sky)
     constexpr float kCapLess = 0.6F;       // of the fog's cap, at the most
     constexpr float kFogThinner = 0.5F;    // of its thickness
     dao::atmosphere::Sky wanted = *own;
-    wanted.fogRed += haze * sun->color[0];
-    wanted.fogGreen += haze * sun->color[1];
-    wanted.fogBlue += haze * sun->color[2];
+    // The haze of the distance is lit by the sun and sends on the sky's
+    // colour, as the air does away from the sun; the sun's own colour in it
+    // is towards the sun, which is SunHaze's (KeepAir). With the sun's own
+    // colour all round, a village in it was one sheet of yellow from the
+    // ground to the sky (seen in Redcliffe, 2026-10-11).
+    const float sunBright = (0.2126F * sun->color[0]) + (0.7152F * sun->color[1]) + (0.0722F * sun->color[2]);
+    wanted.fogRed += haze * sunBright * kSkyLight[0];
+    wanted.fogGreen += haze * sunBright * kSkyLight[1];
+    wanted.fogBlue += haze * sunBright * kSkyLight[2];
     const float day = Daylight(*sun);
     haze *= day;
     clear *= day;
@@ -1980,6 +2310,30 @@ void KeepSky(float haze, float clouds, float clear, float sky)
     wanted.fogCap = own->fogCap * (1 - kCapLess * std::clamp(clear, 0.0F, 1.0F));
     wanted.fogIntensity = own->fogIntensity * (1 - kFogThinner * std::clamp(clear, 0.0F, 1.0F));
     wanted.atmosphereAlpha = std::lerp(own->atmosphereAlpha, std::max(own->atmosphereAlpha, 1.0F), std::clamp(sky, 0.0F, 1.0F));
+    // A level lit again has no fog. An area's fog is a colour laid over what
+    // is far off, the Circle's a warm yellow-brown: in a hall as dark as its
+    // candles leave it that is a light with no source, and the far end of a
+    // room was brighter than the floor underfoot (the user, 2026-10-11:
+    // "areas are brighter when distant ... then darker when near").
+    //
+    // But with none at all a great cave has no depth, its far districts as
+    // crisp as the street (the user, the same day: "might it be worth
+    // bringing a form of it back for atmosphere?"). So a level lit again
+    // keeps the look's RelitFog of its fog, as a haze that dims what is far
+    // and does not light it: the fog's cap by that share, and its colour
+    // held to a dark one, no brighter than kHazeMost.
+    if (g_levelRelit.load(std::memory_order_relaxed))
+    {
+        constexpr float kHazeMost = 0.06F; // of white, the haze's brightest channel
+        const float kept = std::clamp(ChosenValue("RelitFog", 0.0F), 0.0F, 1.0F);
+        wanted.fogCap = own->fogCap * kept;
+        wanted.fogIntensity = kept > 0 ? own->fogIntensity : 0.0F;
+        const float brightest = std::max({own->fogRed, own->fogGreen, own->fogBlue, 1e-4F});
+        const float dim = std::min(1.0F, kHazeMost / brightest);
+        wanted.fogRed = own->fogRed * dim;
+        wanted.fogGreen = own->fogGreen * dim;
+        wanted.fogBlue = own->fogBlue * dim;
+    }
     // A look may set any value of the sky outright, to find what a look
     // should do with it: "SkyFogCap = 0.5" for the sky's "fog cap".
     constexpr float kUnset = -12345.0F;
@@ -2145,7 +2499,22 @@ void KeepAir()
 void KeepAreasScene()
 {
     const dao::CCArea *area = dao::world::CurrentArea();
-    g_areasScene.store(area != nullptr ? area->Scene() : nullptr, std::memory_order_relaxed);
+    void *scene = area != nullptr ? area->Scene() : nullptr;
+    if (scene != g_areasScene.load(std::memory_order_relaxed))
+    {
+        g_levelSeen.store(0, std::memory_order_relaxed); // another area: its level's middle is not known yet
+        const std::uint32_t id = area != nullptr ? area->Id() : 0;
+        g_areaNow.store(id, std::memory_order_relaxed);
+        bool known = false;
+        {
+            const std::scoped_lock lock(g_areasLock);
+            const auto found = g_areasRelit.find(id);
+            known = found != g_areasRelit.end() && found->second;
+        }
+        g_levelRelit.store(known, std::memory_order_relaxed);
+        ForgetRelitRooms();
+    }
+    g_areasScene.store(scene, std::memory_order_relaxed);
 }
 
 // Keeps the chain's values at the chosen look's, and its anti-aliasing on or
@@ -2198,6 +2567,8 @@ void ApplyLook()
 
 // The options screen's section: the anti-aliasing, and under it the looks, a
 // stop each.
+constexpr const wchar_t *kOptionsTitle = L"Graphics";
+
 void AddToOptions()
 {
     if (g_looks.size() < 2)
@@ -2205,14 +2576,19 @@ void AddToOptions()
         spdlog::warn("{}: {} looks; the options screen's slider wants two or more", kLooksFile, g_looks.size());
         return;
     }
-    dao::options::Choice smaa;
+    // On the Video tab, where a player looks for it (the user, 2026-10-11:
+    // "Put it under video"). That tab has five free rows, in its right
+    // column under "Frame-buffer effects", and this section is the five: a
+    // heading's two, the checkbox's one, the slider's two. A section that
+    // does not fit is left out, which once left the Look slider nowhere
+    // ("I still don't see the ... sliders"); a sixth row wants somewhere
+    // else to go first (DAOLib #79).
+    dao::options::Toggle smaa;
     smaa.name = L"GraphicsAntiAliasing";
-    smaa.label = L"Extra anti-aliasing";
+    smaa.label = L"Extra anti-aliasing (SMAA)";
     smaa.tooltip = L"Smooths the edges the game's own anti-aliasing misses; works with it or without";
-    smaa.values = {L"Off", L"SMAA"};
-    smaa.style = dao::options::ChoiceStyle::Dropdown;
-    smaa.get = [] { return g_smaa ? 1 : 0; };
-    smaa.set = &ChooseAntiAliasing;
+    smaa.get = [] { return g_smaa; };
+    smaa.set = [](bool wanted) { return ChooseAntiAliasing(wanted ? 1 : 0) == 1; };
     dao::options::Choice look;
     look.name = L"GraphicsLook";
     look.label = L"Look";
@@ -2223,9 +2599,37 @@ void AddToOptions()
     }
     look.get = [] { return static_cast<std::int32_t>(g_chosen); };
     look.set = &ChooseLook;
-    if (!dao::options::AddSection(L"Graphics", {}, {smaa, look}))
+    if (!dao::options::AddSection(kOptionsTitle, {smaa}, {look}, dao::options::Column::Either,
+                                  dao::options::Tab::Video))
     {
         spdlog::warn("the options screen did not take the section");
+    }
+}
+
+// Says what became of the section once the options screen has been opened:
+// it can be left out for want of room, which nothing else reports.
+void LogOptionsSection()
+{
+    static dao::options::SectionState said = dao::options::SectionState::Waiting;
+    const dao::options::SectionState now = dao::options::StateOf(kOptionsTitle);
+    if (now == said)
+    {
+        return;
+    }
+    said = now;
+    switch (now)
+    {
+    case dao::options::SectionState::Shown:
+        spdlog::info("the options screen's Video tab shows the Look slider");
+        break;
+    case dao::options::SectionState::NoRoom:
+        spdlog::warn("the options screen has no room for the Look slider: other sections took the Video tab's rows");
+        break;
+    case dao::options::SectionState::Failed:
+        spdlog::warn("the options screen was not as expected, and has no Look slider");
+        break;
+    default:
+        break;
     }
 }
 
@@ -2262,7 +2666,8 @@ extern "C" __declspec(dllexport) bool __cdecl DAOLib_Load(const dao::LoaderInfo 
     {
         spdlog::warn("no light probes are baked: no detour");
     }
-    probebaker::Start(dao::LogDirectory() / "elgarashaders" / "probes", dao::Module::Path().parent_path().parent_path());
+    probebaker::Start(dao::LogDirectory() / "elgarashaders" / "probes", dao::Module::Path().parent_path().parent_path(),
+                      dao::Module::OwnFolder() / "override");
     WatchForDevice();
     g_looks = ReadLooks(dao::Module::OwnFolder() / kLooksFile);
     ReadChosen(dao::Module::OwnFolder());
@@ -2271,6 +2676,7 @@ extern "C" __declspec(dllexport) bool __cdecl DAOLib_Load(const dao::LoaderInfo 
     dao::OnFrame(&LogLights);
     dao::OnFrame(&LogSunlight);
     dao::OnFrame(&LogSky);
+    dao::OnFrame(&LogOptionsSection);
     dao::OnFrame(&KeepAir);
     dao::OnFrame(&ApplyLook);
     dao::OnFrame(&KeepAreasScene);

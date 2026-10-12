@@ -53,9 +53,31 @@ float DaoReliefFactor(float relief)
     return clamp(1 + DAO_RELIEF * relief, kDaoReliefLeast, kDaoReliefMost);
 }
 
+// The least and the most the baked light is multiplied by for its contrast.
+static const float kDaoContrastLeast = 0.3;
+static const float kDaoContrastMost = 3.0;
+
 // The lightmap's colour as the surface is to be lit by it. `baked` is the
 // lightmap's colour, `relief` DaoRelief's answer.
+//
+// And the baked light's own contrast. A lightmap is eight bits from black to
+// white, made for a picture of eight bits: the floor under a lamp is twice
+// as bright as the far corner of its room where a lamp's light would make
+// it twenty times, which is why a room reads as evenly grey. So light
+// brighter than DAO_LIGHT_PIVOT is made brighter and light dimmer than it
+// dimmer, by the power DAO_LIGHT_CONTRAST of how far it is from the pivot;
+// at the pivot it stays, so a room keeps the brightness it was made with if
+// the pivot is its middle. 0 is the game's own.
 float3 DaoShapedBake(float3 baked, float relief)
 {
-    return baked * DaoReliefFactor(relief);
+    baked = lerp(baked, baked * baked * kDaoRelitMost, saturate(DAO_RELIT));
+    const float luma = dot(baked, float3(0.2126, 0.7152, 0.0722));
+    const float contrast =
+        clamp(pow(max(luma, 1e-3) / max(DAO_LIGHT_PIVOT, 1e-3), DAO_LIGHT_CONTRAST), kDaoContrastLeast, kDaoContrastMost);
+    // Out of doors the baked light is the sky's, and the sun is added to it
+    // warm: shade that is the sun's own colour, only dimmer, is what makes a
+    // sunlit village one sheet of yellow (the user, 2026-10-11: "I don't know
+    // if the change is actually look better").
+    return baked * DaoReliefFactor(relief) * contrast * lerp(1.0, kDaoSkyLight, DAO_COOL_SHADE) *
+           (1 - saturate(DAO_BAKED_LESS));
 }

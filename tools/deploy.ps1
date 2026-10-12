@@ -13,6 +13,11 @@
     A look chosen in play is kept in the installed folder's graphics.chosen, which a deploy
     leaves as it is.
 
+    The levels lit again go with it: for each level of -Relit, the lightmaps, probes and tints
+    `.\tools\relight.ps1` left in build\relit\<level>\ are put in the plugin's override
+    folder, where they are what the game lights that level by. A level goes into the game
+    once it has been looked at in play, so the levels are named and none is taken unasked.
+
     -Remove deletes the plugin's folder. The light probes baked in play and the log are in
     Documents\BioWare\Dragon Age\daolib\ and stay. A folder that is a link, or has one
     anywhere in it (a junction, a symbolic link), is not deleted: a recursive delete goes
@@ -21,6 +26,7 @@
 .EXAMPLE
     .\tools\deploy.ps1                 # debug build into the GOG install
     .\tools\deploy.ps1 -Preset release
+    .\tools\deploy.ps1 -Preset release -Relit lak303d
     .\tools\deploy.ps1 -Remove
 #>
 [CmdletBinding()]
@@ -28,6 +34,7 @@ param(
     [ValidateSet('debug', 'release')]
     [string] $Preset = 'debug',
     [switch] $Remove,
+    [string[]] $Relit = @(),
     [string] $Game = 'C:\Program Files (x86)\GOG Galaxy\Games\Dragon Age Origins\bin_ship'
 )
 
@@ -89,4 +96,12 @@ Remove-PluginFolder
 New-Item -ItemType Directory -Force $plugins | Out-Null
 Copy-Item -LiteralPath $built -Destination $pluginFolder -Recurse
 if ($null -ne $kept) { Set-Content -LiteralPath $chosen -Value $kept -NoNewline }
+foreach ($level in $Relit) {
+    $lit = Join-Path $repo "build\relit\$level"
+    $files = @(Get-ChildItem -LiteralPath $lit -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -in '.dds', '.elgp', '.rml', '.mmh' })
+    if ($files.Count -eq 0) { throw "Nothing of $level in $lit; run .\tools\relight.ps1 -Level $level first" }
+    $files | Copy-Item -Destination (Join-Path $pluginFolder 'override')
+    Show-Line "$level lit again: $($files.Count) files"
+}
 Show-Line "deployed $built to $pluginFolder" -Colour Green

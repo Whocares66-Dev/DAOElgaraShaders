@@ -96,6 +96,12 @@ add_executable(elgarashaders_bake src/BakeTool.cpp src/ProbeBaker.cpp)
 target_link_libraries(elgarashaders_bake PRIVATE DAOLib::daolib)
 dao_apply_warnings(elgarashaders_bake)
 
+# The relighter as a command: a level's lightmaps made again from its own lamps
+# and what glows in it, written as files for the override folder.
+add_executable(elgarashaders_relight src/RelightTool.cpp src/Relighter.cpp src/ProbeBaker.cpp)
+target_link_libraries(elgarashaders_relight PRIVATE DAOLib::daolib)
+dao_apply_warnings(elgarashaders_relight)
+
 # The Python tools' own tests (tools/test_*.py), where there is a Python.
 enable_testing()
 if(Python3_Interpreter_FOUND)

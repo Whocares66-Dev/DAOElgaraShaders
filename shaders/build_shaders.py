@@ -274,7 +274,18 @@ def with_materials(shader):
     shader.statements[
         join
     ].hlsl = f"{total}.xyz = {total}.xyz * DaoHighlight(daoPower);"
-    shader.insert(join - 1, [f"daoEnv = {mirrored}.xyz;"])
+    # The figure's ambient light, the first input declared a colour, is what
+    # says how lit its place is (look.hlsl's DaoMirrored).
+    ambient = next(
+        (
+            register
+            for _, _, semantic, register, _ in shader.inputs
+            if semantic.startswith("COLOR")
+        ),
+        None,
+    )
+    by_place = f" * DaoMirrored({ambient}.xyz)" if ambient else ""
+    shader.insert(join - 1, [f"daoEnv = {mirrored}.xyz{by_place};"])
     shader.insert(facing, [f"const float daoFacing = -{faces}.x;"])
     shader.insert(power, [f"const float daoPower = {held}.w;"])
     shader.insert(
@@ -336,6 +347,51 @@ def with_ambient_relief(shader):
             ],
         )
         return
+
+
+def without_cut(shader):
+    """Leave a surface as bright as it is lit (look.hlsl's DaoCut). The
+    shaders of buildings, furnishings and figures end their lighting with
+    `mul_sat <colour>.xyz, <colour>, <tint>`, a cut at white, just before the
+    fog is laid on (`... mml_vFogParams[0]`); the ground's have none. A
+    shader with no such statement is left as it is."""
+    fog = next(
+        (i for i, s in enumerate(shader.statements) if "mml_vFogParams[0]" in s.hlsl),
+        None,
+    )
+    if fog is None:
+        return
+    for index in range(fog - 1, max(fog - 4, -1), -1):
+        statement = shader.statements[index]
+        if (
+            re.match(r"mul_sat r\d+\.[xyzw]{3}, ", statement.asm)
+            and "saturate(" in statement.hlsl
+        ):
+            statement.hlsl = statement.hlsl.replace("saturate(", "DaoCut(", 1)
+            return
+
+
+def with_level_lights(shader):
+    """Let the look say how strong a level's own lamps are on it and how much
+    of its ambient light is left (look.hlsl's DaoLevelLamp, DaoLevelAmbient).
+    A level's shader is handed the same block a figure's is: point lights at
+    [0] and [1], [5] and [6], [7] and [8], [9] and [11], the colour the
+    second of each; the sun at [2] and [3]; and at [4] one colour added to
+    the lights' sum, the area's ambient light (read in static1.psh,
+    2026-10-11: `add <sum>.xyz, <lights>, c4`)."""
+    lights = shader.parameters["g_vLightParams"].name
+    for statement in shader.statements:
+        for colour in (1, 6, 8, 11):
+            statement.hlsl = re.sub(
+                rf"{lights}\[{colour}\]",
+                f"({lights}[{colour}] * DaoLevelLamp())",
+                statement.hlsl,
+            )
+        statement.hlsl = re.sub(
+            rf"{lights}\[4\]",
+            f"({lights}[4] * DaoLevelAmbient({lights}[3].xyz))",
+            statement.hlsl,
+        )
 
 
 def reads_lamp(listing):
@@ -1050,7 +1106,7 @@ def changes_for(stem, listing, map_size, show):
         changes.append(with_our_shadow)
         preamble += shadow
     if takes_sun_shadow(stem, listing):
-        changes += [with_sun_shadow, with_materials, with_point_lights]
+        changes += [with_sun_shadow, with_materials, with_point_lights, without_cut]
         # Not a face: skin is soft, and its map is pores and lines, which
         # want no sharpening.
         if not stem.startswith("face"):
@@ -1067,7 +1123,7 @@ def changes_for(stem, listing, map_size, show):
         # shadow's data already): its lamp and fills are the look's all the
         # same, or it would be lit by a lamp at the engine's full strength
         # beside others at the look's.
-        changes.append(with_point_lights)
+        changes += [with_point_lights, without_cut]
         preamble += ours("look.hlsl")
     if stem == "hslmatrix":
         changes.append(lambda s: with_our_grade(s, occlusion=True, show=show))
@@ -1081,10 +1137,10 @@ def changes_for(stem, listing, map_size, show):
         changes.append(with_hot_light)
         preamble += ours("look.hlsl")
     if stem in PROPS:
-        changes.append(with_ambient_relief)
+        changes += [with_ambient_relief, with_level_lights, without_cut]
         preamble += ours("look.hlsl") + ours("bake.hlsl")
     if takes_baked_light(listing):
-        changes.append(with_shaped_bake)
+        changes += [with_shaped_bake, with_level_lights, without_cut]
         if "daoLook" not in preamble:
             preamble += ours("look.hlsl") + ours("bake.hlsl")
     return changes, preamble

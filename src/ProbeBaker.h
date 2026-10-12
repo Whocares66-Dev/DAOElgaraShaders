@@ -13,7 +13,13 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <vector>
+
+namespace levelfiles
+{
+struct Geometry;
+}
 
 namespace probebaker
 {
@@ -31,6 +37,16 @@ struct Room
     // with the rest, or what a level's own probe holds: what the surfaces
     // about send on, and the sky.
     bool whole = false;
+    // How bright the baked light is that the room's probes look out on: the
+    // mean, over every ray of theirs that landed, of the lightmap there. And
+    // the same over the whole level the room is of, which is the middle the
+    // look's LightContrast turns about (Graphics.cpp).
+    float seen = 0;
+    float levelSeen = 0;
+    // Whether the level has lightmaps of our own (Relighter.h), which its
+    // probes were then baked from: such a level wants none of its ambient
+    // colour, and its lamps are in its lightmaps (Graphics.cpp).
+    bool relit = false;
     std::vector<dao::core::probes::Probe> probes;
 
     // A grid over the probes, seen from above, so that the nearest few are
@@ -50,7 +66,8 @@ using Rooms = std::vector<std::shared_ptr<const Room>>;
 // Starts the baker.
 // @param kept the folder a level's table is kept in once baked, as <level>.bin
 // @param game the game's folder, whose packages\core\data has the models
-void Start(const std::filesystem::path &kept, const std::filesystem::path &game);
+// @param relit a folder to look in for lightmaps of our own before a level's
+void Start(const std::filesystem::path &kept, const std::filesystem::path &game, const std::filesystem::path &relit);
 
 // Says the player has come into a level: the path of its .rim, as the engine
 // opens it. Its table is read if one is kept, and baked if not. Call it from
@@ -60,10 +77,19 @@ void Want(const std::filesystem::path &levelRim);
 // Returns a level's rooms baked here and now, on the calling thread: what
 // the baker's thread does for a level, for a tool that bakes with no game.
 // @return no rooms if the level's archives cannot be read
-std::vector<Room> BakeNow(const std::filesystem::path &levelRim, const std::filesystem::path &game);
+std::vector<Room> BakeNow(const std::filesystem::path &levelRim, const std::filesystem::path &game,
+                          const std::filesystem::path &relit = {});
+
+// Returns the places to stand on a tile of a level of terrain, a metre above
+// every surface of it that faces up and has free air over it, over a grid
+// that is the whole level's.
+// @param about the tile's own geometry first, then that of the tiles about it
+// @param spacing metres between the grid's points
+std::vector<dao::core::Point> PlacesOn(std::span<const levelfiles::Geometry *const> about, float spacing);
 
 // Returns a table's file, as a level's is kept.
-std::vector<std::byte> Write(const std::vector<Room> &rooms);
+// @param stamp what says which lightmaps of our own it was baked from, 0 for the level's
+std::vector<std::byte> Write(const std::vector<Room> &rooms, std::uint64_t stamp = 0);
 
 // Returns every room there are probes for now. The answer is whole and
 // never changes; ask again for the rooms baked since.

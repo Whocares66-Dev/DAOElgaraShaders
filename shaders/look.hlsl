@@ -1,14 +1,80 @@
 // The look's numbers that the level's and the figures' shaders read. Those
 // shaders are the game's own, rebuilt (build_shaders.py), and the engine hands
 // them what it has for them and nothing else; so the plugin puts these in
-// two float registers no shader of the game's reaches, on the game's Direct3D
+// the last four float registers, which no shader of the game's reaches (the
+// highest any of them is handed is c60, counted 2026-10-11), on the game's Direct3D
 // device (Graphics.cpp's KeepLookRegisters). With no plugin, or a look that
 // leaves one out, a number is 0, and at 0 each of these is the game's own.
 
-float4 daoLook[2] : register(c220);
+float4 daoLook[4] : register(c220);
 
 // How strongly a level's baked light is shaped by its normal maps (bake.hlsl).
 #define DAO_RELIEF daoLook[0].x
+// How much the baked light's own contrast is raised, and the brightness of
+// it that stays as it is (bake.hlsl's DaoShapedBake).
+#define DAO_LIGHT_CONTRAST daoLook[1].w
+#define DAO_LIGHT_PIVOT daoLook[2].x
+// How far the light of the shade is the sky's colour, under a sun
+// (bake.hlsl's DaoShapedBake): the look's CoolShade, nothing where the area
+// has no sun or has a moon (Graphics.cpp's KeepSun).
+#define DAO_COOL_SHADE daoLook[2].y
+// Whether a surface's colour is left as bright as it is lit, 1, or cut at
+// white as the game's shaders cut it, 0 (build_shaders.py's without_cut).
+// Every lit surface but the ground ends its lighting with a cut at white,
+// each channel on its own, which is all a picture of eight bits could hold:
+// a wall in strong warm light went pale yellow there and then, before the
+// picture's own roll-off could keep its colour (grade.hlsl). With the scene
+// in a 16-bit target and the look's Highlights on, the roll-off has it.
+#define DAO_UNCUT daoLook[2].z
+float3 DaoCut(float3 colour)
+{
+    return lerp(saturate(colour), max(colour, 0), saturate(DAO_UNCUT));
+}
+// What a level's own lamps are multiplied by on its walls, floors and
+// furnishings, and what is left of its ambient light where there is no sun
+// (build_shaders.py's with_level_lights). A level has its torches, fires and
+// braziers as real lights, dozens of them, each lighting what is near it by
+// the way it faces; and one flat colour added to everything, which is what
+// makes a hall lit by lava as even as an office. `sun` is the colour of the
+// area's sun.
+#define DAO_LEVEL_LAMPS daoLook[2].w
+#define DAO_AMBIENT_LESS daoLook[3].x
+// Whether the level's lightmaps are our own (Relighter.h), 1, or the game's,
+// 0: the plugin's word, by the area (Graphics.cpp). Ours hold light up to
+// kDaoRelitMost whites, kept as the square root of its share of that, so
+// that a pool of candlelight can be brighter than a white wall and the dark
+// beside it still has steps fine enough (bake.hlsl's DaoShapedBake).
+#define DAO_RELIT daoLook[3].z
+static const float kDaoRelitMost = 8.0;
+// What a figure's mirrored surroundings are multiplied by. What metal mirrors
+// is the level's own cube map, a photograph of the place as the game lit it;
+// in a level lit again the place is darker than its photograph wherever no
+// light of ours reaches, and armour's studs shone with a bright room in a
+// dark one (the user, 2026-10-11: "weird glow around armor"). So the
+// mirrored light is held to the light the figure stands in: `ambient` is its
+// ambient light, which is its place's own (the probes baked from our
+// lightmaps), and a place a fifth of white bright mirrors its photograph
+// whole.
+float DaoMirrored(float3 ambient)
+{
+    const float lit = saturate(dot(ambient, float3(0.2126, 0.7152, 0.0722)) / 0.2);
+    return lerp(1.0, lit, saturate(daoLook[3].z));
+}
+// How much of the light baked into a level is taken away, to see the level
+// by its real lights alone (bake.hlsl's DaoShapedBake): the look's BakedLess.
+#define DAO_BAKED_LESS daoLook[3].y
+float DaoLevelLamp()
+{
+    return 1 + DAO_LEVEL_LAMPS;
+}
+float DaoLevelAmbient(float3 sun)
+{
+    const float indoors = 1 - saturate(20 * max(sun.r, max(sun.g, sun.b)));
+    return 1 - saturate(DAO_AMBIENT_LESS) * indoors;
+}
+// The sky's light beside the sun's, as a colour that keeps a grey's
+// brightness: what is not lit by the sun out of doors is lit by the sky.
+static const float3 kDaoSkyLight = float3(0.70, 0.95, 1.40);
 // How far the figures' highlights are corrected, 0 to 1 (materials.hlsl).
 #define DAO_MATERIALS daoLook[0].y
 // How much of the sun's shadow falls on figures, 0 to 1 (build_shaders.py's

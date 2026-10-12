@@ -57,6 +57,8 @@
 // file a mod overrides loose is not seen, only the archives.
 #include "ProbeBaker.h"
 
+#include "LevelFiles.h"
+
 #include "dao/core/Dds.h"
 #include "dao/core/Erf.h"
 #include "dao/core/Gff4.h"
@@ -95,14 +97,12 @@ namespace
 namespace core = dao::core;
 namespace level = dao::core::level;
 namespace probes = dao::core::probes;
+using namespace levelfiles;
 
 constexpr float kSpacing = 5.0F;                 // metres between a room's probes
 constexpr float kTerrainSpacing = 8.0F;          // and between a terrain tile's, where light changes over more ground
 constexpr std::size_t kRays = 384;               // from each probe
-constexpr std::uint32_t kAtlasSide = 512;        // a lightmap is kept no larger a side
-constexpr std::uint32_t kTerrainAtlasSide = 256; // nor a terrain level's, which has a hundred of them
 constexpr std::uint32_t kSkySide = 32;           // a face of a probe's photograph is read this large
-constexpr int kTilesAbout = 2;                   // a ray from a tile may land on the tiles this many away
 constexpr float kCell = 10.0F;                   // metres a side: a cell of a room's grid of probes
 // How many metres along the ground a metre of height counts for, in how near
 // a probe is: light changes more from one floor to the next than along one,
@@ -129,660 +129,9 @@ constexpr float kSendsOn = 0.6F;
 constexpr float kSendsMost = 4.0F;   // the most a fitted share may be
 constexpr std::size_t kFitLeast = 64; // surfaces seen in the photograph, under which nothing is fitted
 
-// GFF4's labels for what a layout says of a light probe (dev/gff4_fields.csv).
-constexpr std::uint32_t kChildren = 6999;
-constexpr std::uint32_t kTranslation = 6047;
-constexpr std::uint32_t kCubeMap = 3104;       // EnvLightProbeEnvMap
-constexpr std::uint32_t kIrradianceRed = 6336; // MMHLightProbeIrradianceRed; green and blue follow
-constexpr std::size_t kNodesDeep = 64;
 
 constexpr std::uint32_t kTableMagic = 0x50474C45; // "ELGP"
-constexpr std::uint32_t kTableVersion = 1;
-
-// A file's or a room's name for the log: they are plain letters and digits.
-std::string Text(const std::wstring &name)
-{
-    return std::filesystem::path(name).string();
-}
-
-std::wstring Lower(std::wstring text)
-{
-    std::ranges::transform(text, text.begin(), [](wchar_t letter) { return static_cast<wchar_t>(std::towlower(letter)); });
-    return text;
-}
-
-// One of the game's archives: its directory, and any file of it by name.
-// An archive read all through a bake is held open, the models' two and a
-// level's rooms': opened for each reading, on a thread whose reading gives
-// way to everything, a room of the Circle took seven seconds where it had
-// taken half of one (2026-10-11). The rest are opened for each reading and
-// not held: a terrain level has an archive or two to a tile, five hundred
-// in Denerim's largest, and a process may hold 512 files open.
-class Archive
-{
-  public:
-    static std::optional<Archive> Open(const std::filesystem::path &path, bool held = false)
-    {
-        Archive archive;
-        archive.path_ = path;
-        archive.held_ = held;
-        std::ifstream file(path, std::ios::binary);
-        std::vector<std::byte> header(core::erf::kHeaderSize);
-        if (!file.read(reinterpret_cast<char *>(header.data()), static_cast<std::streamsize>(header.size())))
-        {
-            return std::nullopt;
-        }
-        const std::optional<std::uint32_t> count = core::erf::EntryCount(header);
-        if (!count)
-        {
-            return std::nullopt;
-        }
-        header.resize(core::erf::kHeaderSize + std::size_t{*count} * core::erf::kEntrySize);
-        file.read(reinterpret_cast<char *>(header.data() + core::erf::kHeaderSize),
-                  static_cast<std::streamsize>(header.size() - core::erf::kHeaderSize));
-        for (core::erf::Entry &entry : core::erf::Entries(std::span(header).first(
-                 core::erf::kHeaderSize + static_cast<std::size_t>(std::max<std::streamsize>(file.gcount(), 0)))))
-        {
-            archive.entries_.emplace(Lower(entry.name), entry);
-        }
-        return archive;
-    }
-
-    bool Has(const std::wstring &name) const
-    {
-        return entries_.contains(Lower(name));
-    }
-
-    std::optional<std::vector<std::byte>> Read(const std::wstring &name) const
-    {
-        const auto found = entries_.find(Lower(name));
-        if (found == entries_.end())
-        {
-            return std::nullopt;
-        }
-        std::vector<std::byte> bytes(found->second.size);
-        std::ifstream opened;
-        std::ifstream &file = held_ ? file_ : opened;
-        if (!file.is_open())
-        {
-            file.open(path_, std::ios::binary);
-        }
-        file.clear();
-        file.seekg(found->second.offset);
-        if (!file.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size())))
-        {
-            return std::nullopt;
-        }
-        return bytes;
-    }
-
-    const std::map<std::wstring, core::erf::Entry> &Entries() const
-    {
-        return entries_;
-    }
-
-  private:
-    std::filesystem::path path_;
-    bool held_ = false;
-    mutable std::ifstream file_; // open from the first reading on, if held
-    std::map<std::wstring, core::erf::Entry> entries_;
-};
-
-// A lightmap as three or four bytes a pixel: its colour, and for a terrain
-// level its alpha after, where the sun reaches.
-struct Atlas
-{
-    std::uint32_t width = 0;
-    std::uint32_t height = 0;
-    std::uint32_t channels = 3;
-    std::vector<std::uint8_t> pixels;
-};
-
-Atlas AtlasOf(const core::dds::Image &image, std::uint32_t channels, std::uint32_t sideMost)
-{
-    // Halved until it is small enough a side, each pixel the mean of four.
-    Atlas atlas{image.width, image.height, channels, {}};
-    atlas.pixels.resize(std::size_t{image.width} * image.height * channels);
-    for (std::size_t i = 0; i < std::size_t{image.width} * image.height; ++i)
-    {
-        std::copy_n(image.rgba.begin() + static_cast<std::ptrdiff_t>(i * 4), channels,
-                    atlas.pixels.begin() + static_cast<std::ptrdiff_t>(i * channels));
-    }
-    while ((atlas.width > sideMost || atlas.height > sideMost) && atlas.width % 2 == 0 && atlas.height % 2 == 0)
-    {
-        Atlas half{atlas.width / 2, atlas.height / 2, channels, {}};
-        half.pixels.resize(std::size_t{half.width} * half.height * channels);
-        for (std::size_t y = 0; y < half.height; ++y)
-        {
-            for (std::size_t x = 0; x < half.width; ++x)
-            {
-                for (std::size_t channel = 0; channel < channels; ++channel)
-                {
-                    const auto at = [&](std::size_t px, std::size_t py) {
-                        return unsigned{atlas.pixels[(py * atlas.width + px) * channels + channel]};
-                    };
-                    half.pixels[(y * half.width + x) * channels + channel] = static_cast<std::uint8_t>(
-                        (at(2 * x, 2 * y) + at(2 * x + 1, 2 * y) + at(2 * x, 2 * y + 1) + at(2 * x + 1, 2 * y + 1) + 2) / 4);
-                }
-            }
-        }
-        atlas = std::move(half);
-    }
-    return atlas;
-}
-
-// A model as the rooms place it: its mesh nodes and its mesh file's chunks.
-struct ModelParts
-{
-    level::Model model;
-    std::vector<level::MeshChunk> chunks;
-};
-
-// A room's lightmapped triangles and the tree rays are cast against.
-struct Geometry
-{
-    std::vector<level::LitTriangle> lit;
-    std::optional<core::TriangleTree> tree; // over `lit`, in its order; none for a room not read
-    std::set<std::uint32_t> atlases;        // the lightmaps its triangles are in
-    std::vector<std::wstring> models;       // the models that are the level's own, a tile's ground
-    std::vector<std::pair<std::size_t, std::size_t>> ground; // their triangles in `lit`: from, and to before
-};
-
-// A light probe of the level's own, as a layout has it.
-struct OwnProbe
-{
-    core::Point at{}; // in the level's space
-    probes::Irradiance light{};
-    std::wstring cube; // its photograph's file
-};
-
-// What a ray landed on: the lightmap there, and how far it is.
-struct Lit
-{
-    probes::Colour baked{};
-    float sun = 0; // the lightmap's alpha: how much of the sun reaches the surface
-    float distance = 0;
-};
-
-// A terrain level's tile by its name's end, "<x>_<y>_0".
-struct Tile
-{
-    int x = 0;
-    int y = 0;
-};
-
-std::optional<int> WholeNumber(std::wstring_view text)
-{
-    const bool minus = text.starts_with(L'-');
-    const std::wstring_view digits = text.substr(minus ? 1 : 0);
-    if (digits.empty() || digits.size() > 6 || !std::ranges::all_of(digits, [](wchar_t c) { return std::iswdigit(c) != 0; }))
-    {
-        return std::nullopt;
-    }
-    int value = 0;
-    for (const wchar_t digit : digits)
-    {
-        value = value * 10 + (digit - L'0');
-    }
-    return minus ? -value : value;
-}
-
-std::optional<Tile> TileOf(std::wstring_view id)
-{
-    const std::size_t first = id.find(L'_');
-    const std::size_t second = first == std::wstring_view::npos ? first : id.find(L'_', first + 1);
-    if (second == std::wstring_view::npos || id.substr(second + 1) != L"0")
-    {
-        return std::nullopt;
-    }
-    const std::optional<int> x = WholeNumber(id.substr(0, first));
-    const std::optional<int> y = WholeNumber(id.substr(first + 1, second - first - 1));
-    return x && y ? std::optional<Tile>(Tile{*x, *y}) : std::nullopt;
-}
-
-void ProbesUnder(const core::gff4::Struct &node, std::size_t deep, std::vector<OwnProbe> &out)
-{
-    if (deep > kNodesDeep)
-    {
-        return;
-    }
-    for (const core::gff4::Struct &child : node.Structs(kChildren))
-    {
-        if (child.Label() != "nlpr")
-        {
-            if (child.Shape().Find(kChildren) != nullptr)
-            {
-                ProbesUnder(child, deep + 1, out);
-            }
-            continue;
-        }
-        OwnProbe probe;
-        bool lit = false;
-        for (const core::gff4::Struct &part : child.Structs(kChildren))
-        {
-            if (part.Label() == "trsl")
-            {
-                if (const std::vector<float> at = part.Floats(kTranslation); at.size() >= 3)
-                {
-                    std::copy_n(at.begin(), 3, probe.at.begin());
-                }
-            }
-            else if (part.Shape().Find(kCubeMap) != nullptr)
-            {
-                probe.cube = part.String(kCubeMap).value_or(L"");
-            }
-            else if (part.Shape().Find(kIrradianceRed) != nullptr)
-            {
-                lit = true;
-                for (std::uint32_t channel = 0; channel < 3; ++channel)
-                {
-                    const std::vector<float> matrix = part.Floats(kIrradianceRed + channel);
-                    lit = lit && matrix.size() == 16;
-                    std::copy_n(matrix.begin(), std::min<std::size_t>(matrix.size(), 16),
-                                probe.light.begin() + static_cast<std::ptrdiff_t>(channel * 16));
-                }
-            }
-        }
-        if (lit)
-        {
-            out.push_back(std::move(probe));
-        }
-    }
-}
-
-// A level being baked: its archives, and what has been read of it so far. A
-// room is known by what its definition's name ends in: a room's number, a
-// tile's "<x>_<y>_0", and nothing at all for the level's own definition.
-class Level
-{
-  public:
-    Level(std::filesystem::path folder, std::wstring name, Archive rooms, Archive *hierarchies, Archive *meshes)
-        : folder_(std::move(folder)), name_(Lower(std::move(name))), rooms_(std::move(rooms)), hierarchies_(hierarchies),
-          meshes_(meshes)
-    {
-        // Every archive of the level's folder but the rooms' definitions: a
-        // room's layout and its lightmaps are in one or another of them.
-        std::error_code error;
-        for (const auto &entry : std::filesystem::directory_iterator(folder_, error))
-        {
-            if (Lower(entry.path().extension().wstring()) == L".rim" && Lower(entry.path().stem().wstring()) != name_)
-            {
-                if (std::optional<Archive> archive = Archive::Open(entry.path()))
-                {
-                    for (const auto &[file, unused] : archive->Entries())
-                    {
-                        where_.emplace(file, others_.size());
-                    }
-                    others_.push_back(std::move(*archive));
-                }
-            }
-        }
-        const std::wstring stem = name_ + L"_";
-        std::vector<std::pair<Tile, std::wstring>> tiles;
-        for (const auto &[file, entry] : rooms_.Entries())
-        {
-            if (!file.starts_with(stem) || !file.ends_with(L".rml"))
-            {
-                continue;
-            }
-            std::wstring id = file.substr(stem.size(), file.size() - stem.size() - 4);
-            if (WholeNumber(id).value_or(-1) >= 0)
-            {
-                numbered_.push_back(std::move(id));
-            }
-            else if (const std::optional<Tile> tile = TileOf(id))
-            {
-                tiles.emplace_back(*tile, std::move(id));
-            }
-        }
-        // Column by column, so that what is two columns back is done with.
-        std::ranges::sort(tiles, {}, [](const auto &tile) { return std::pair(tile.first.x, tile.first.y); });
-        for (auto &[tile, id] : tiles)
-        {
-            tiles_.push_back(std::move(id));
-        }
-    }
-
-    // Whether the level is made of terrain, tiles and no rooms.
-    bool Terrain() const
-    {
-        return numbered_.empty() && !tiles_.empty();
-    }
-
-    // The level's rooms, or its tiles in the order they are baked.
-    const std::vector<std::wstring> &Rooms() const
-    {
-        return Terrain() ? tiles_ : numbered_;
-    }
-
-    const level::Room *RoomOf(const std::wstring &id)
-    {
-        if (const auto found = definitions_.find(id); found != definitions_.end())
-        {
-            return found->second ? &*found->second : nullptr;
-        }
-        std::optional<level::Room> room;
-        if (const auto bytes = rooms_.Read(Stem(id) + L".rml"))
-        {
-            if (const auto file = core::gff4::File::Parse(*bytes))
-            {
-                room = level::RoomOf(*file);
-            }
-        }
-        const auto kept = definitions_.emplace(id, std::move(room)).first;
-        return kept->second ? &*kept->second : nullptr;
-    }
-
-    // The rooms whose triangles a ray from a room may land on beside its
-    // own: those its definition says are seen from it, and for a tile those
-    // within two of it.
-    std::vector<std::wstring> SeenFrom(const std::wstring &id)
-    {
-        std::vector<std::wstring> seen;
-        if (const std::optional<Tile> tile = Terrain() ? TileOf(id) : std::nullopt)
-        {
-            for (int x = tile->x - kTilesAbout; x <= tile->x + kTilesAbout; ++x)
-            {
-                for (int y = tile->y - kTilesAbout; y <= tile->y + kTilesAbout; ++y)
-                {
-                    std::wstring other = std::to_wstring(x) + L"_" + std::to_wstring(y) + L"_0";
-                    if (other != id && rooms_.Has(Stem(other) + L".rml"))
-                    {
-                        seen.push_back(std::move(other));
-                    }
-                }
-            }
-        }
-        else if (const level::Room *room = RoomOf(id))
-        {
-            for (const std::uint32_t number : room->sees)
-            {
-                if (std::wstring other = std::to_wstring(number); other != id)
-                {
-                    seen.push_back(std::move(other));
-                }
-            }
-        }
-        return seen;
-    }
-
-    // The level's own probes that a room's layout has, in the level's space.
-    std::vector<OwnProbe> ProbesOf(const std::wstring &id)
-    {
-        std::vector<OwnProbe> found;
-        const level::Room *room = RoomOf(id);
-        const std::wstring layout = Stem(id) + L"_ll";
-        const std::optional<std::vector<std::byte>> bytes = Find(layout + L".mmh");
-        if (room == nullptr || !bytes)
-        {
-            return found;
-        }
-        const auto placed = std::ranges::find_if(room->models, [&](const level::Placed &model) {
-            return Lower(model.file) == layout;
-        });
-        const auto file = core::gff4::File::Parse(*bytes);
-        const std::optional<core::gff4::Struct> root = file ? file->Root() : std::nullopt;
-        if (placed == room->models.end() || !root)
-        {
-            return found;
-        }
-        ProbesUnder(*root, 0, found);
-        for (OwnProbe &probe : found)
-        {
-            probe.at = level::InLevel(*room, *placed, probe.at);
-        }
-        return found;
-    }
-
-    // The room's lightmapped triangles and a tree over them, made once.
-    const Geometry &GeometryOf(const std::wstring &id)
-    {
-        if (const auto found = geometry_.find(id); found != geometry_.end())
-        {
-            return found->second;
-        }
-        Geometry &geometry = geometry_[id];
-        std::vector<level::LitTriangle> &out = geometry.lit;
-        const level::Room *room = RoomOf(id);
-        if (room == nullptr)
-        {
-            return geometry;
-        }
-        for (const level::Placed &placed : room->models)
-        {
-            if (placed.parts.empty())
-            {
-                continue;
-            }
-            if (const ModelParts *parts = ModelOf(placed.file))
-            {
-                const bool own = Lower(placed.file).starts_with(name_ + L"_");
-                const std::size_t from = out.size();
-                level::AddTriangles(
-                    *room, placed, parts->model, parts->chunks,
-                    [&](const std::wstring &atlas) {
-                        const std::uint32_t number = AtlasNumber(atlas);
-                        geometry.atlases.insert(number);
-                        return number;
-                    },
-                    out);
-                if (own)
-                {
-                    geometry.models.push_back(Lower(placed.file));
-                    geometry.ground.emplace_back(from, out.size());
-                }
-            }
-        }
-        std::vector<core::Triangle> corners;
-        corners.reserve(out.size());
-        for (const level::LitTriangle &triangle : out)
-        {
-            corners.push_back(triangle.corners);
-        }
-        geometry.tree.emplace(corners);
-        return geometry;
-    }
-
-    // Lets go of the triangles, the lightmaps and the ground of the tiles
-    // of the columns before `column`.
-    void DropBefore(int column)
-    {
-        for (auto at = geometry_.begin(); at != geometry_.end();)
-        {
-            const std::optional<Tile> tile = TileOf(at->first);
-            if (!tile || tile->x >= column)
-            {
-                ++at;
-                continue;
-            }
-            for (const std::uint32_t atlas : at->second.atlases)
-            {
-                atlases_.erase(atlas);
-            }
-            for (const std::wstring &model : at->second.models)
-            {
-                models_.erase(model);
-            }
-            at = geometry_.erase(at);
-        }
-    }
-
-    // The lightmap at a place of an atlas, each 0 to 1.
-    Lit LitAt(std::uint32_t atlas, const level::Uv &uv, float distance)
-    {
-        const Atlas &image = AtlasOf(atlas);
-        if (image.pixels.empty())
-        {
-            return {{}, 0, distance};
-        }
-        const auto x = static_cast<std::size_t>(std::clamp(uv[0] * static_cast<float>(image.width), 0.0F,
-                                                           static_cast<float>(image.width - 1)));
-        const auto y = static_cast<std::size_t>(std::clamp(uv[1] * static_cast<float>(image.height), 0.0F,
-                                                           static_cast<float>(image.height - 1)));
-        const std::uint8_t *pixel = &image.pixels[(y * image.width + x) * image.channels];
-        return {{static_cast<float>(pixel[0]) / 255.0F, static_cast<float>(pixel[1]) / 255.0F,
-                 static_cast<float>(pixel[2]) / 255.0F},
-                image.channels > 3 ? static_cast<float>(pixel[3]) / 255.0F : 0.0F, distance};
-    }
-
-    // A file of the level's own archives, a room's first.
-    std::optional<std::vector<std::byte>> Find(const std::wstring &file) const
-    {
-        if (const auto found = where_.find(Lower(file)); found != where_.end())
-        {
-            return others_[found->second].Read(file);
-        }
-        return rooms_.Read(file);
-    }
-
-    const std::wstring &Name() const
-    {
-        return name_;
-    }
-
-  private:
-    // A room's files' names before what says which file: <level>_<room>.
-    std::wstring Stem(const std::wstring &id) const
-    {
-        return id.empty() ? name_ : name_ + L"_" + id;
-    }
-
-    const ModelParts *ModelOf(const std::wstring &name)
-    {
-        const std::wstring key = Lower(name);
-        if (const auto found = models_.find(key); found != models_.end())
-        {
-            return found->second ? &*found->second : nullptr;
-        }
-        std::optional<ModelParts> parts;
-        // The game's models, then the level's own: a tile's ground.
-        std::optional<std::vector<std::byte>> tree = hierarchies_->Read(key + L".mmh");
-        if (!tree)
-        {
-            tree = Find(key + L".mmh");
-        }
-        if (const auto file = tree ? core::gff4::File::Parse(*tree) : std::nullopt)
-        {
-            ModelParts read;
-            read.model = level::ModelOf(*file);
-            std::wstring meshFile = read.model.meshFile.empty() ? key : read.model.meshFile;
-            if (!meshFile.ends_with(L".msh"))
-            {
-                meshFile += L".msh";
-            }
-            std::optional<std::vector<std::byte>> mesh = meshes_->Read(meshFile);
-            if (!mesh)
-            {
-                mesh = Find(meshFile);
-            }
-            if (const auto meshParsed = mesh ? core::gff4::File::Parse(*mesh) : std::nullopt)
-            {
-                read.chunks = level::Meshes(*meshParsed);
-                parts = std::move(read);
-            }
-        }
-        const auto kept = models_.emplace(key, std::move(parts)).first;
-        return kept->second ? &*kept->second : nullptr;
-    }
-
-    std::uint32_t AtlasNumber(const std::wstring &file)
-    {
-        const std::wstring key = Lower(file);
-        if (const auto found = atlasNumbers_.find(key); found != atlasNumbers_.end())
-        {
-            return found->second;
-        }
-        const auto number = static_cast<std::uint32_t>(atlasNames_.size());
-        atlasNames_.push_back(key);
-        atlasNumbers_.emplace(key, number);
-        return number;
-    }
-
-    const Atlas &AtlasOf(std::uint32_t number)
-    {
-        if (const auto found = atlases_.find(number); found != atlases_.end())
-        {
-            return found->second;
-        }
-        Atlas atlas;
-        if (number < atlasNames_.size())
-        {
-            if (const auto bytes = Find(atlasNames_[number]))
-            {
-                if (const std::optional<core::dds::Image> image = core::dds::Decode(*bytes))
-                {
-                    atlas = Terrain() ? probebaker::AtlasOf(*image, 4, kTerrainAtlasSide)
-                                      : probebaker::AtlasOf(*image, 3, kAtlasSide);
-                }
-            }
-        }
-        return atlases_.emplace(number, std::move(atlas)).first->second;
-    }
-
-    std::filesystem::path folder_;
-    std::wstring name_;
-    Archive rooms_;
-    Archive *hierarchies_;
-    Archive *meshes_;
-    std::vector<Archive> others_;
-    std::unordered_map<std::wstring, std::size_t> where_; // a file's name to the one of others_ it is in
-    std::vector<std::wstring> numbered_;
-    std::vector<std::wstring> tiles_;
-    std::map<std::wstring, std::optional<level::Room>> definitions_;
-    std::map<std::wstring, Geometry> geometry_;
-    std::unordered_map<std::wstring, std::optional<ModelParts>> models_;
-    std::unordered_map<std::wstring, std::uint32_t> atlasNumbers_;
-    std::vector<std::wstring> atlasNames_;
-    std::map<std::uint32_t, Atlas> atlases_;
-};
-
-// A room and the rooms seen from it that have triangles, the room first,
-// each with its own tree: a ray is cast against each and lands on the
-// nearest.
-std::vector<const Geometry *> About(Level &level, const std::wstring &id)
-{
-    std::vector<const Geometry *> about{&level.GeometryOf(id)};
-    for (const std::wstring &seen : level.SeenFrom(id))
-    {
-        if (const Geometry &other = level.GeometryOf(seen); !other.lit.empty())
-        {
-            about.push_back(&other);
-        }
-    }
-    return about;
-}
-
-// What a ray from a place lands on, or nothing.
-std::optional<Lit> Look(Level &level, std::span<const Geometry *const> about, const core::Point &place,
-                        const core::Point &ray)
-{
-    const Geometry *nearest = nullptr;
-    core::RayHit hit;
-    float most = std::numeric_limits<float>::infinity();
-    for (const Geometry *geometry : about)
-    {
-        if (!geometry->tree)
-        {
-            continue;
-        }
-        if (const std::optional<core::RayHit> found = geometry->tree->Cast(place, ray, 1e-3F, most))
-        {
-            nearest = geometry;
-            hit = *found;
-            most = found->distance;
-        }
-    }
-    if (nearest == nullptr)
-    {
-        return std::nullopt;
-    }
-    const level::LitTriangle &triangle = nearest->lit[hit.triangle];
-    const float w = 1 - hit.u - hit.v;
-    return level.LitAt(triangle.atlas,
-                       {w * triangle.uv[0][0] + hit.u * triangle.uv[1][0] + hit.v * triangle.uv[2][0],
-                        w * triangle.uv[0][1] + hit.u * triangle.uv[1][1] + hit.v * triangle.uv[2][1]},
-                       hit.distance);
-}
+constexpr std::uint32_t kTableVersion = 3; // 2: a room's `seen`; 3: the stamp of the lightmaps baked from
 
 // The probes of one room of a level of rooms: baked against its own
 // triangles and those of the rooms seen from it.
@@ -804,11 +153,16 @@ std::optional<Room> BakeRoom(Level &level, const std::wstring &id, std::span<con
     baked.key = own.front().at;
     baked.own = own.front().light;
     baked.whole = true;
+    SeenSum seen;
     for (const core::Point &place : probes::FloorPlaces(*about.front()->tree, kSpacing))
     {
         const std::optional<probes::Coefficients> light =
             probes::Bake(rays, [&](const core::Point &ray) -> std::optional<probes::Landed> {
                 const std::optional<Lit> lit = Look(level, about, place, ray);
+                if (lit)
+                {
+                    seen.Add(*lit);
+                }
                 return lit ? std::optional<probes::Landed>(probes::Landed{lit->baked, lit->distance}) : std::nullopt;
             });
         if (light)
@@ -816,6 +170,7 @@ std::optional<Room> BakeRoom(Level &level, const std::wstring &id, std::span<con
             baked.probes.push_back({place, probes::Matrices(*light)});
         }
     }
+    baked.seen = seen.Mean();
     spdlog::debug("light probes: room {}: key {:.2f} {:.2f} {:.2f}, {} triangles of its own, {} rooms about it, {} probes",
                   Text(id), baked.key[0], baked.key[1], baked.key[2], about.front()->lit.size(), about.size() - 1,
                   baked.probes.size());
@@ -1141,7 +496,8 @@ void KeepSky(Level &level, std::span<const Geometry *const> about, const OwnProb
 // The light at a place as its photograph would have it: along each ray what
 // the surface it lands on sends, or the sky. Nothing for a place closed in.
 std::optional<probes::Coefficients> Reckon(Level &level, std::span<const Geometry *const> about, const core::Point &place,
-                                           std::span<const core::Point> rays, const Sends &sends, const Photograph &sky)
+                                           std::span<const core::Point> rays, const Sends &sends, const Photograph &sky,
+                                           SeenSum *seen = nullptr)
 {
     probes::Coefficients light{};
     const float each = 4 * std::numbers::pi_v<float> / static_cast<float>(rays.size());
@@ -1152,6 +508,10 @@ std::optional<probes::Coefficients> Reckon(Level &level, std::span<const Geometr
         if (const std::optional<Lit> lit = Look(level, about, place, ray))
         {
             close += lit->distance < kNearWall ? 1 : 0;
+            if (seen != nullptr)
+            {
+                seen->Add(*lit);
+            }
             for (std::size_t channel = 0; channel < 3; ++channel)
             {
                 colour.at(channel) = sends.ofBaked.at(channel) * lit->baked.at(channel) +
@@ -1203,6 +563,8 @@ std::wstring TileAt(Level &level, const core::Point &place)
     }
     return nearest;
 }
+
+} // namespace
 
 // The places to stand on a tile: over a grid that is the whole level's, a
 // metre above every surface of the tile that faces up and has free air over
@@ -1311,6 +673,69 @@ std::vector<core::Point> PlacesOn(std::span<const Geometry *const> about, float 
     return places;
 }
 
+namespace
+{
+
+// The probes of a level of terrain that is lit again (Relighter.h), a room
+// for each of the level's own: baked as a room's are, each side of a figure
+// lit as the surface behind it is, since a lightmap of ours holds all the
+// light of a surface and the level's own probe, a photograph of the level as
+// the game lit it, says nothing of it.
+std::vector<Room> BakeTerrainRelit(Level &level, std::span<const core::Point> rays)
+{
+    const std::vector<OwnProbe> owns = level.ProbesOf(L"");
+    std::vector<Room> rooms(owns.size());
+    std::vector<SeenSum> seen(owns.size());
+    for (std::size_t i = 0; i < owns.size(); ++i)
+    {
+        rooms[i].key = owns[i].at;
+        rooms[i].own = owns[i].light;
+        rooms[i].whole = true;
+    }
+    if (owns.empty())
+    {
+        return rooms;
+    }
+    for (const std::wstring &id : level.Rooms())
+    {
+        if (const std::optional<Tile> tile = TileOf(id))
+        {
+            level.DropBefore(tile->x - kTilesAbout);
+        }
+        const std::vector<const Geometry *> about = About(level, id);
+        if (about.front()->lit.empty())
+        {
+            continue;
+        }
+        for (const core::Point &place : PlacesOn(about, kTerrainSpacing))
+        {
+            std::size_t own = 0;
+            for (std::size_t i = 1; i < owns.size(); ++i)
+            {
+                own = Distance(owns[i].at, place) < Distance(owns[own].at, place) ? i : own;
+            }
+            const std::optional<probes::Coefficients> light =
+                probes::Bake(rays, [&](const core::Point &ray) -> std::optional<probes::Landed> {
+                    const std::optional<Lit> lit = Look(level, about, place, ray);
+                    if (lit)
+                    {
+                        seen.at(own).Add(*lit);
+                    }
+                    return lit ? std::optional<probes::Landed>(probes::Landed{lit->baked, lit->distance}) : std::nullopt;
+                });
+            if (light)
+            {
+                rooms[own].probes.push_back({place, probes::Matrices(*light)});
+            }
+        }
+    }
+    for (std::size_t i = 0; i < rooms.size(); ++i)
+    {
+        rooms[i].seen = seen[i].Mean();
+    }
+    return rooms;
+}
+
 // The probes of a level of terrain, a room for each of the level's own.
 std::vector<Room> BakeTerrain(Level &level, std::span<const core::Point> rays)
 {
@@ -1378,6 +803,7 @@ std::vector<Room> BakeTerrain(Level &level, std::span<const core::Point> rays)
                          std::sqrt(oursSquared / std::max(theirsSquared, 1e-30)));
         }
     }
+    std::vector<SeenSum> seen(taken.size());
     const auto nearestOwn = [&](const core::Point &place) {
         std::size_t nearest = 0;
         for (std::size_t i = 1; i < taken.size(); ++i)
@@ -1405,7 +831,7 @@ std::vector<Room> BakeTerrain(Level &level, std::span<const core::Point> rays)
         for (const core::Point &place : places)
         {
             const std::size_t own = nearestOwn(place);
-            if (const auto light = Reckon(level, about, place, rays, sends, taken[own].sky))
+            if (const auto light = Reckon(level, about, place, rays, sends, taken[own].sky, &seen.at(own)))
             {
                 rooms[own].probes.push_back({place, probes::Matrices(*light)});
                 ++open;
@@ -1413,6 +839,10 @@ std::vector<Room> BakeTerrain(Level &level, std::span<const core::Point> rays)
         }
         spdlog::debug("light probes: tile {}: {} triangles, {} tiles about it, {} places, {} of them open",
                       Text(id), about.front()->lit.size(), about.size() - 1, places.size(), open);
+    }
+    for (std::size_t i = 0; i < rooms.size(); ++i)
+    {
+        rooms[i].seen = seen[i].Mean();
     }
     return rooms;
 }
@@ -1479,13 +909,17 @@ template <class T> bool Take(std::span<const std::byte> &file, T &value)
 
 // The rooms of a table's file, or nothing for bytes that are not one of this
 // version or stop short.
-std::optional<std::vector<Room>> Read(std::span<const std::byte> file)
+// @param wanted the stamp the table is to have, or kAnyStamp for any but none
+constexpr std::uint64_t kAnyStamp = ~0ULL;
+std::optional<std::vector<Room>> Read(std::span<const std::byte> file, std::uint64_t wanted)
 {
     std::uint32_t magic = 0;
     std::uint32_t version = 0;
+    std::uint64_t stamp = 0;
     std::uint32_t count = 0;
-    if (!Take(file, magic) || !Take(file, version) || !Take(file, count) || magic != kTableMagic ||
-        version != kTableVersion || count > 4096)
+    if (!Take(file, magic) || !Take(file, version) || !Take(file, stamp) || !Take(file, count) ||
+        magic != kTableMagic || version != kTableVersion || (wanted == kAnyStamp ? stamp == 0 : stamp != wanted) ||
+        count > 4096)
     {
         return std::nullopt;
     }
@@ -1494,12 +928,14 @@ std::optional<std::vector<Room>> Read(std::span<const std::byte> file)
     {
         std::uint32_t whole = 0;
         std::uint32_t probes = 0;
-        if (!Take(file, room.key) || !Take(file, room.own) || !Take(file, whole) || !Take(file, probes) ||
+        if (!Take(file, room.key) || !Take(file, room.own) || !Take(file, whole) || !Take(file, room.seen) ||
+            !Take(file, probes) ||
             file.size() / sizeof(probes::Probe) < probes)
         {
             return std::nullopt;
         }
         room.whole = whole != 0;
+        room.relit = stamp != 0;
         room.probes.resize(probes);
         for (probes::Probe &probe : room.probes)
         {
@@ -1515,6 +951,7 @@ struct State
 {
     std::filesystem::path kept;
     std::filesystem::path data;
+    std::filesystem::path relit; // where lightmaps of our own are looked for
     std::mutex lock;
     std::condition_variable wake;
     std::deque<std::filesystem::path> wanted;
@@ -1539,9 +976,18 @@ void Publish(State &state, std::vector<Room> more)
         const std::scoped_lock lock(state.lock);
         old = state.rooms;
     }
+    // The level's middle: its rooms' own, each by how many probes it has.
+    double light = 0;
+    double probes = 0;
+    for (const Room &room : more)
+    {
+        light += double{room.seen} * static_cast<double>(room.probes.size());
+        probes += static_cast<double>(room.probes.size());
+    }
     auto next = std::make_shared<Rooms>(*old);
     for (Room &room : more)
     {
+        room.levelSeen = probes > 0 ? static_cast<float>(light / probes) : 0.0F;
         next->push_back(std::make_shared<const Room>(std::move(room)));
     }
     const std::scoped_lock lock(state.lock);
@@ -1569,11 +1015,16 @@ std::optional<std::vector<Room>> BakeRooms(State &state, const std::filesystem::
     }
     Level level(levelRim.parent_path(), levelRim.stem().wstring(), std::move(*rooms), &*state.hierarchies,
                 &*state.meshes);
+    const bool relit = !state.relit.empty() && RelitStamp(state.relit, levelRim.stem().wstring()) != 0;
+    if (relit)
+    {
+        level.ReadRelitFrom(state.relit);
+    }
     const std::vector<core::Point> rays = probes::Directions(kRays);
     std::vector<Room> baked;
     if (level.Terrain())
     {
-        baked = BakeTerrain(level, rays);
+        baked = relit ? BakeTerrainRelit(level, rays) : BakeTerrain(level, rays);
     }
     else
     {
@@ -1588,6 +1039,7 @@ std::optional<std::vector<Room>> BakeRooms(State &state, const std::filesystem::
     std::erase_if(baked, [](const Room &room) { return room.probes.empty(); });
     for (Room &room : baked)
     {
+        room.relit = relit;
         Index(room);
     }
     return baked;
@@ -1607,10 +1059,25 @@ std::size_t ProbesIn(const std::vector<Room> &rooms)
 void BakeLevel(State &state, const std::filesystem::path &levelRim)
 {
     const std::filesystem::path kept = state.kept / (levelRim.stem().wstring() + L".bin");
+    const std::uint64_t stamp = state.relit.empty() ? 0 : RelitStamp(state.relit, levelRim.stem().wstring());
+    // A level lit again comes with its probes, made of the lights themselves
+    // (Relighter.cpp): they are taken as they are.
+    if (!state.relit.empty())
+    {
+        std::ifstream in(state.relit / (levelRim.stem().wstring() + L".elgp"), std::ios::binary);
+        const std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        if (std::optional<std::vector<Room>> rooms = Read(std::as_bytes(std::span(bytes.data(), bytes.size())), kAnyStamp))
+        {
+            spdlog::info("light probes: {} lit again, {} rooms, {} probes of its own lights", levelRim.stem().string(),
+                         rooms->size(), ProbesIn(*rooms));
+            Publish(state, std::move(*rooms));
+            return;
+        }
+    }
     {
         std::ifstream in(kept, std::ios::binary);
         const std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-        if (std::optional<std::vector<Room>> rooms = Read(std::as_bytes(std::span(bytes.data(), bytes.size()))))
+        if (std::optional<std::vector<Room>> rooms = Read(std::as_bytes(std::span(bytes.data(), bytes.size())), stamp))
         {
             spdlog::info("light probes: {} kept, {} rooms, {} probes", levelRim.stem().string(), rooms->size(),
                          ProbesIn(*rooms));
@@ -1626,7 +1093,7 @@ void BakeLevel(State &state, const std::filesystem::path &levelRim)
     }
     std::error_code error;
     std::filesystem::create_directories(state.kept, error);
-    const std::vector<std::byte> file = Write(*baked);
+    const std::vector<std::byte> file = Write(*baked, stamp);
     std::ofstream out(kept, std::ios::binary);
     out.write(reinterpret_cast<const char *>(file.data()), static_cast<std::streamsize>(file.size()));
     const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began);
@@ -1666,32 +1133,37 @@ void Work()
 
 } // namespace
 
-void Start(const std::filesystem::path &kept, const std::filesystem::path &game)
+void Start(const std::filesystem::path &kept, const std::filesystem::path &game, const std::filesystem::path &relit)
 {
     State &state = TheState();
     state.kept = kept;
+    state.relit = relit;
     state.data = game / "packages" / "core" / "data";
     std::thread(&Work).detach();
 }
 
-std::vector<Room> BakeNow(const std::filesystem::path &levelRim, const std::filesystem::path &game)
+std::vector<Room> BakeNow(const std::filesystem::path &levelRim, const std::filesystem::path &game,
+                          const std::filesystem::path &relit)
 {
     State state;
+    state.relit = relit;
     state.data = game / "packages" / "core" / "data";
     return BakeRooms(state, levelRim).value_or(std::vector<Room>{});
 }
 
-std::vector<std::byte> Write(const std::vector<Room> &rooms)
+std::vector<std::byte> Write(const std::vector<Room> &rooms, std::uint64_t stamp)
 {
     std::vector<std::byte> file;
     Put(file, kTableMagic);
     Put(file, kTableVersion);
+    Put(file, stamp);
     Put(file, static_cast<std::uint32_t>(rooms.size()));
     for (const Room &room : rooms)
     {
         Put(file, room.key);
         Put(file, room.own);
         Put(file, std::uint32_t{room.whole ? 1U : 0U});
+        Put(file, room.seen);
         Put(file, static_cast<std::uint32_t>(room.probes.size()));
         for (const probes::Probe &probe : room.probes)
         {

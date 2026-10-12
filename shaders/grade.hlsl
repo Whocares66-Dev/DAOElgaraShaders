@@ -59,7 +59,7 @@ float fDaoSunHaze; // how brightly: 0 to 4
 
 // How much of the sun's light haze sends on to the side and back, of what it
 // sends straight on; and how fast that falls off away from the sun.
-static const float kDaoHazeAround = 0.1;
+static const float kDaoHazeAround = 0.04;
 static const float kDaoHazeForward = 6.0;
 
 float3 DaoAir(float2 uv)
