@@ -16,12 +16,14 @@
 //     (packages\core\textures\high\texturepack.erf) or in textures.erf. Of
 //     the 3603 found that the game's material objects and those two levels'
 //     name so, 2145 are DXT1 and 1325 DXT5; 98 are 24 bits a pixel and not
-//     packed, which DAOLib's Dds.h does not read and this does; 33 are 32
-//     bits; two are test pieces of 16 bits and of 8, which nothing here
-//     reads.
+//     packed; 33 are 32 bits; two are test pieces of 16 bits and of 8, which
+//     nothing here reads.
 //   <model>.msh: a chunk's vertices have the texture's coordinates as their
-//     first set. DAOLib's Level.h keeps the second, the lightmap's, alone, so
-//     the first is read here.
+//     first set, beside the lightmap's, their second.
+//
+// The two readers are DAOLib's since its issue 96 (2026-10-12), and were
+// here before: a DDS of 24 bits and a file's smaller picture (Dds.h's Decode
+// with a side), and a chunk's first set (Level.h's MeshChunk::paintUv).
 //
 // A material's texture is not one colour, nor is all of it on a surface. A
 // tileset is one material and one texture, the mage tower's tti_master 4096
@@ -46,132 +48,11 @@ namespace core = dao::core;
 namespace level = dao::core::level;
 using Colour = dao::core::probes::Colour;
 
-// GFF4's labels for a mesh file's chunks (dev/gff4_fields.csv), as DAOLib's Level.cpp has them.
-inline constexpr std::uint32_t kName = 2;
-inline constexpr std::uint32_t kChunkVertexSize = 8000;
-inline constexpr std::uint32_t kChunkVertexCount = 8001;
-inline constexpr std::uint32_t kChunkVertexOffset = 8006;
-inline constexpr std::uint32_t kMeshChunks = 8021;
-inline constexpr std::uint32_t kMeshVertices = 8022;
-inline constexpr std::uint32_t kChunkDeclarators = 8025;
-inline constexpr std::uint32_t kDeclaratorStream = 8026;
-inline constexpr std::uint32_t kDeclaratorOffset = 8027;
-inline constexpr std::uint32_t kDeclaratorType = 8028;
-inline constexpr std::uint32_t kDeclaratorUsage = 8029;
-inline constexpr std::uint32_t kDeclaratorUsageIndex = 8030;
-// Direct3D's D3DDECLUSAGE_TEXCOORD, and the D3DDECLTYPEs a texture's coordinates are kept as.
-inline constexpr std::uint32_t kUsageTexcoord = 5;
-inline constexpr std::uint32_t kTypeFloat2 = 1;
-inline constexpr std::uint32_t kTypeHalf2 = 15;
-
 // A texture is brought to no more than this a side before its colours are
 // asked for. A triangle's colour is a mean over a part of it: at this size a
 // wall's blocks and a floor's flags in the tower's tileset are tens of
 // texels across, and its narrowest band of carving one or two.
 inline constexpr std::uint32_t kPaintSide = 128;
-
-// A half float as a float (Direct3D's D3DDECLTYPE_FLOAT16_2).
-inline float Half(std::uint16_t half)
-{
-    const std::uint32_t exponent = (half >> 10) & 31U;
-    const std::uint32_t fraction = half & 1023U;
-    float value = 0;
-    if (exponent == 0)
-    {
-        value = std::ldexp(static_cast<float>(fraction), -24);
-    }
-    else if (exponent == 31)
-    {
-        value = std::numeric_limits<float>::infinity();
-    }
-    else
-    {
-        value = std::ldexp(static_cast<float>(fraction | 1024U), static_cast<int>(exponent) - 25);
-    }
-    return (half >> 15) != 0 ? -value : value;
-}
-
-// The first set of texture coordinates of one chunk of a mesh file: where
-// each vertex is on the texture its material paints it with.
-struct ChunkUv
-{
-    std::wstring name;         // the chunk's
-    std::vector<level::Uv> uv; // one a vertex, in the vertices' order
-};
-
-// Where in a chunk's vertices their first set of texture coordinates is, and
-// whether as half floats; nothing for a chunk that has none, or has them as
-// neither two floats nor two halves.
-inline std::optional<std::pair<std::size_t, bool>> PaintedAt(const core::gff4::Struct &chunk)
-{
-    for (const core::gff4::Struct &declarator : chunk.Structs(kChunkDeclarators))
-    {
-        if (declarator.Get<std::int32_t>(kDeclaratorStream).value_or(-1) != 0 ||
-            declarator.Get<std::uint32_t>(kDeclaratorUsage).value_or(~0U) != kUsageTexcoord ||
-            declarator.Get<std::uint32_t>(kDeclaratorUsageIndex).value_or(0) != 0)
-        {
-            continue;
-        }
-        const std::uint32_t type = declarator.Get<std::uint32_t>(kDeclaratorType).value_or(~0U);
-        if (type != kTypeFloat2 && type != kTypeHalf2)
-        {
-            return std::nullopt;
-        }
-        return std::pair(static_cast<std::size_t>(declarator.Get<std::int32_t>(kDeclaratorOffset).value_or(0)),
-                         type == kTypeHalf2);
-    }
-    return std::nullopt;
-}
-
-// Returns the first set of texture coordinates of every chunk of a mesh file
-// (.msh) that has one. A chunk whose vertices run out of the file is left out.
-inline std::vector<ChunkUv> PaintedUvs(const core::gff4::File &mesh)
-{
-    std::vector<ChunkUv> chunks;
-    const std::optional<core::gff4::Struct> root = mesh.Root();
-    if (!root)
-    {
-        return chunks;
-    }
-    const std::span<const std::byte> vertices = root->ListBytes(kMeshVertices, core::gff4::Type::U8);
-    for (const core::gff4::Struct &chunk : root->Structs(kMeshChunks))
-    {
-        const std::size_t size = chunk.Get<std::uint32_t>(kChunkVertexSize).value_or(0);
-        const std::size_t count = chunk.Get<std::uint32_t>(kChunkVertexCount).value_or(0);
-        const std::size_t start = chunk.Get<std::uint32_t>(kChunkVertexOffset).value_or(0);
-        const std::optional<std::pair<std::size_t, bool>> at = PaintedAt(chunk);
-        if (!at || size == 0 || start > vertices.size() || count > (vertices.size() - start) / size)
-        {
-            continue;
-        }
-        ChunkUv read{chunk.String(kName).value_or(L""), std::vector<level::Uv>(count)};
-        bool whole = true;
-        for (std::size_t i = 0; i < count && whole; ++i)
-        {
-            const std::size_t from = start + (i * size) + at->first;
-            for (std::size_t k = 0; k < 2; ++k)
-            {
-                if (at->second)
-                {
-                    const auto value = core::ReadAt<std::uint16_t>(vertices, from + (k * 2));
-                    whole = whole && value.has_value();
-                    read.uv[i].at(k) = Half(value.value_or(0));
-                }
-                else
-                {
-                    const auto value = core::ReadAt<float>(vertices, from + (k * 4));
-                    whole = whole && value.has_value();
-                    read.uv[i].at(k) = value.value_or(0.0F);
-                }
-            }
-        }
-        if (whole)
-        {
-            chunks.push_back(std::move(read));
-        }
-    }
-    return chunks;
-}
 
 // The file a material object names for one of its textures, in lower case;
 // nothing where it names none for that slot.
@@ -208,65 +89,6 @@ inline std::wstring PaintNamed(std::string_view mao)
 {
     std::wstring file = TextureNamed(mao, "mml_tDiffuse");
     return file.empty() ? TextureNamed(mao, "LowLodMap") : file;
-}
-
-// One of a DDS file's pictures: the largest that is no more than `sideMost`
-// a side, or the smallest the file has. DXT1, DXT3, DXT5 and 32 bits by
-// DAOLib's reader, which reads a file's first picture: the picture is handed
-// to it as a file of its own, under this file's header with the picture's
-// size. And 24 bits not packed, blue first, here.
-inline std::optional<core::dds::Image> PictureOf(std::span<const std::byte> file, std::uint32_t sideMost)
-{
-    constexpr std::size_t kHeader = 128;
-    constexpr std::uint32_t kDxt1 = 0x31545844; // "DXT1"
-    constexpr std::uint32_t kDxt3 = 0x33545844;
-    constexpr std::uint32_t kDxt5 = 0x35545844;
-    constexpr std::uint32_t kLargest = 16384; // more is no texture's
-    std::uint32_t height = core::ReadAt<std::uint32_t>(file, 12).value_or(0);
-    std::uint32_t width = core::ReadAt<std::uint32_t>(file, 16).value_or(0);
-    const std::uint32_t pictures = core::ReadAt<std::uint32_t>(file, 28).value_or(1);
-    const std::uint32_t format = core::ReadAt<std::uint32_t>(file, 84).value_or(0);
-    const std::uint32_t bits = core::ReadAt<std::uint32_t>(file, 88).value_or(0);
-    const bool packed = format == kDxt1 || format == kDxt3 || format == kDxt5;
-    if (file.size() < kHeader || width == 0 || height == 0 || width > kLargest || height > kLargest ||
-        (!packed && (format != 0 || (bits != 24 && bits != 32))))
-    {
-        return std::nullopt;
-    }
-    const auto bytesOf = [&](std::uint32_t w, std::uint32_t h) {
-        return packed ? std::size_t{(w + 3) / 4} * ((h + 3) / 4) * (format == kDxt1 ? 8U : 16U)
-                      : std::size_t{w} * h * (bits / 8);
-    };
-    std::size_t at = kHeader;
-    for (std::uint32_t picture = 1; picture < pictures && std::max(width, height) > sideMost; ++picture)
-    {
-        at += bytesOf(width, height);
-        width = std::max(width / 2, 1U);
-        height = std::max(height / 2, 1U);
-    }
-    const std::size_t size = bytesOf(width, height);
-    if (at > file.size() || file.size() - at < size)
-    {
-        return std::nullopt;
-    }
-    const std::span<const std::byte> data = file.subspan(at, size);
-    if (!packed && bits == 24)
-    {
-        core::dds::Image image{width, height, std::vector<std::uint8_t>(std::size_t{width} * height * 4)};
-        for (std::size_t pixel = 0; pixel < std::size_t{width} * height; ++pixel)
-        {
-            image.rgba[pixel * 4] = std::to_integer<std::uint8_t>(data[(pixel * 3) + 2]);
-            image.rgba[(pixel * 4) + 1] = std::to_integer<std::uint8_t>(data[(pixel * 3) + 1]);
-            image.rgba[(pixel * 4) + 2] = std::to_integer<std::uint8_t>(data[pixel * 3]);
-            image.rgba[(pixel * 4) + 3] = 255;
-        }
-        return image;
-    }
-    std::vector<std::byte> one(file.begin(), file.begin() + kHeader);
-    std::memcpy(one.data() + 12, &height, sizeof height);
-    std::memcpy(one.data() + 16, &width, sizeof width);
-    one.insert(one.end(), data.begin(), data.end());
-    return core::dds::Decode(one);
 }
 
 // Whether a texture's colours are taken as light (LightOf) or as they are
@@ -335,7 +157,9 @@ class Paint
     // @return nothing for a file that is no DDS this reads
     static std::optional<Paint> Of(std::span<const std::byte> dds)
     {
-        const std::optional<core::dds::Image> image = PictureOf(dds, kPaintSide);
+        // The file's own smaller picture, where it holds one small enough (DAOLib's
+        // reader, by the pictures the file's bytes hold).
+        const std::optional<core::dds::Image> image = core::dds::Decode(dds, kPaintSide);
         if (!image)
         {
             return std::nullopt;

@@ -772,14 +772,6 @@ class Level
         return ModelOf(name);
     }
 
-    // A model's mesh file whole, for what of it the model's parts do not
-    // keep: the game's, or the level's own.
-    std::optional<std::vector<std::byte>> MeshOf(const std::wstring &name)
-    {
-        const ModelParts *parts = ModelOf(name);
-        return parts != nullptr ? MeshFile(Lower(name), parts->model) : std::nullopt;
-    }
-
   private:
     // A room's files' names before what says which file: <level>_<room>.
     std::wstring Stem(const std::wstring &id) const

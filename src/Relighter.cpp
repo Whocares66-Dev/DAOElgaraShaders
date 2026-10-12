@@ -2390,12 +2390,10 @@ struct PaintFiles
 };
 
 // What paints a level's surfaces, each read once: a material's texture,
-// nothing for one whose texture could not be found or read, and a model's
-// texture coordinates.
+// nothing for one whose texture could not be found or read.
 struct Paints
 {
     std::map<std::wstring, std::optional<surfacecolours::Paint>> materials;
-    std::map<std::wstring, std::vector<surfacecolours::ChunkUv>> models;
 };
 
 // The texture a material paints with, or null.
@@ -2421,26 +2419,6 @@ const surfacecolours::Paint *PaintOf(const Level &level, const PaintFiles &files
         found = kept.materials.emplace(material, std::move(paint)).first;
     }
     return found->second ? &*found->second : nullptr;
-}
-
-// Where each vertex of a model's chunk is on its material's texture, or null
-// for a chunk whose mesh file says nothing of it.
-const std::vector<level::Uv> *PaintedUvOf(Level &level, Paints &kept, const std::wstring &model,
-                                          const level::MeshChunk &chunk)
-{
-    auto found = kept.models.find(model);
-    if (found == kept.models.end())
-    {
-        std::vector<surfacecolours::ChunkUv> read;
-        const std::optional<std::vector<std::byte>> bytes = level.MeshOf(model);
-        if (const auto mesh = bytes ? core::gff4::File::Parse(*bytes) : std::nullopt)
-        {
-            read = surfacecolours::PaintedUvs(*mesh);
-        }
-        found = kept.models.emplace(model, std::move(read)).first;
-    }
-    const auto uv = std::ranges::find(found->second, chunk.name, &surfacecolours::ChunkUv::name);
-    return uv != found->second.end() && uv->uv.size() == chunk.positions.size() ? &uv->uv : nullptr;
 }
 
 // What of a world's lightmapped surface is painted, for PaintSurfaces.
@@ -2473,8 +2451,9 @@ void PaintPart(Level &level, const PaintFiles &files, Paints &kept, const Geomet
     const level::MeshChunk &chunk = model->chunks[part.chunk];
     const std::wstring *material = Found(model->materials, Lower(chunk.name));
     const surfacecolours::Paint *paint = material != nullptr ? PaintOf(level, files, kept, *material) : nullptr;
-    const std::vector<level::Uv> *uv =
-        paint != nullptr ? PaintedUvOf(level, kept, Lower(part.placed->file), chunk) : nullptr;
+    // Where each vertex of the chunk is on its material's texture, one a vertex,
+    // or none for a chunk whose mesh file says nothing of it (DAOLib's Level.h).
+    const std::vector<level::Uv> &uv = chunk.paintUv;
     for (std::size_t at = part.from; at < to; ++at)
     {
         const core::Triangle &corners = geometry.lit[at].corners;
@@ -2487,10 +2466,10 @@ void PaintPart(Level &level, const PaintFiles &files, Paints &kept, const Geomet
         }
         // The part's triangles are the chunk's, three of its indices each, in their order.
         const std::size_t first = 3 * (at - part.from);
-        const bool placed = uv != nullptr && first + 2 < chunk.indices.size();
-        sends[at] = placed ? paint->Over({(*uv)[chunk.indices[first]], (*uv)[chunk.indices[first + 1]],
-                                          (*uv)[chunk.indices[first + 2]]})
-                           : paint->Mean();
+        const bool placed = !uv.empty() && first + 2 < chunk.indices.size();
+        sends[at] =
+            placed ? paint->Over({uv[chunk.indices[first]], uv[chunk.indices[first + 1]], uv[chunk.indices[first + 2]]})
+                   : paint->Mean();
         painted[at] = true;
         tally.area += area;
         tally.whole += placed ? 0.0 : area;
