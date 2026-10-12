@@ -148,14 +148,28 @@ static const float kDaoCubeMips = 8.0;
 static const float kDaoCubeSharpest = 3.0;
 static const float kDaoMirrorApart = 1.25;
 
+// In a level lit again (DAO_RELIT) the cube is the relighter's own, of the
+// level as its lightmaps have it, and kept as they are: the square root of
+// the light's share of kDaoRelitMost whites, a lamp in it as bright as the
+// file can say (Relighter.cpp's WriteCubes; issue 9, 2026-10-12). It is
+// brought back to light here, whatever DAO_MATERIALS is, the file being ours
+// in every look; and being real light already it is not set apart from its
+// mean. It is 128 pixels a face where vanilla's is 256, so the same mip is
+// half as sharp: the fourth is 16 pixels a face.
+float3 DaoCubeLight(float3 stored)
+{
+    return lerp(stored, stored * stored * kDaoRelitMost, saturate(DAO_RELIT));
+}
+
 float4 DaoReflected(samplerCUBE cube, float4 way, float power)
 {
     const float much = saturate(DAO_MATERIALS);
     const float gloss = saturate((power - 1) / 255);
     const float lacks = 1 - gloss;
     float4 seen = texCUBElod(cube, float4(way.xyz, lerp(way.w, max(kDaoCubeMips * lacks * lacks, kDaoCubeSharpest), much)));
-    const float3 mean = texCUBElod(cube, float4(way.xyz, kDaoCubeMips - 1)).rgb;
-    const float apart = lerp(1.0, kDaoMirrorApart, smoothstep(0.1, 0.4, gloss) * much);
+    seen.rgb = DaoCubeLight(seen.rgb);
+    const float3 mean = DaoCubeLight(texCUBElod(cube, float4(way.xyz, kDaoCubeMips - 1)).rgb);
+    const float apart = lerp(1.0, kDaoMirrorApart, smoothstep(0.1, 0.4, gloss) * much * (1 - saturate(DAO_RELIT)));
     // Its brightness is set apart, not its colour: with the colours set
     // apart too, gilded plate under a blue sky wore patches of green and
     // cyan (seen in Redcliffe, 2026-10-12).
@@ -188,6 +202,21 @@ float3 DaoFresnel(float3 colour, float facing, float power)
     const float bright = max(colour.r, max(colour.g, colour.b));
     const float3 rim = max(colour, colour * (polish / max(bright, 1e-3)));
     return colour + (rim - colour) * edge * saturate(DAO_MATERIALS);
+}
+
+// What a level's own surface mirrors of its room, in a level lit again: two
+// fifths. The cube there is ours and in real light, its windows and flames
+// many times white, and a wall's or a floor's mirror colour was painted for
+// vanilla's dim eight-bit cube under a falloff that left two fifths of it
+// face on (DaoFalloff): with all of it the tower's hall was a quarter
+// brighter, a sheen on every flagstone (mean 0.105 to 0.131, seen
+// 2026-10-12), in a level the user had set to their liking as it was. A
+// figure's armour takes the cube whole: that is where it is wanted.
+static const float kDaoRoomMirror = 0.4;
+
+float DaoRoomMirrored()
+{
+    return lerp(1.0, kDaoRoomMirror, saturate(DAO_RELIT));
 }
 
 // The light a surface mirrors: the lights' highlights and the surroundings'

@@ -343,7 +343,7 @@ def with_materials(shader):
         ),
         None,
     )
-    by_place = f" * DaoMirrored({ambient}.xyz)" if ambient else ""
+    by_place = f" * DaoMirrored({ambient}.xyz)" if ambient else " * DaoRoomMirrored()"
     # Each change with its place; made last place first, so the places stay.
     changes = []
     if spread is not None:

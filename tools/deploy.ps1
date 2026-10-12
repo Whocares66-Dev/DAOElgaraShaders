@@ -13,7 +13,8 @@
     A look chosen in play is kept in the installed folder's graphics.chosen, which a deploy
     leaves as it is.
 
-    The levels lit again go with it: for each level of -Relit, the lightmaps, probes and tints
+    The levels lit again go with it: for each level of -Relit, the lightmaps, probes,
+    reflection cubes and tints
     `.\tools\relight.ps1` left in build\relit\<level>\ are put in the plugin's override
     folder, where they are what the game lights that level by. A level goes into the game
     once it has been looked at in play, so the levels are named and none is taken unasked.

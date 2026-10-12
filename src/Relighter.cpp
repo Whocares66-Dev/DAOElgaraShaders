@@ -36,6 +36,7 @@
 #include <spdlog/spdlog.h>
 
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <numbers>
 #include <set>
@@ -205,11 +206,22 @@ struct Beaming
     std::vector<core::Point> outward;       // each opening's way out of the level, two triangles an opening
 };
 
+// What glows, as the surfaces it is. The light is reckoned from points spread
+// over a glowing thing; a picture of the level (the reflection cubes) sees
+// the thing itself, lava as a river and a window as a pane.
+struct Shining
+{
+    std::vector<core::Triangle> triangles;
+    std::vector<std::uint32_t> glow;        // each triangle's glowing thing, by its number among the scene's
+    std::optional<core::TriangleTree> tree; // over the triangles, made when a picture is wanted
+};
+
 struct Scene
 {
     std::vector<RoomLit> rooms;
     std::vector<Lamp> lamps;
     std::vector<Glowing> glows;
+    Shining shining;
     std::vector<Beaming> beams;
     std::map<std::uint32_t, Map> maps; // by the atlas's number
 #ifdef ELGARA_EMBREE
@@ -1235,11 +1247,10 @@ GlowingParts PartsThatGlow(const std::vector<Level::Drawn> &drawn, const level::
 
 // What a rule makes of a model: the part of it that glows, as points spread
 // evenly over its surface; nothing for a model with none of it.
+// @param parts those of the model's triangles that the rule says glow
 // @param seed what the points' chances are drawn by, each thing's its own
-std::optional<Glowing> GlowOf(const std::vector<Level::Drawn> &drawn, const level::Placed &placed, const Glow &rule,
-                              std::uint32_t seed)
+std::optional<Glowing> GlowOf(const GlowingParts &parts, const Glow &rule, std::uint32_t seed)
 {
-    const GlowingParts parts = PartsThatGlow(drawn, placed, rule);
     const float area = parts.empty() ? 0.0F : parts.back().first;
     if (parts.empty() || area < 1e-4F)
     {
@@ -1284,8 +1295,9 @@ std::optional<Glowing> GlowOf(const std::vector<Level::Drawn> &drawn, const leve
     return glow;
 }
 
-// What glows among the models a room places, each model one glowing thing.
-void FindGlows(Level &level, const std::wstring &id, const Options &options, std::vector<Glowing> &out)
+// What glows among the models a room places, each model one glowing thing:
+// into the scene as the points it lights by, and as the triangles it is.
+void FindGlows(Level &level, const std::wstring &id, const Options &options, Scene &scene)
 {
     const level::Room *room = level.RoomOf(id);
     if (room == nullptr || options.glows.empty())
@@ -1297,9 +1309,16 @@ void FindGlows(Level &level, const std::wstring &id, const Options &options, std
         const std::vector<Level::Drawn> drawn = level.TrianglesOf(id, placed);
         for (const Glow &rule : options.glows)
         {
-            if (std::optional<Glowing> glow = GlowOf(drawn, placed, rule, static_cast<std::uint32_t>(out.size())))
+            const GlowingParts parts = PartsThatGlow(drawn, placed, rule);
+            const auto number = static_cast<std::uint32_t>(scene.glows.size());
+            if (std::optional<Glowing> glow = GlowOf(parts, rule, number))
             {
-                out.push_back(std::move(*glow));
+                for (const auto &[area, triangle] : parts)
+                {
+                    scene.shining.triangles.push_back(triangle->corners);
+                    scene.shining.glow.push_back(number);
+                }
+                scene.glows.push_back(std::move(*glow));
             }
         }
     }
@@ -1566,7 +1585,7 @@ void GatherRooms(Level &level, Scene &scene, const Options &options, const std::
         {
             AddLamp(scene, lamp, options);
         }
-        FindGlows(level, ids[i], options, scene.glows);
+        FindGlows(level, ids[i], options, scene);
     }
     for (const Lamp &lamp : level.LampsOf(L"")) // the level's own layout, where it has one
     {
@@ -1787,6 +1806,9 @@ void AddOpening(Scene &scene, const Beam &beam, std::uint32_t room, const Flat &
     found.outward.push_back({-inward[0], -inward[1], -inward[2]});
     if (std::max({beam.sky[0], beam.sky[1], beam.sky[2]}) > 0)
     {
+        // And as the pane a picture of the room sees it by: the opening's own two triangles.
+        scene.shining.triangles.insert(scene.shining.triangles.end(), found.flats.end() - 2, found.flats.end());
+        scene.shining.glow.insert(scene.shining.glow.end(), 2, static_cast<std::uint32_t>(scene.glows.size()));
         scene.glows.push_back(SkyThrough(flat, beam.sky, shift, inward));
     }
     spdlog::debug("relight: an opening at {:.1f} {:.1f} {:.1f}, {:.1f} by {:.1f} m, rays landing {} to {}, "
@@ -2234,6 +2256,314 @@ void MatchVanilla(Scene &scene, const Options &options, std::optional<Colour> &g
     }
 }
 
+// The level's reflection cubes (issue 9, 2026-10-12). What a level's metal
+// mirrors is a cube map, a picture of a room all round from where the room's
+// light-probe object stands (materials.hlsl's DaoReflected). Vanilla's is of
+// the room as vanilla lit it, by lamps that did not ship, and in eight bits,
+// a flame in it no brighter than a white wall: armour in a level lit again
+// mirrored a room that is no longer there, and had no lamp to shine by. So
+// each is made again here, of the level as the lightmaps above have it: a
+// ray cast for every texel of every face, and what it sees.
+//
+// Which cube is which room's is the layouts' to say (read 2026-10-12 in
+// lak303d's and orz100d's): a room's layout (<level>_<room>_ll.mmh; a level
+// of terrain's own, <level>_ll.mmh) has the probe as a node "nlpr" whose
+// parts are its place and the cube's file's name (EnvLightProbeEnvMap),
+// which LevelFiles.h's ProbesOf already reads for the figures' probes. In
+// every one of the game's 158 levels the cube maps in the level's archives
+// are the ones its probes name, no more and no fewer.
+//
+// The numbers are the lightmaps': light, 1 the white of a white surface, kept
+// as the square root of its share of kRelitMost.
+
+constexpr float kLampDisc = 0.12F; // metres: the radius a lamp is drawn with, a flame's size about
+
+// The way out of a cube's middle to a place on one of its faces, `across`
+// and `down` from -1 to 1 over the face as its picture is stored, of length 1.
+// The faces are Direct3D's, in its order (+x, -x, +y, -y, +z, -z), and the
+// axes are the level's own, z up: read 2026-10-12 off vanilla's cubes, where
+// the fifth face is a ceiling and the sixth a floor, the fourth stands
+// upright, the third on its head, and the first two lie on their sides with
+// the floor to the right and to the left.
+core::Point WayOfCube(std::size_t face, float across, float down)
+{
+    switch (face)
+    {
+    case 0:
+        return Unit({1, -down, -across});
+    case 1:
+        return Unit({-1, -down, across});
+    case 2:
+        return Unit({across, 1, down});
+    case 3:
+        return Unit({across, -1, -down});
+    case 4:
+        return Unit({across, -down, 1});
+    default:
+        return Unit({-across, -down, -1});
+    }
+}
+
+// A lamp as a cube's picture has it. A lamp of the bake's is a point with no
+// body, and a picture needs one: a disc that faces the eye, kLampDisc from
+// its middle to its edge.
+struct LampSeen
+{
+    core::Point way{}; // to it, of length 1
+    float wide = 0;    // the angle from its middle to its edge
+    // What the disc shows: the lamp's colour over the square of the disc's
+    // radius. A lamp of colour c lights a surface that faces it from d metres
+    // by c / d^2; a disc of radius r that shows v, as a white wall lit by v
+    // does, lights it by v r^2 / d^2. So v = c / r^2 is the one brightness
+    // at which what the picture sends is the light the bake's lamp gives: a
+    // candle's 0.8 is 55 whites, a brazier's 16 over a thousand. That is past
+    // what the file holds (kRelitMost) at the picture's full size; the
+    // smaller pictures are means of the light and not of the file's bytes,
+    // so a flame far off, a part of one texel, is there by its share.
+    Colour shows{};
+};
+
+// The lamps in sight of a place: each with nothing between, by the ray its
+// own light is shadowed by (LampAt), which stops short of the fitting the
+// lamp stands in.
+std::vector<LampSeen> LampsSeenFrom(const Scene &scene, std::uint32_t room, const core::Point &from,
+                                    const Options &options)
+{
+    std::vector<LampSeen> seen;
+    for (const Lamp &lamp : scene.lamps)
+    {
+        const core::Point to = Sub(lamp.at, from);
+        const float far = std::sqrt(Dot(to, to));
+        if (far <= kLampDisc)
+        {
+            continue;
+        }
+        const core::Point way{to[0] / far, to[1] / far, to[2] / far};
+        const float shortOf = std::max(kShortOfLamp, lamp.clear);
+        if (far > shortOf && Blocked(scene, room, from, way, far - shortOf))
+        {
+            continue;
+        }
+        // A lamp of the level's own is its colour by the look's `lamps` (LampAt).
+        const float by = (lamp.core > 0 ? 1.0F : options.lamps) / (kLampDisc * kLampDisc);
+        seen.push_back(
+            {way, std::asin(kLampDisc / far), {by * lamp.colour[0], by * lamp.colour[1], by * lamp.colour[2]}});
+    }
+    return seen;
+}
+
+// What a ray sees of the level's surfaces: the light the lightmap has where
+// it lands, as WriteMaps writes it, by what a surface sends on; or what
+// glows there, by its own colour; or nothing.
+//
+// A surface's own colour is `surfaces`, one grey for the whole level, which
+// is what the bake itself takes every surface to be. Its textures are not
+// read: a red carpet is grey stone here.
+// Only what is lightmapped is in the world the rays are cast in (the level's
+// walls, floors and what is built into them): a statue or a shelf of books
+// that has no lightmap is not in the picture.
+Colour SeenAlong(const Scene &scene, std::uint32_t room, const core::Point &from, const core::Point &way,
+                 const Options &options)
+{
+    Colour seen{};
+    const std::optional<Landing> landing = Cast(scene, room, from, way, std::numeric_limits<float>::infinity());
+    if (landing)
+    {
+        const level::LitTriangle &triangle = landing->geometry->lit[landing->hit.triangle];
+        if (const auto map = scene.maps.find(triangle.atlas); map != scene.maps.end())
+        {
+            const float w = 1 - landing->hit.u - landing->hit.v;
+            const float u =
+                (w * triangle.uv[0][0]) + (landing->hit.u * triangle.uv[1][0]) + (landing->hit.v * triangle.uv[2][0]);
+            const float v =
+                (w * triangle.uv[0][1]) + (landing->hit.u * triangle.uv[1][1]) + (landing->hit.v * triangle.uv[2][1]);
+            const Colour &lit = At(map->second, map->second.whole, u, v);
+            const Colour &own = At(map->second, map->second.own, u, v);
+            for (std::size_t channel = 0; channel < 3; ++channel)
+            {
+                seen.at(channel) = options.surfaces * (lit.at(channel) + (options.kept * own.at(channel)));
+            }
+        }
+    }
+    if (!scene.shining.tree)
+    {
+        return seen;
+    }
+    // What glows, where it is the first thing in the ray's way: a glowing
+    // thing that is lightmapped too, a crystal, is at the landing itself.
+    constexpr float kAtTheLanding = 0.01F; // metres
+    const float within = landing ? landing->hit.distance + kAtTheLanding : std::numeric_limits<float>::infinity();
+    const std::optional<core::RayHit> shines = scene.shining.tree->Cast(from, way, 1e-3F, within);
+    if (!shines)
+    {
+        return seen;
+    }
+    const Glowing &glow = scene.glows[scene.shining.glow[shines->triangle]];
+    if (!glow.sky)
+    {
+        return glow.colour;
+    }
+    // The sky through a window is seen from the room alone, and by how far
+    // the way to it is upward, as it lights (Glowed): the sky sends its
+    // light down. Where that is less than the wall's own pane behind it, the
+    // pane is what is seen.
+    const float sends = Dot(way, glow.facings.front()) < 0 ? std::max(0.0F, way[2]) : 0.0F;
+    for (std::size_t channel = 0; channel < 3; ++channel)
+    {
+        seen.at(channel) = std::max(seen.at(channel), sends * glow.colour.at(channel));
+    }
+    return seen;
+}
+
+// How much of a texel a lamp's disc covers: all of it within the disc, the
+// disc's share of it where the disc is the smaller, and a slope between at
+// the disc's edge. `between` is the angle from the texel's middle to the
+// disc's, `wide` the disc's own and `texel` that of a round as large as the
+// texel is. One ray a texel would have a flame far off, a part of a texel
+// across, wholly there or not at all.
+float Covered(float between, float wide, float texel)
+{
+    const float edge = std::clamp((wide + texel - between) / (2 * std::min(wide, texel)), 0.0F, 1.0F);
+    return edge * std::min(1.0F, (wide * wide) / (texel * texel));
+}
+
+// The picture of the level all round a place: six faces of `side` texels
+// each way, face by face and row by row, each texel the light seen along
+// the way out through its middle, with the lamps in sight drawn over it.
+std::vector<Colour> CubeFrom(const Scene &scene, std::uint32_t room, const core::Point &from, std::uint32_t side,
+                             std::span<const LampSeen> lamps, const Options &options)
+{
+    const std::size_t aFace = std::size_t{side} * side;
+    std::vector<Colour> cube(6 * aFace);
+    ForEach(cube.size(), [&](std::size_t i) {
+        const std::size_t face = i / aFace;
+        const std::size_t column = (i % aFace) % side;
+        const std::size_t row = (i % aFace) / side;
+        const float across = (((static_cast<float>(column) + 0.5F) / static_cast<float>(side)) * 2) - 1;
+        const float down = (((static_cast<float>(row) + 0.5F) / static_cast<float>(side)) * 2) - 1;
+        const core::Point way = WayOfCube(face, across, down);
+        Colour seen = SeenAlong(scene, room, from, way, options);
+        // A texel is a square 2 / side across on a face one away from the
+        // middle: from the middle it is smaller the further out on its face.
+        const float out = 1 + (across * across) + (down * down);
+        const float texel =
+            (2 / static_cast<float>(side)) / std::sqrt(std::numbers::pi_v<float> * out * std::sqrt(out));
+        for (const LampSeen &lamp : lamps)
+        {
+            const core::Point apart = Sub(way, lamp.way);
+            const float between = 2 * std::asin(std::min(1.0F, std::sqrt(Dot(apart, apart)) / 2));
+            const float covered = Covered(between, lamp.wide, texel);
+            for (std::size_t channel = 0; channel < 3; ++channel)
+            {
+                seen.at(channel) = std::lerp(seen.at(channel), lamp.shows.at(channel), covered);
+            }
+        }
+        cube[i] = seen;
+    });
+    return cube;
+}
+
+// A cube's picture as a DDS file as the game's own cubes are (read
+// 2026-10-12: textures.erf's bad_cubemap.dds, 32 bits and not packed, and a
+// level's own, DXT1): the header, then each face's pictures from the largest
+// to one texel, the faces in Direct3D's order. Each smaller picture is the
+// mean of the light, and is then kept as the lightmaps are (DdsOf).
+std::vector<std::byte> DdsOfCube(const std::vector<Colour> &cube, std::uint32_t side)
+{
+    const auto pictures = static_cast<std::uint32_t>(std::bit_width(side));
+    std::vector<std::byte> file(128);
+    const auto put = [&](std::size_t at, std::uint32_t value) { std::memcpy(file.data() + at, &value, sizeof value); };
+    put(0, 0x20534444);                                   // "DDS "
+    put(4, 124);                                          // the header's size
+    put(8, 0x1 | 0x2 | 0x4 | 0x1000 | 0x20000 | 0x80000); // caps, height, width, pixel format, mip count, linear size
+    put(12, side);
+    put(16, side);
+    put(20, side * side * 4); // the largest picture's bytes, as the game's own cubes say it
+    put(28, pictures);
+    put(76, 32);         // the pixel format's size
+    put(80, 0x41);       // RGB with alpha
+    put(88, 32);         // bits a pixel
+    put(92, 0x00FF0000); // red
+    put(96, 0x0000FF00);
+    put(100, 0x000000FF);
+    put(104, 0xFF000000);
+    put(108, 0x1000 | 0x8 | 0x400000); // a texture, complex, with mip maps
+    put(112, 0x200 | 0xFC00);          // a cube map, all six of its faces
+    const std::size_t aFace = std::size_t{side} * side;
+    for (std::size_t face = 0; face < 6; ++face)
+    {
+        Picture picture(aFace);
+        for (std::size_t i = 0; i < aFace; ++i)
+        {
+            const Colour &light = cube[(face * aFace) + i];
+            picture[i] = {light[0], light[1], light[2], 1.0F};
+        }
+        for (std::uint32_t size = side; size >= 1; size /= 2)
+        {
+            for (const std::array<float, 4> &pixel : picture)
+            {
+                for (const std::size_t channel : {std::size_t{2}, std::size_t{1}, std::size_t{0}})
+                {
+                    file.push_back(static_cast<std::byte>(
+                        NearestByte(std::sqrt(std::clamp(pixel.at(channel) / kRelitMost, 0.0F, 1.0F)) * 255.0F)));
+                }
+                file.push_back(std::byte{255});
+            }
+            picture = Halved(picture, size, size);
+        }
+    }
+    return file;
+}
+
+// Makes the level's reflection cubes of a world that is lit, and writes each
+// into the folder as a DDS of vanilla's own name, which in the plugin's
+// override folder is the cube the game hands the shaders. Only a cube the
+// level has a file for is made: it is that file's stand-in.
+// @return how many were written
+std::size_t WriteCubes(Level &level, const Scene &scene, const std::filesystem::path &out, const Options &options,
+                       const std::vector<std::wstring> &ids, const std::string &name)
+{
+    // A cube map's side is a power of two: the one at or under what was asked.
+    const std::uint32_t side = std::bit_floor(options.cube);
+    std::set<std::wstring> made;
+    if (side == 0)
+    {
+        return 0;
+    }
+    for (std::size_t room = 0; room < ids.size(); ++room)
+    {
+        for (const OwnProbe &probe : level.ProbesOf(ids[room]))
+        {
+            const std::wstring file = Lower(probe.cube);
+            if (file.empty() || !level.Find(file) || !made.insert(file).second)
+            {
+                continue;
+            }
+            const std::vector<LampSeen> lamps =
+                LampsSeenFrom(scene, static_cast<std::uint32_t>(room), probe.at, options);
+            const std::vector<Colour> cube =
+                CubeFrom(scene, static_cast<std::uint32_t>(room), probe.at, side, lamps, options);
+            const std::vector<std::byte> bytes = DdsOfCube(cube, side);
+            std::ofstream stream(out / file, std::ios::binary);
+            stream.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+            double mean = 0;
+            double most = 0;
+            for (const Colour &light : cube)
+            {
+                const double luma =
+                    (kLuma[0] * double{light[0]}) + (kLuma[1] * double{light[1]}) + (kLuma[2] * double{light[2]});
+                mean += luma / static_cast<double>(cube.size());
+                most = std::max(most, luma);
+            }
+            spdlog::info("relight: {}: the cube {} from {:.2f} {:.2f} {:.2f}, room {}: {} of {} lamps in sight, "
+                         "its light {:.3f} in the mean and {:.1f} at the most",
+                         name, Text(file), probe.at[0], probe.at[1], probe.at[2], Text(ids[room]), lamps.size(),
+                         scene.lamps.size(), mean, most);
+        }
+    }
+    return made.size();
+}
+
 // Lights one world of a level's rooms and writes its lightmaps: the rooms
 // `ids` are the world, each lit and each in the way of the others' light.
 // @param sources the rooms whose definitions place the level's fittings
@@ -2274,6 +2604,16 @@ std::size_t LightRooms(Level &level, const std::filesystem::path &levelRim, cons
     }
     MatchVanilla(scene, options, gain, name);
     const std::size_t written = WriteMaps(level, scene, out, options, done);
+    if (withProbes && options.cube > 0)
+    {
+        // The level's cubes, of the light as the lightmaps were just written with it.
+        if (!scene.shining.triangles.empty())
+        {
+            scene.shining.tree.emplace(scene.shining.triangles);
+        }
+        const std::size_t cubes = WriteCubes(level, scene, out, options, ids, name);
+        spdlog::info("relight: {}: {} reflection cubes, {} texels a side", name, cubes, std::bit_floor(options.cube));
+    }
     if (withProbes)
     {
         // A figure is lit by what is kept of vanilla's bake as a room's

@@ -6,7 +6,7 @@
     Runs the build's elgarashaders_relight for each level that has a section in
     data\relight.ini (or for those named), with that file's values. The lightmaps are
     written to build\relit\<level>\, a DDS each of its atlas's own name, with the level's
-    probes, and with what tools\tint_level.py makes for the level's param, model and
+    probes and its reflection cubes (a DDS each of vanilla's own name), and with what tools\tint_level.py makes for the level's param, model and
     texture lines (rooms, copies of models and textures recoloured); `tools\deploy.ps1 -Relit <level>` puts them in the plugin's override folder, where
     they are what the game lights the level by. A level takes half a minute to a minute.
 
@@ -57,6 +57,7 @@ foreach ($one in $Level) {
         if ($LASTEXITCODE -ne 0) { throw "$one was not tinted ($LASTEXITCODE)" }
     }
     # No lightmap of the level may be left the game's own: it would be read as ours are written.
+    # Nor some of its reflection cubes and not others.
     & python (Join-Path $PSScriptRoot 'check_relit.py') $Game $one $new 2>&1 | ForEach-Object { Show-Line "$_" }
     if ($LASTEXITCODE -ne 0) { throw "$one is not lit again whole; nothing of it was taken (the files are in $new)" }
     New-Item -ItemType Directory -Force $out | Out-Null

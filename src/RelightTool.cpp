@@ -22,6 +22,9 @@
 //   caster=embree  what casts the rays: Embree, where the tool is built with
 //                  it (the 64-bit one, tools/build-bake.ps1), or `tree`,
 //                  DAOLib's own, a room at a time
+//   cube=128       how many pixels a side the level's reflection cubes are
+//                  made, each a DDS of vanilla's own name beside the
+//                  lightmaps; 0 makes none
 //   glow=window:6,8,12   every part whose material's name has "window" in it
 //                  glows that colour; as many of these as wanted. A fourth
 //                  number, after another colon, is how much of that colour
@@ -119,6 +122,10 @@ bool TakeNumber(relighter::Options &options, const std::string &name, const std:
     else if (name == "kept")
     {
         options.kept = std::strtof(value.c_str(), nullptr);
+    }
+    else if (name == "cube")
+    {
+        options.cube = static_cast<std::uint32_t>(std::strtoul(value.c_str(), nullptr, 10));
     }
     else
     {

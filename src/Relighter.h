@@ -131,10 +131,22 @@ struct Options
     // where the tree tries only the rooms about a texel's own.
     int caster = 1;
     std::vector<Beam> beams;    // and what comes in from far off
+    // How many pixels a side a face of the level's reflection cubes is made
+    // (the power of two at or under it); 0 makes none. A level's metal
+    // mirrors a cube map, a picture of a room from where its light-probe
+    // object stands (materials.hlsl's DaoReflected), and vanilla's is of the
+    // room as vanilla lit it, in eight bits: a lamp in it is no brighter
+    // than a white wall. So each of the level's cubes is made again of the
+    // level as it is lit here, its lamps as bright as they are, and kept as
+    // the lightmaps are (Relighter.cpp's WriteCubes; issue 9, 2026-10-12).
+    // Vanilla's are 256 a side; a surface reads no sharper than the fourth
+    // mip, so half that loses nothing it shows.
+    std::uint32_t cube = 128;
 };
 
 // Lights a level again and writes its lightmaps into a folder, each a DDS of
-// its atlas's own name.
+// its atlas's own name, and with them the figures' probes and the level's
+// reflection cubes, each a DDS of vanilla's own name.
 // @param levelRim the level's .rim, as ProbeBaker's
 // @param game the game's folder
 // @return how many lightmaps were written; 0 if the level could not be read
