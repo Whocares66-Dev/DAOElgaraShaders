@@ -2946,8 +2946,8 @@ void ApplyLook()
 }
 
 // The options screen's section, on the Video tab's right column, which holds
-// a heading and twelve rows (DAOLib #82): two checkboxes and four sliders
-// are ten. Vanilla or relit is a checkbox and no slider of looks (the user,
+// a heading and twelve rows of 35 px (DAOLib #82), a slider 41 px (#84): two
+// checkboxes and six sliders, with room for two sliders more. Vanilla or relit is a checkbox and no slider of looks (the user,
 // 2026-10-11: "just vanilla & relit. instead of slider we can use
 // checkbox"); the sliders are the player's own tuning of the level they are
 // in (TuneNow).
@@ -3038,9 +3038,7 @@ void AddToOptions()
             {TuneSlider(kTuneExposure, L"GraphicsExposure", L"Exposure", L"How bright the picture is, in this area's level"),
              TuneSlider(kTuneContrast, L"GraphicsContrast", L"Contrast", L"How far apart light and dark are"),
              TuneSlider(kTuneSaturation, L"GraphicsSaturation", L"Saturation", L"How strong the colours are"),
-             // Twelve rows are the column's all: Warmth, the fourth of a
-             // level's tuning, is kept in the files and has no slider until a
-             // slider takes less than two rows (asked of DAOLib 2026-10-12).
+             TuneSlider(kTuneWarmth, L"GraphicsWarmth", L"Warmth", L"Cooler or warmer"),
              StopSlider(g_occlusionStop, kOcclusionNames, L"GraphicsOcclusion", L"Ambient occlusion",
                         L"Shade in corners and creases and under things (GTAO)", "ambient occlusion"),
              StopSlider(g_anisotropyStop, kAnisotropyNames, L"GraphicsAnisotropic", L"Anisotropic filtering",
