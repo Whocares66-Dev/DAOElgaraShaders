@@ -131,11 +131,110 @@ SHADOW_LEFT = 0.3
 # What the Character material declares for every one of its shaders and none
 # of them reads (character.mat.xml's "Common Character Params", read
 # 2026-10-10): the shadow maps and their data, as the level's shaders have.
-CHARACTER_SHADOW_PARAMETERS = """
-float4 g_vShadowData[9];
-sampler2D smpShadowPartition1;
-sampler2D smpShadowPartition2;
-"""
+# These are the names it gives the maps, which shadow.hlsl reads them by.
+CHARACTER_SHADOW_MAPS = ("smpShadowPartition1", "smpShadowPartition2")
+
+# The names a figure's shader is handed the shadow maps by, where a
+# definition that draws it gives them names of its own: by the shader's
+# file's name, lower case (find_shadow_maps). The Face and the HairAlpha
+# definitions call them smpShadowPart1 and 2, the Cloth and the Eye have
+# neither them nor their data, and the Weapon and the Canopy are as the
+# Character (read 2026-10-12). A shader that read them by the Character's
+# names where they are not given so read whatever the last draw had left
+# there: in Redcliffe's sun the lit side of every face was in shadow while
+# the neck under it was not, which was a third of a face's light (the user,
+# 2026-10-12: "the armor looks really dark. so does char's face").
+SHADOW_MAPS = {}
+
+FIGURE_SHADERS = rf"^({'|'.join(CHARACTERS)})\w*\.psh$"
+
+
+def figure_passes(material):
+    """A material definition's passes that a figure's pixel shader draws:
+    (where the pass's opening tag ends, the shader's file's name in lower
+    case, and all the pass is handed: its own text and that of the parameter
+    sets it refers to)."""
+    sets = {
+        found.group(1): found.group(2)
+        for found in re.finditer(
+            r'<ParameterSet\s+Name\s*=\s*"([^"]+)"\s*>(.*?)</ParameterSet>', material, re.DOTALL
+        )
+    }
+    for found in re.finditer(r"(<Pass\b[^>]*>)(.*?)</Pass>", material, re.DOTALL):
+        drawn_by = re.search(r'PixelShader\s*=\s*"([^"]+)"', found.group(1))
+        if drawn_by and re.match(FIGURE_SHADERS, drawn_by.group(1), re.IGNORECASE):
+            handed = found.group(2) + "".join(
+                sets.get(ref, "")
+                for ref in re.findall(r'<ParameterSetRef\s+Ref\s*=\s*"([^"]+)"', found.group(2))
+            )
+            yield found.end(1), drawn_by.group(1).lower() + ".fxo", handed
+
+
+def shadow_maps_in(handed):
+    """The sampler names a pass's parameters give the two shadow maps, or
+    None where it is not handed both."""
+    names = tuple(
+        found.group(1)
+        if (found := re.search(rf'SamplerName\s*=\s*"([^"]+)"\s+Usage\s*=\s*"ShadowTexture_{which}"', handed))
+        else None
+        for which in ("Primary", "Secondary")
+    )
+    return names if all(names) else None
+
+
+def find_shadow_maps(materials):
+    """Fill SHADOW_MAPS from the game's material definitions. One shader
+    handed the maps under two pairs of names is refused."""
+    for body in materials.values():
+        for _, name, handed in figure_passes(body.decode("utf-8-sig", errors="replace")):
+            names = shadow_maps_in(handed)
+            if names and SHADOW_MAPS.setdefault(name, names) != names:
+                raise shader_hlsl.ShaderError(
+                    f"{name} is handed the shadow maps as {SHADOW_MAPS[name]} and as {names}"
+                )
+
+
+def shadow_parameters(stem):
+    """What a figure's shader declares to read the shadow maps and their
+    data: the maps by the names it is handed them by, which shadow.hlsl then
+    reads as the Character's."""
+    handed = SHADOW_MAPS.get(stem + ".psh.fxo", CHARACTER_SHADOW_MAPS)
+    return (
+        "\nfloat4 g_vShadowData[9];\n"
+        + "".join(f"sampler2D {name};\n" for name in handed)
+        + "".join(
+            f"#define {ours_} {theirs}\n"
+            for ours_, theirs in zip(CHARACTER_SHADOW_MAPS, handed)
+            if ours_ != theirs
+        )
+    )
+
+
+def with_shadow_parameters(material):
+    """A material definition as text, the shadow maps and their data added
+    to every pass a figure's shader draws that is not handed them, as the
+    Character definition hands them to all of its own."""
+    added = []
+    for at, name, handed in figure_passes(material):
+        lines = ""
+        if shadow_maps_in(handed) is None:
+            for number, (sampler, usage) in enumerate(
+                zip(SHADOW_MAPS.get(name, CHARACTER_SHADOW_MAPS), ("Primary", "Secondary")), 1
+            ):
+                lines += (
+                    f'\n            <InternalParameter Type="Texture" Name="mml_tShadowPartition{number}"'
+                    f' SamplerName="{sampler}" Usage="ShadowTexture_{usage}"/>'
+                )
+        if not re.search(r'Name\s*=\s*"g_vShadowData"', handed):
+            lines += (
+                '\n            <InternalParameter Type="InternalDataReference" Name="g_vShadowData"'
+                ' Usage="ShadowData"/>'
+            )
+        if lines:
+            added.append((at, lines))
+    for at, lines in reversed(added):
+        material = material[:at] + lines + material[at:]
+    return material
 
 
 def takes_sun_shadow(stem, listing):
@@ -1688,7 +1787,7 @@ def changes_for(stem, listing, map_size, show):
             changes.append(with_ambient_relief)
         preamble += (
             ours("look.hlsl")
-            + CHARACTER_SHADOW_PARAMETERS
+            + shadow_parameters(stem)
             + shadow
             + ours("materials.hlsl")
             + ours("bake.hlsl")
@@ -1791,6 +1890,7 @@ def main(argv):
     materials = script_commands.erf_entries(os.path.join(data, "materials.erf"))
     states = script_commands.erf_entries(os.path.join(data, "states.erf"))
     find_uses(materials, states)
+    find_shadow_maps(materials)
     solid_states = {}
     written = set()
     for theirs, ours_, names, _ in DEPTH_VERTICES:
@@ -1798,7 +1898,9 @@ def main(argv):
             text = with_textured_depth(
                 materials[name].decode("utf-8-sig"), (theirs, ours_)
             )
-            text = with_pass_variants(with_material_parameters(text), states, solid_states)
+            text = with_pass_variants(
+                with_material_parameters(with_shadow_parameters(text)), states, solid_states
+            )
             with open(os.path.join(out, name), "w", encoding="utf-8", newline="") as f:
                 f.write(text)
             written.add(name)
@@ -1810,7 +1912,9 @@ def main(argv):
     for name in sorted(materials):
         if name.endswith(".mat.xml") and name not in written and name not in NO_DEPTH_PASS:
             theirs = materials[name].decode("utf-8-sig")
-            ours_ = with_pass_variants(with_material_parameters(theirs), states, solid_states)
+            ours_ = with_pass_variants(
+                with_material_parameters(with_shadow_parameters(theirs)), states, solid_states
+            )
             if ours_ != theirs:
                 with open(os.path.join(out, name), "w", encoding="utf-8", newline="") as f:
                     f.write(ours_)
