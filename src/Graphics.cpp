@@ -2046,6 +2046,26 @@ std::vector<Look> g_looks;
 std::size_t g_chosen = 0;
 bool g_smaa = false; // SMAA beside the game's own anti-aliasing, or not
 
+// The options screen's two sliders that are no level's but the player's
+// machine's: how dark the ambient occlusion is, and the degree of the
+// anisotropic filtering (the user, 2026-10-12: "implement gtao, and add an
+// option / slider for it. also add one for anisotropic filtering"). Each is
+// a stop of its list, kept in graphics.chosen; in a look but Vanilla they
+// stand in place of the look's Occlusion and Anisotropy.
+constexpr std::array<float, 4> kOcclusionStops{0.0F, 0.5F, 1.0F, 1.5F};          // Off, Low, Medium, High
+constexpr std::array<const wchar_t *, 4> kOcclusionNames{L"Off", L"Low", L"Medium", L"High"};
+constexpr std::array<int, 5> kAnisotropyStops{0, 2, 4, 8, 16};
+constexpr std::array<const wchar_t *, 5> kAnisotropyNames{L"Off", L"2x", L"4x", L"8x", L"16x"};
+std::atomic<int> g_occlusionStop{2};  // Medium
+std::atomic<int> g_anisotropyStop{4}; // 16x
+
+// A stop read from graphics.chosen, held to its list.
+int StopOf(std::string_view value, std::size_t stops)
+{
+    const std::string number(value);
+    return std::clamp(static_cast<int>(std::strtol(number.c_str(), nullptr, 10)), 0, static_cast<int>(stops) - 1);
+}
+
 std::string_view Trimmed(std::string_view text)
 {
     constexpr std::string_view kSpace = " \t\r";
@@ -2142,6 +2162,14 @@ void ReadChosen(const std::filesystem::path &folder)
         {
             g_smaa = value == "SMAA";
         }
+        if (key == "AmbientOcclusion")
+        {
+            g_occlusionStop.store(StopOf(value, kOcclusionStops.size()), std::memory_order_relaxed);
+        }
+        if (key == "AnisotropicFiltering")
+        {
+            g_anisotropyStop.store(StopOf(value, kAnisotropyStops.size()), std::memory_order_relaxed);
+        }
         if (key == "Look")
         {
             g_chosen = LookNamed(value).value_or(g_chosen);
@@ -2168,6 +2196,8 @@ void KeepChosen()
 {
     std::ofstream out(dao::Module::OwnFolder() / kChosenFile, std::ios::trunc);
     out << "Look = " << g_looks[g_chosen].name << "\nAntiAliasing = " << (g_smaa ? "SMAA" : "Off") << '\n';
+    out << "AmbientOcclusion = " << g_occlusionStop.load(std::memory_order_relaxed) << "\nAnisotropicFiltering = "
+        << g_anisotropyStop.load(std::memory_order_relaxed) << '\n';
     {
         const std::scoped_lock lock(g_tuneLock);
         for (const auto &[level, tune] : g_tunedByPlayer)
@@ -2225,9 +2255,14 @@ float ChosenValue(std::string_view key, float otherwise = 0)
 
 // What one of the player's sliders adds, in the units of what it is added to:
 // nothing in the Vanilla look, which is the game as it is.
+bool VanillaChosen()
+{
+    return g_chosen < g_looks.size() && g_looks[g_chosen].name == kVanillaLook;
+}
+
 float TunedBy(TuneOf which)
 {
-    if (g_chosen < g_looks.size() && g_looks[g_chosen].name == kVanillaLook)
+    if (VanillaChosen())
     {
         return 0.0F;
     }
@@ -2405,7 +2440,10 @@ void KeepLookRegisters()
         const bool idle = (kKeys.at(i) == "Materials" || kKeys.at(i) == "Highlights") && g_wideFormat == D3DFMT_UNKNOWN;
         g_look.at(i).store(idle ? 0.0F : ChosenValue(kKeys.at(i)), std::memory_order_relaxed);
     }
-    g_anisotropy.store(static_cast<int>(ChosenValue("Anisotropy")), std::memory_order_relaxed);
+    g_anisotropy.store(VanillaChosen() ? static_cast<int>(ChosenValue("Anisotropy"))
+                                       : kAnisotropyStops.at(static_cast<std::size_t>(
+                                             g_anisotropyStop.load(std::memory_order_relaxed))),
+                       std::memory_order_relaxed);
     g_lampStrength.store(ChosenValue("Lamps"), std::memory_order_relaxed);
     // The fills, the same: a level lit again has the light of its place in
     // its probes, and the fills are what it would be flat by.
@@ -2634,6 +2672,31 @@ std::pair<std::optional<SeenWay>, std::optional<SeenWay>> NearestTheMiddle(const
     return {first, second};
 }
 
+// Tells the picture's passes its lens, each frame: the picture's width and
+// height on a plane one unit before the eye, by the focal length two ways
+// near the picture's middle give.
+// @return the focal length in pixels, or nullopt in a frame with nothing to tell it by: the values stay
+std::optional<float> KeepLens(const dao::world::ViewSize &size, const dao::SceneCamera &camera)
+{
+    const dao::Vector eye = camera.Position();
+    const std::array<float, 2> middle{static_cast<float>(size.width) / 2, static_cast<float>(size.height) / 2};
+    const auto [first, second] = NearestTheMiddle(eye, middle);
+    if (!first || !second || std::hypot(first->at[0] - second->at[0], first->at[1] - second->at[1]) < 8)
+    {
+        return std::nullopt;
+    }
+    const float cosine =
+        (first->way[0] * second->way[0]) + (first->way[1] * second->way[1]) + (first->way[2] * second->way[2]);
+    const float focal = FocalLength(first->at, second->at, cosine);
+    if (!(focal > 0))
+    {
+        return std::nullopt;
+    }
+    KeepQuietly(L"DaoLensX", static_cast<float>(size.width) / focal);
+    KeepQuietly(L"DaoLensY", static_cast<float>(size.height) / focal);
+    return focal;
+}
+
 // Tells the picture's last passes where the sun is in it, each frame, and
 // what colour its light is, for the air it lights and its shafts (grade.hlsl's
 // DaoAir, glow_shafts.hlsl): the look's SunHaze and Shafts. Nothing of the
@@ -2654,6 +2717,10 @@ void KeepAir()
     const dao::CameraController *controller = modes != nullptr ? modes->Camera() : nullptr;
     const dao::SceneCamera *camera = controller != nullptr ? controller->Scene() : nullptr;
     const float lit = sun && strength > 0 ? Daylight(*sun) : 0.0F;
+    // The lens first, and whatever the area: the ambient occlusion reads it
+    // under a roof as under the sun (occlusion.hlsl).
+    const std::optional<float> lens =
+        size && camera != nullptr && size->width > 0 && size->height > 0 ? KeepLens(*size, *camera) : std::nullopt;
     if (!sun || lit <= 0 || !sky || !size || camera == nullptr || size->width <= 0 || size->height <= 0)
     {
         KeepQuietly(L"DaoSunRed", 0);
@@ -2661,16 +2728,13 @@ void KeepAir()
         KeepQuietly(L"DaoSunBlue", 0);
         return;
     }
-    const dao::Vector eye = camera->Position();
-    const std::array<float, 2> middle{static_cast<float>(size->width) / 2, static_cast<float>(size->height) / 2};
-    const auto [first, second] = NearestTheMiddle(eye, middle);
-    if (!first || !second || std::hypot(first->at[0] - second->at[0], first->at[1] - second->at[1]) < 8)
+    if (!lens)
     {
         return; // nothing to tell the lens by this frame: the values stay
     }
-    const float cosine =
-        (first->way[0] * second->way[0]) + (first->way[1] * second->way[1]) + (first->way[2] * second->way[2]);
-    const float focal = FocalLength(first->at, second->at, cosine);
+    const dao::Vector eye = camera->Position();
+    const std::array<float, 2> middle{static_cast<float>(size->width) / 2, static_cast<float>(size->height) / 2};
+    const float focal = *lens;
     const std::array<float, 3> toSun{-sun->direction[0], -sun->direction[1], -sun->direction[2]};
     std::optional<SeenWay> where = SeeWay(eye, middle, toSun);
     float side = 1;
@@ -2686,8 +2750,6 @@ void KeepAir()
     KeepQuietly(L"DaoSunX", std::clamp(where->at[0] / focal, -64.0F, 64.0F));
     KeepQuietly(L"DaoSunY", std::clamp(where->at[1] / focal, -64.0F, 64.0F));
     KeepQuietly(L"DaoSunSide", side);
-    KeepQuietly(L"DaoLensX", static_cast<float>(size->width) / focal);
-    KeepQuietly(L"DaoLensY", static_cast<float>(size->height) / focal);
     KeepQuietly(L"DaoHazeThick", std::clamp(sky->fogIntensity, 0.0F, 1.0F));
     KeepQuietly(L"DaoSunRed", lit * g_sunHeld * sun->color[0]);
     KeepQuietly(L"DaoSunGreen", lit * g_sunHeld * sun->color[1]);
@@ -2867,7 +2929,12 @@ void ApplyLook()
         if (value.key != "Exposure") // KeepSun's, by the area's sun
         {
             const float tuned = value.key == "Contrast" ? TunedBy(kTuneContrast) : 0.0F;
-            Keep(value.name, idle ? 0.0F : value.value + tuned, value.key);
+            // The ambient occlusion's strength is the options screen's, but in the Vanilla look.
+            const bool slider = value.key == "Occlusion" && !VanillaChosen();
+            const float is = slider ? kOcclusionStops.at(static_cast<std::size_t>(
+                                          g_occlusionStop.load(std::memory_order_relaxed)))
+                                    : value.value;
+            Keep(value.name, idle ? 0.0F : is + tuned, value.key);
         }
     }
     Keep(L"DaoSaturation", TunedBy(kTuneSaturation), "Saturation");
@@ -2921,6 +2988,26 @@ dao::options::Choice TuneSlider(TuneOf which, const wchar_t *name, const wchar_t
     return slider;
 }
 
+// A slider over a list of stops kept in graphics.chosen.
+template <std::size_t N>
+dao::options::Choice StopSlider(std::atomic<int> &stop, const std::array<const wchar_t *, N> &names, const wchar_t *name,
+                                const wchar_t *label, const wchar_t *tooltip, const char *said)
+{
+    dao::options::Choice slider;
+    slider.name = name;
+    slider.label = label;
+    slider.tooltip = tooltip;
+    slider.values.assign(names.begin(), names.end());
+    slider.get = [&stop] { return static_cast<std::int32_t>(stop.load(std::memory_order_relaxed)); };
+    slider.set = [&stop, said](std::int32_t wanted) {
+        stop.store(std::clamp(wanted, 0, static_cast<std::int32_t>(N) - 1), std::memory_order_relaxed);
+        spdlog::info("{}: stop {}", said, stop.load(std::memory_order_relaxed));
+        KeepChosen();
+        return wanted;
+    };
+    return slider;
+}
+
 void AddToOptions()
 {
     const std::optional<std::size_t> vanilla = LookNamed(kVanillaLook);
@@ -2951,7 +3038,13 @@ void AddToOptions()
             {TuneSlider(kTuneExposure, L"GraphicsExposure", L"Exposure", L"How bright the picture is, in this area's level"),
              TuneSlider(kTuneContrast, L"GraphicsContrast", L"Contrast", L"How far apart light and dark are"),
              TuneSlider(kTuneSaturation, L"GraphicsSaturation", L"Saturation", L"How strong the colours are"),
-             TuneSlider(kTuneWarmth, L"GraphicsWarmth", L"Warmth", L"Cooler or warmer")},
+             // Twelve rows are the column's all: Warmth, the fourth of a
+             // level's tuning, is kept in the files and has no slider until a
+             // slider takes less than two rows (asked of DAOLib 2026-10-12).
+             StopSlider(g_occlusionStop, kOcclusionNames, L"GraphicsOcclusion", L"Ambient occlusion",
+                        L"Shade in corners and creases and under things (GTAO)", "ambient occlusion"),
+             StopSlider(g_anisotropyStop, kAnisotropyNames, L"GraphicsAnisotropic", L"Anisotropic filtering",
+                        L"Keeps textures sharp where they are seen at a slant", "anisotropic filtering")},
             dao::options::Column::Right, dao::options::Tab::Video))
     {
         spdlog::warn("the options screen did not take the section");
