@@ -25,7 +25,10 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'console.ps1')
 $repo = Split-Path -Parent $PSScriptRoot
-$tool = Join-Path $repo "build\$Preset\elgarashaders_relight.exe"
+# The 64-bit tool with Embree where it has been built (tools\build-bake.ps1), else the
+# 32-bit one the plugin's build makes.
+$tool = Join-Path $repo 'build\bake64\elgarashaders_relight.exe'
+if (-not (Test-Path $tool)) { $tool = Join-Path $repo "build\$Preset\elgarashaders_relight.exe" }
 $file = Join-Path $repo 'data\relight.ini'
 if (-not (Test-Path $tool)) { throw "No $tool; run .\tools\build.ps1 -Preset $Preset first" }
 

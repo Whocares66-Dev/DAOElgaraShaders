@@ -98,6 +98,12 @@ struct Options
     float kept = 0.0F;          // of the game's own baked light, what is laid under ours
     std::vector<Glow> glows;    // what glows in this level
     std::vector<Flame> flames;  // and what burns in it
+    // What casts the rays: Embree (1) where the tool is built with it, as the
+    // 64-bit one is (bake/CMakeLists.txt), or DAOLib's tree of triangles (0),
+    // a room at a time, which is all the 32-bit tool has. Embree has the
+    // whole world in one scene: a room far off is in the way of light there,
+    // where the tree tries only the rooms about a texel's own.
+    int caster = 1;
     std::vector<Beam> beams;    // and what comes in from far off
 };
 

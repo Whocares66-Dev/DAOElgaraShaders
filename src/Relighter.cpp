@@ -41,6 +41,10 @@
 #include <set>
 #include <thread>
 
+#ifdef ELGARA_EMBREE
+#include <embree4/rtcore.h>
+#endif
+
 // Windows' own, which a logging header brings: both are good names here.
 #undef far
 #undef near
@@ -207,7 +211,84 @@ struct Scene
     std::vector<Glowing> glows;
     std::vector<Beaming> beams;
     std::map<std::uint32_t, Map> maps; // by the atlas's number
+#ifdef ELGARA_EMBREE
+    RTCScene embree = nullptr; // every room of the world, a geometry each by the room's number; or none
+#endif
 };
+
+#ifdef ELGARA_EMBREE
+// Embree's device and the scene made on it, let go with this.
+struct Embree
+{
+    RTCDevice device = nullptr;
+    RTCScene scene = nullptr;
+    Embree() = default;
+    Embree(const Embree &) = delete;
+    Embree &operator=(const Embree &) = delete;
+    ~Embree()
+    {
+        if (scene != nullptr)
+        {
+            rtcReleaseScene(scene);
+        }
+        if (device != nullptr)
+        {
+            rtcReleaseDevice(device);
+        }
+    }
+};
+
+// Makes Embree's scene of a world: each room's lit triangles a geometry
+// whose number is the room's, so that what a ray lands on says which room
+// and which of its triangles.
+RTCScene MakeEmbree(Embree &held, const Scene &scene)
+{
+    held.device = rtcNewDevice(nullptr);
+    if (held.device == nullptr)
+    {
+        return nullptr;
+    }
+    held.scene = rtcNewScene(held.device);
+    rtcSetSceneBuildQuality(held.scene, RTC_BUILD_QUALITY_HIGH);
+    for (std::size_t room = 0; room < scene.rooms.size(); ++room)
+    {
+        const Geometry *geometry = scene.rooms[room].geometry;
+        if (geometry == nullptr || geometry->lit.empty())
+        {
+            continue;
+        }
+        const std::size_t count = geometry->lit.size();
+        RTCGeometry mesh = rtcNewGeometry(held.device, RTC_GEOMETRY_TYPE_TRIANGLE);
+        auto *corners = static_cast<float *>(rtcSetNewGeometryBuffer(mesh, RTC_BUFFER_TYPE_VERTEX, 0, RTC_FORMAT_FLOAT3,
+                                                                    3 * sizeof(float), 3 * count));
+        auto *indices = static_cast<unsigned *>(rtcSetNewGeometryBuffer(mesh, RTC_BUFFER_TYPE_INDEX, 0, RTC_FORMAT_UINT3,
+                                                                       3 * sizeof(unsigned), count));
+        if (corners == nullptr || indices == nullptr)
+        {
+            rtcReleaseGeometry(mesh);
+            continue;
+        }
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            const core::Triangle &triangle = geometry->lit[i].corners;
+            const std::array<const core::Point *, 3> three{&triangle.a, &triangle.b, &triangle.c};
+            for (std::size_t corner = 0; corner < 3; ++corner)
+            {
+                for (std::size_t axis = 0; axis < 3; ++axis)
+                {
+                    corners[(9 * i) + (3 * corner) + axis] = three.at(corner)->at(axis);
+                }
+                indices[(3 * i) + corner] = static_cast<unsigned>((3 * i) + corner);
+            }
+        }
+        rtcCommitGeometry(mesh);
+        rtcAttachGeometryByID(held.scene, mesh, static_cast<unsigned>(room));
+        rtcReleaseGeometry(mesh);
+    }
+    rtcCommitScene(held.scene);
+    return held.scene;
+}
+#endif
 
 // Takes a lamp into the scene, unless it gives no light or is one already
 // there: a level's layouts name some twice, once for each detail of a tile.
@@ -356,6 +437,31 @@ struct Landing
 std::optional<Landing> Cast(const Scene &scene, std::uint32_t room, const core::Point &from, const core::Point &way,
                             float far)
 {
+#ifdef ELGARA_EMBREE
+    if (scene.embree != nullptr)
+    {
+        RTCRayHit cast{};
+        cast.ray.org_x = from[0];
+        cast.ray.org_y = from[1];
+        cast.ray.org_z = from[2];
+        cast.ray.dir_x = way[0];
+        cast.ray.dir_y = way[1];
+        cast.ray.dir_z = way[2];
+        cast.ray.tnear = 1e-3F;
+        cast.ray.tfar = far;
+        cast.ray.mask = 0xFFFFFFFFU;
+        cast.hit.geomID = RTC_INVALID_GEOMETRY_ID;
+        cast.hit.instID[0] = RTC_INVALID_GEOMETRY_ID;
+        rtcIntersect1(scene.embree, &cast);
+        if (cast.hit.geomID == RTC_INVALID_GEOMETRY_ID)
+        {
+            return std::nullopt;
+        }
+        // Embree's u and v are the second and third corners' weights, as the tree's are.
+        return Landing{scene.rooms[cast.hit.geomID].geometry,
+                       core::RayHit{cast.hit.primID, cast.ray.tfar, cast.hit.u, cast.hit.v}};
+    }
+#endif
     std::optional<Landing> nearest;
     float most = far;
     for (const std::size_t other : scene.rooms[room].about)
@@ -372,6 +478,30 @@ std::optional<Landing> Cast(const Scene &scene, std::uint32_t room, const core::
         }
     }
     return nearest;
+}
+
+// Whether anything of the world is in a ray's way within `far`: what a shadow
+// asks, which needs no word of what it was.
+bool Blocked(const Scene &scene, std::uint32_t room, const core::Point &from, const core::Point &way, float far)
+{
+#ifdef ELGARA_EMBREE
+    if (scene.embree != nullptr)
+    {
+        RTCRay ray{};
+        ray.org_x = from[0];
+        ray.org_y = from[1];
+        ray.org_z = from[2];
+        ray.dir_x = way[0];
+        ray.dir_y = way[1];
+        ray.dir_z = way[2];
+        ray.tnear = 1e-3F;
+        ray.tfar = far;
+        ray.mask = 0xFFFFFFFFU;
+        rtcOccluded1(scene.embree, &ray);
+        return ray.tfar < 0; // Embree's word for "something was"
+    }
+#endif
+    return Cast(scene, room, from, way, far).has_value();
 }
 
 // Runs `work` for every number below `count`, on as many threads as the
@@ -558,7 +688,7 @@ void Direct(const Scene &scene, std::uint32_t room, const core::Point &from, con
             continue;
         }
         const float shortOf = std::max(kShortOfLamp, lamp.clear);
-        if (far > shortOf && Cast(scene, room, from, way, far - shortOf))
+        if (far > shortOf && Blocked(scene, room, from, way, far - shortOf))
         {
             continue;
         }
@@ -574,7 +704,7 @@ void Direct(const Scene &scene, std::uint32_t room, const core::Point &from, con
             continue;
         }
         const std::optional<core::RayHit> out = beam.openings->Cast(from, beam.toSource, 1e-3F, kBeamFar);
-        if (!out || (out->distance > 0.1F && Cast(scene, room, from, beam.toSource, out->distance - 0.05F)))
+        if (!out || (out->distance > 0.1F && Blocked(scene, room, from, beam.toSource, out->distance - 0.05F)))
         {
             continue;
         }
@@ -638,7 +768,7 @@ void Glowed(const Scene &scene, std::uint32_t room, const core::Point &from, con
             // surface up to the opening.
             const float sends = glow.sky ? std::max(0.0F, -Dot(glow.facings[point], way)) * std::max(0.0F, way[2])
                                          : std::abs(Dot(glow.facings[point], way));
-            if (sends <= 0 || (far > 0.1F && Cast(scene, room, from, way, far - 0.05F)))
+            if (sends <= 0 || (far > 0.1F && Blocked(scene, room, from, way, far - 0.05F)))
             {
                 continue;
             }
@@ -1300,6 +1430,21 @@ std::size_t LightRooms(Level &level, const std::filesystem::path &levelRim, cons
     {
         AddLamp(scene, lamp, options);
     }
+    const char *caster = "DAOLib's tree, a room at a time";
+#ifdef ELGARA_EMBREE
+    Embree embree;
+    if (options.caster != 0)
+    {
+        const auto before = std::chrono::steady_clock::now();
+        scene.embree = MakeEmbree(embree, scene);
+        if (scene.embree != nullptr)
+        {
+            caster = "Embree, the world as one scene";
+            spdlog::info("relight: {}: Embree's scene made in {} ms", levelRim.stem().string(),
+                         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - before).count());
+        }
+    }
+#endif
     // The level's middle: the middle of its rooms' boxes together.
     Box all;
     for (const RoomLit &lit : scene.rooms)
@@ -1553,8 +1698,9 @@ std::size_t LightRooms(Level &level, const std::filesystem::path &levelRim, cons
         }
         covered += static_cast<std::size_t>(std::ranges::count_if(map.texels, [](const Texel &texel) { return texel.covered; }));
     }
-    spdlog::info("relight: {}: {} rooms, {} lamps, {} glowing things, {} lightmaps, {} texels to light",
-                 levelRim.stem().string(), ids.size(), scene.lamps.size(), scene.glows.size(), scene.maps.size(), covered);
+    spdlog::info("relight: {}: {} rooms, {} lamps, {} glowing things, {} lightmaps, {} texels to light; rays by {}",
+                 levelRim.stem().string(), ids.size(), scene.lamps.size(), scene.glows.size(), scene.maps.size(), covered,
+                 caster);
     ForEach(order.size(), [&](std::size_t i) {
         Map &map = *order[i].first;
         map.straight[order[i].second] = Straight(scene, map.texels[order[i].second], static_cast<std::uint32_t>(i), options,

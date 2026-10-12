@@ -16,6 +16,9 @@
 //   bounces=2      how many times light is followed off a surface
 //   rays=48        cast from a texel for what comes back
 //   kept=0         of the game's own baked light, what is laid under ours
+//   caster=embree  what casts the rays: Embree, where the tool is built with
+//                  it (the 64-bit one, tools/build-bake.ps1), or `tree`,
+//                  DAOLib's own, a room at a time
 //   glow=window:6,8,12   every part whose material's name has "window" in it
 //                  glows that colour; as many of these as wanted. A fourth
 //                  number, after another colon, is how much of that colour
@@ -96,6 +99,10 @@ bool Take(relighter::Options &options, const std::string &name, const std::strin
     else if (name == "rays")
     {
         options.rays = std::strtoul(value.c_str(), nullptr, 10);
+    }
+    else if (name == "caster")
+    {
+        options.caster = value == "tree" ? 0 : 1;
     }
     else if (name == "kept")
     {

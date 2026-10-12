@@ -19,3 +19,5 @@ git submodule update --init --recursive
 ## Licence
 
 GPLv3 ([LICENSE](LICENSE)). `shaders/smaa/` is SMAA, under its own MIT licence.
+
+The bake tool (`elgarashaders_relight`, built for 64 bits by `tools/build-bake.ps1`) casts its rays with [Intel Embree](https://www.embree.org/), which runs its threads on [oneTBB](https://github.com/uxlfoundation/oneTBB); both are © Intel Corporation, under the Apache License 2.0. Neither is part of the plugin or is loaded into the game: they are used only to make a level's lightmaps and light probes, which are what the plugin ships. Their source is not in this repository (vcpkg fetches it at build time); a release that carried the bake tool itself would carry their licences and notices with it.
