@@ -99,7 +99,7 @@ if ($null -ne $kept) { Set-Content -LiteralPath $chosen -Value $kept -NoNewline 
 foreach ($level in $Relit) {
     $lit = Join-Path $repo "build\relit\$level"
     $files = @(Get-ChildItem -LiteralPath $lit -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Extension -in '.dds', '.elgp', '.rml', '.mmh' })
+            Where-Object { $_.Extension -in '.dds', '.elgp', '.lamps', '.rml', '.mmh' })
     if ($files.Count -eq 0) { throw "Nothing of $level in $lit; run .\tools\relight.ps1 -Level $level first" }
     $files | Copy-Item -Destination (Join-Path $pluginFolder 'override')
     Show-Line "$level lit again: $($files.Count) files"

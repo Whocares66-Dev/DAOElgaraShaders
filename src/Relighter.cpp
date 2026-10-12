@@ -1640,7 +1640,20 @@ std::size_t LightRooms(Level &level, const std::filesystem::path &levelRim, cons
             {
                 if (Lower(placed.file).find(Lower(flame.named)) != std::wstring::npos)
                 {
-                    flames.push_back(WhereItBurns(level, id, *room, placed, hints));
+                    core::Point at = WhereItBurns(level, id, *room, placed, hints);
+                    if (flame.lands > 0)
+                    {
+                        constexpr float kFrom = 0.5F;   // metres over the place the look down starts from
+                        constexpr float kDeep = 200.0F; // and how far down it looks
+                        const auto index = static_cast<std::uint32_t>(
+                            std::ranges::find(ids, id) != ids.end() ? std::ranges::find(ids, id) - ids.begin() : 0);
+                        const core::Point from{at[0], at[1], at[2] + kFrom};
+                        if (const std::optional<Landing> floor = Cast(scene, index, from, {0, 0, -1}, kDeep))
+                        {
+                            at[2] = from[2] - floor->hit.distance;
+                        }
+                    }
+                    flames.push_back(at);
                 }
             }
         }
@@ -1800,6 +1813,39 @@ std::size_t Relight(const std::filesystem::path &levelRim, const std::filesystem
         return 0;
     }
     Level level(levelRim.parent_path(), levelRim.stem().wstring(), std::move(*rooms), &*hierarchies, &*meshes);
+    // Where the level's own lamps are, every one of its layouts', beside the
+    // lightmaps (<level>.lamps: "ELGL", how many, three floats each). The
+    // plugin puts those lamps out in a level lit again, their light being the
+    // bake's to give or not; every other light, a spell's, a torch carried,
+    // then lights the level as it does in vanilla (Graphics.cpp).
+    {
+        std::vector<float> places;
+        const auto take = [&](const std::wstring &layout) {
+            for (const Lamp &lamp : level.LampsOf(layout))
+            {
+                places.insert(places.end(), lamp.at.begin(), lamp.at.end());
+            }
+        };
+        for (const std::wstring &id : level.Rooms())
+        {
+            take(id);
+            if (level.Terrain() && id.ends_with(L"_0"))
+            {
+                take(id.substr(0, id.size() - 1) + L"1");
+            }
+        }
+        take(L"");
+        std::error_code error;
+        std::filesystem::create_directories(out, error);
+        std::ofstream stream(out / (levelRim.stem().wstring() + L".lamps"), std::ios::binary);
+        const std::array<char, 4> magic{'E', 'L', 'G', 'L'};
+        const auto count = static_cast<std::uint32_t>(places.size() / 3);
+        stream.write(magic.data(), magic.size());
+        stream.write(reinterpret_cast<const char *>(&count), sizeof count);
+        stream.write(reinterpret_cast<const char *>(places.data()),
+                     static_cast<std::streamsize>(places.size() * sizeof(float)));
+        spdlog::info("relight: {}: {} lamps of the level's own, said in its .lamps", levelRim.stem().string(), count);
+    }
     std::set<std::wstring> done;
     if (!level.Terrain())
     {

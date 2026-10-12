@@ -115,7 +115,8 @@ bool Take(relighter::Options &options, const std::string &name, const std::strin
         flame.colour = ColourAt(after);
         // The reach, then how far above its place it burns, then how far about it is clear.
         flame.reach = 12.0F;
-        for (float *number : {&flame.reach, &flame.lift, &flame.clear})
+        // And a fourth, 1 for a light that lands (a shaft through a roof): Relighter.h's Flame.
+        for (float *number : {&flame.reach, &flame.lift, &flame.clear, &flame.lands})
         {
             if (*after != ':')
             {

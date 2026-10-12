@@ -660,6 +660,11 @@ std::unordered_set<void *> g_ourLamps;
 // 2026-10-11). Such a light is the area's and is left alone.
 std::unordered_set<void *> g_areasOwn;
 thread_local bool t_lampsMoved = false;
+// Every light in the level's lists, of any reach, and those of them found to
+// be lamps of a level lit again (DimBakedLamps).
+std::unordered_map<void *, void *> g_levelLights; // each with the manager whose list it is in
+std::unordered_set<void *> g_bakedLamps;
+std::atomic<std::size_t> g_bakedLampsCount{0};
 
 void *ListOf(void *manager, std::size_t offset)
 {
@@ -688,6 +693,10 @@ std::uintptr_t __fastcall LightListInsert(void *list, int unused, void *node)
     }
     if (node != nullptr && IsLevelsList(list))
     {
+        {
+            const std::scoped_lock lock(g_ourLampsLock);
+            g_levelLights.insert_or_assign(node, t_lightManager);
+        }
         float reach = 0;
         std::memcpy(&reach, static_cast<const std::byte *>(node) + kLightNodeReach, sizeof reach);
         if (reach >= kLampReachLeast && reach <= kLampReachMost)
@@ -718,6 +727,9 @@ std::uintptr_t __fastcall LightListErase(void *list, int unused, void *node)
         g_lightListErase.Original()(ListOf(t_lightManager, kFiguresUnflagged), unused, node);
         const std::scoped_lock lock(g_ourLampsLock);
         g_ourLamps.erase(node);
+        g_levelLights.erase(node);
+        g_bakedLamps.erase(node);
+        g_bakedLampsCount.store(g_bakedLamps.size(), std::memory_order_relaxed);
         t_lampsMoved = true;
     }
     return result;
@@ -1184,7 +1196,7 @@ float AmbientLift(const void *state)
     std::array<float, 3> sun{};
     std::memcpy(sun.data(), static_cast<const std::byte *>(state) + kStateSun, sizeof sun);
     const float indoors = 1.0F - std::clamp(20.0F * std::max({sun[0], sun[1], sun[2]}), 0.0F, 1.0F);
-    return 1.0F + ambient * indoors;
+    return 1.0F + (ambient * indoors);
 }
 
 // The mix kept for a light state, if the look asks for mixes and it has one
@@ -1410,7 +1422,7 @@ std::uintptr_t __fastcall ChooseFromList(void *list, int unused, void *place, fl
         KeepBlend(group, scored, static_cast<const float *>(place));
         if (static std::atomic<int> said{0}; still && said.fetch_add(1) < 3)
         {
-            const float *at = static_cast<const float *>(place);
+            const auto *at = static_cast<const float *>(place);
             spdlog::info("light probes: a thing that does not move had its probes chosen at ({:.1f}, {:.1f}, {:.1f}), {} scored",
                          at[0], at[1], at[2], scored.size());
         }
@@ -1463,6 +1475,14 @@ float ScoreScale(FiguresList list, void *node, const float *place)
     {
         return 0.0F;
     }
+    {
+        // A lamp of a level lit again is out (DimBakedLamps), for figures too.
+        const std::scoped_lock lock(g_ourLampsLock);
+        if (g_bakedLamps.contains(node))
+        {
+            return 0.0F;
+        }
+    }
     std::memcpy(static_cast<std::byte *>(node) + kLightNodeStrength, &strength, sizeof strength);
     std::array<float, 4> at{};
     (*static_cast<NodePlaceFn **>(node))[kNodePlaceSlot](node, 0, at.data());
@@ -1474,6 +1494,18 @@ std::uintptr_t __fastcall LightScore(void *node, int unused, const float *place,
                                      std::uintptr_t other)
 {
     const std::uintptr_t result = g_lightScore.Original()(node, unused, place, size, room, other);
+    // A lamp of a level lit again scores nothing, for the level and for its
+    // figures: it is then chosen for neither (DimBakedLamps).
+    if (g_bakedLampsCount.load(std::memory_order_relaxed) != 0 && g_levelRelit.load(std::memory_order_relaxed))
+    {
+        const std::scoped_lock lock(g_ourLampsLock);
+        if (g_bakedLamps.contains(node))
+        {
+            const float none = 0;
+            std::memcpy(static_cast<std::byte *>(node) + kLightNodeScore, &none, sizeof none);
+            return result;
+        }
+    }
     if (t_figuresList != FiguresList::None)
     {
         auto *at = static_cast<std::byte *>(node) + kLightNodeScore;
@@ -2102,7 +2134,7 @@ float Daylight(const dao::atmosphere::Sunlight &own)
     const float warmth = own.color[0] / std::max(own.color[2], 1e-3F);
     const float t = std::clamp((warmth - 0.55F) / 0.15F, 0.0F, 1.0F);
     const float lit = std::clamp(20 * std::max({own.color[0], own.color[1], own.color[2]}), 0.0F, 1.0F);
-    return lit * t * t * (3 - 2 * t);
+    return lit * t * t * (3 - (2 * t));
 }
 
 void KeepSun(float sun, float onFigures, float exposure)
@@ -2251,8 +2283,13 @@ void KeepLookRegisters()
     g_lightPivot.store(contrast > 0 ? pivot : 0.0F, std::memory_order_relaxed);
     if (g_levelRelit.load(std::memory_order_relaxed))
     {
-        g_look.at(11).store(-1.0F, std::memory_order_relaxed); // LampsOnLevel: they are in the lightmaps
-        g_look.at(12).store(1.0F, std::memory_order_relaxed);  // AmbientLess: all of it
+        // LampsOnLevel is left as the look has it: the level's own lamps are
+        // put out one by one (DimBakedLamps), and every other light, a
+        // spell's, lights the level as it does in vanilla. They were all put
+        // out together once, by -1 here, and a spell lit nothing in the dark
+        // of the Deep Roads (the user, 2026-10-11: "effects should cast
+        // light").
+        g_look.at(12).store(1.0F, std::memory_order_relaxed); // AmbientLess: all of it
     }
     // And the lightmaps are read as ours are written (look.hlsl's DAO_RELIT).
     g_look.at(14).store(g_levelRelit.load(std::memory_order_relaxed) ? 1.0F : 0.0F, std::memory_order_relaxed);
@@ -2306,9 +2343,9 @@ void KeepSky(float haze, float clouds, float clear, float sky)
     wanted.cloudRed = std::lerp(own->cloudRed, std::max(own->cloudRed, sun->color[0]), lit);
     wanted.cloudGreen = std::lerp(own->cloudGreen, std::max(own->cloudGreen, sun->color[1]), lit);
     wanted.cloudBlue = std::lerp(own->cloudBlue, std::max(own->cloudBlue, sun->color[2]), lit);
-    wanted.cloudDensity = own->cloudDensity * (1 - kCloudsThinner * lit);
-    wanted.fogCap = own->fogCap * (1 - kCapLess * std::clamp(clear, 0.0F, 1.0F));
-    wanted.fogIntensity = own->fogIntensity * (1 - kFogThinner * std::clamp(clear, 0.0F, 1.0F));
+    wanted.cloudDensity = own->cloudDensity * (1 - (kCloudsThinner * lit));
+    wanted.fogCap = own->fogCap * (1 - (kCapLess * std::clamp(clear, 0.0F, 1.0F)));
+    wanted.fogIntensity = own->fogIntensity * (1 - (kFogThinner * std::clamp(clear, 0.0F, 1.0F)));
     wanted.atmosphereAlpha = std::lerp(own->atmosphereAlpha, std::max(own->atmosphereAlpha, 1.0F), std::clamp(sky, 0.0F, 1.0F));
     // A level lit again has no fog. An area's fog is a colour laid over what
     // is far off, the Circle's a warm yellow-brown: in a hall as dark as its
@@ -2493,6 +2530,94 @@ void KeepAir()
     KeepQuietly(L"DaoSunRed", lit * g_sunHeld * sun->color[0]);
     KeepQuietly(L"DaoSunGreen", lit * g_sunHeld * sun->color[1]);
     KeepQuietly(L"DaoSunBlue", lit * g_sunHeld * sun->color[2]);
+}
+
+// Puts out the lamps of a level lit again: the lights in the level's lists that
+// stand where the bake says the level's own lamps are (<level>.lamps), by
+// their strength, which is what the engine multiplies a light's colour by for
+// whatever it lights. The bake is what says how such a level's fittings
+// light it; a lamp its makers set to tint a fitting, lighting the wall
+// again with no shadow, is the same light twice. A light that stands
+// nowhere the bake knows, a spell's or an effect's, is left as it is.
+void DimBakedLamps()
+{
+    // Where a light is, is asked of the light within the node (PlaceOfLight):
+    // the node's own word for its place, which a figure's lamps are scored
+    // by, is nothing for a light as it stands in the level's lists.
+    constexpr float kSamePlace = 0.3F; // metres
+    constexpr int kLookAgain = 30;     // frames between looks at the lights not yet known
+    static int frames = 0;
+    if (!g_levelRelit.load(std::memory_order_relaxed))
+    {
+        return;
+    }
+    const std::shared_ptr<const std::vector<float>> places = probebaker::BakedLamps();
+    const bool look = (frames++ % kLookAgain) == 0 && !places->empty();
+    const std::scoped_lock lock(g_ourLampsLock);
+    if (look)
+    {
+        std::unordered_set<void *> changed; // the managers whose lights are to be chosen again
+        for (const auto &[node, manager] : g_levelLights)
+        {
+            if (g_bakedLamps.contains(node))
+            {
+                continue;
+            }
+            const std::array<float, 4> at = PlaceOfLight(node);
+            for (std::size_t i = 0; i + 2 < places->size(); i += 3)
+            {
+                if (std::hypot(at[0] - (*places)[i], at[1] - (*places)[i + 1], at[2] - (*places)[i + 2]) < kSamePlace)
+                {
+                    g_bakedLamps.insert(node);
+                    changed.insert(manager);
+                    break;
+                }
+            }
+        }
+        g_bakedLampsCount.store(g_bakedLamps.size(), std::memory_order_relaxed);
+        for (void *manager : changed)
+        {
+            // As the engine does when it changes a manager's lists itself.
+            reinterpret_cast<ManagerChangedFn>(dao::Module::Address(dao::addr::kLightManager_MarkChanged))(manager, 0);
+        }
+        static std::size_t said = ~std::size_t{0};
+        static std::size_t saidOf = 0;
+        if (g_bakedLamps.size() != said || g_levelLights.size() != saidOf)
+        {
+            said = g_bakedLamps.size();
+            saidOf = g_levelLights.size();
+            // And how near the nearest light that is not one stands to a lamp
+            // of the bake's, which says whether the places are read alike.
+            float nearest = std::numeric_limits<float>::infinity();
+            for (const auto &[node, manager] : g_levelLights)
+            {
+                if (g_bakedLamps.contains(node))
+                {
+                    continue;
+                }
+                const std::array<float, 4> at = PlaceOfLight(node);
+                for (std::size_t i = 0; i + 2 < places->size(); i += 3)
+                {
+                    nearest = std::min(nearest, std::hypot(at[0] - (*places)[i], at[1] - (*places)[i + 1], at[2] - (*places)[i + 2]));
+                }
+            }
+            int shown = 0;
+            for (const auto &[node, manager] : g_levelLights)
+            {
+                if (shown++ >= 6)
+                {
+                    break;
+                }
+                const std::array<float, 4> at = PlaceOfLight(node);
+                float reach = 0;
+                std::memcpy(&reach, static_cast<const std::byte *>(node) + kLightNodeReach, sizeof reach);
+                spdlog::debug("lamps: a light at ({:.1f}, {:.1f}, {:.1f}) reaching {:.1f} m", at[0], at[1], at[2], reach);
+            }
+            spdlog::info("lamps: {} of the level's {} lights are its own lamps, in its bake ({} said), and are put out; "
+                         "of the rest the nearest to one is {:.2f} m off",
+                         g_bakedLamps.size(), g_levelLights.size(), places->size() / 3, nearest);
+        }
+    }
 }
 
 // The current area's scene for the lights' chooser, which may be on another thread.
@@ -2680,5 +2805,6 @@ extern "C" __declspec(dllexport) bool __cdecl DAOLib_Load(const dao::LoaderInfo 
     dao::OnFrame(&KeepAir);
     dao::OnFrame(&ApplyLook);
     dao::OnFrame(&KeepAreasScene);
+    dao::OnFrame(&DimBakedLamps);
     return true;
 }

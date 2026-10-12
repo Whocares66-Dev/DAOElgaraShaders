@@ -60,7 +60,7 @@ foreach ($one in $Level) {
     & python (Join-Path $PSScriptRoot 'check_relit.py') $Game $one $new 2>&1 | ForEach-Object { Show-Line "$_" }
     if ($LASTEXITCODE -ne 0) { throw "$one is not lit again whole; nothing of it was taken (the files are in $new)" }
     New-Item -ItemType Directory -Force $out | Out-Null
-    Get-ChildItem -LiteralPath $out -File | Where-Object { $_.Extension -in '.dds', '.elgp', '.rml', '.mmh' } | Remove-Item -Confirm:$false
+    Get-ChildItem -LiteralPath $out -File | Where-Object { $_.Extension -in '.dds', '.elgp', '.lamps', '.rml', '.mmh' } | Remove-Item -Confirm:$false
     Get-ChildItem -LiteralPath $new -File | Move-Item -Destination $out
     Remove-Item -LiteralPath $new -Confirm:$false
     Show-Line "$one lit again: $out" -Colour Green

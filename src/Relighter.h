@@ -61,6 +61,11 @@ struct Flame
     // of it, the bowl's own size; both in metres.
     float lift = 0;
     float clear = 0;
+    // Not 0 for a light that lands: a shaft of light let down through a roof
+    // is placed by some levels where it comes in, twenty metres up, and its
+    // light is the pool where it lands. The light is then put `lift` over
+    // the first surface straight under the model's place.
+    float lands = 0;
 };
 
 // A light from far off that comes in through openings, the moon or the sun

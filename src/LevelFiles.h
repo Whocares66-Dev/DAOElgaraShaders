@@ -95,7 +95,7 @@ class Archive
         {
             return std::nullopt;
         }
-        header.resize(core::erf::kHeaderSize + std::size_t{*count} * core::erf::kEntrySize);
+        header.resize(core::erf::kHeaderSize + (std::size_t{*count} * core::erf::kEntrySize));
         file.read(reinterpret_cast<char *>(header.data() + core::erf::kHeaderSize),
                   static_cast<std::streamsize>(header.size() - core::erf::kHeaderSize));
         for (core::erf::Entry &entry : core::erf::Entries(std::span(header).first(
@@ -160,7 +160,7 @@ struct Atlas
 inline Atlas AtlasOf(const core::dds::Image &image, std::uint32_t channels, std::uint32_t sideMost)
 {
     // Halved until it is small enough a side, each pixel the mean of four.
-    Atlas atlas{image.width, image.height, channels, {}};
+    Atlas atlas{image.width, image.height, channels, {}, {}};
     atlas.pixels.resize(std::size_t{image.width} * image.height * channels);
     for (std::size_t i = 0; i < std::size_t{image.width} * image.height; ++i)
     {
@@ -169,7 +169,7 @@ inline Atlas AtlasOf(const core::dds::Image &image, std::uint32_t channels, std:
     }
     while ((atlas.width > sideMost || atlas.height > sideMost) && atlas.width % 2 == 0 && atlas.height % 2 == 0)
     {
-        Atlas half{atlas.width / 2, atlas.height / 2, channels, {}};
+        Atlas half{atlas.width / 2, atlas.height / 2, channels, {}, {}};
         half.pixels.resize(std::size_t{half.width} * half.height * channels);
         for (std::size_t y = 0; y < half.height; ++y)
         {
@@ -178,10 +178,12 @@ inline Atlas AtlasOf(const core::dds::Image &image, std::uint32_t channels, std:
                 for (std::size_t channel = 0; channel < channels; ++channel)
                 {
                     const auto at = [&](std::size_t px, std::size_t py) {
-                        return unsigned{atlas.pixels[(py * atlas.width + px) * channels + channel]};
+                        return unsigned{atlas.pixels[(((py * atlas.width) + px) * channels) + channel]};
                     };
-                    half.pixels[(y * half.width + x) * channels + channel] = static_cast<std::uint8_t>(
-                        (at(2 * x, 2 * y) + at(2 * x + 1, 2 * y) + at(2 * x, 2 * y + 1) + at(2 * x + 1, 2 * y + 1) + 2) / 4);
+                    half.pixels[(((y * half.width) + x) * channels) + channel] =
+                        static_cast<std::uint8_t>((at(2 * x, 2 * y) + at((2 * x) + 1, 2 * y) + at(2 * x, (2 * y) + 1) +
+                                                   at((2 * x) + 1, (2 * y) + 1) + 2) /
+                                                  4);
                 }
             }
         }
@@ -262,7 +264,7 @@ inline std::optional<int> WholeNumber(std::wstring_view text)
     int value = 0;
     for (const wchar_t digit : digits)
     {
-        value = value * 10 + (digit - L'0');
+        value = (value * 10) + (digit - L'0');
     }
     return minus ? -value : value;
 }
@@ -680,7 +682,7 @@ class Level
                                                            static_cast<float>(image.width - 1)));
         const auto y = static_cast<std::size_t>(std::clamp(uv[1] * static_cast<float>(image.height), 0.0F,
                                                            static_cast<float>(image.height - 1)));
-        const std::uint8_t *pixel = &image.pixels[(y * image.width + x) * image.channels];
+        const std::uint8_t *pixel = &image.pixels[((y * image.width) + x) * image.channels];
         const auto light = [&](std::size_t channel) {
             const float stored = static_cast<float>(pixel[channel]) / 255.0F;
             return image.ours ? stored * stored * kRelitMost : stored;
@@ -910,7 +912,7 @@ struct SeenSum
 
     void Add(const Lit &lit)
     {
-        light += 0.2126 * lit.baked[0] + 0.7152 * lit.baked[1] + 0.0722 * lit.baked[2];
+        light += (0.2126 * lit.baked[0]) + (0.7152 * lit.baked[1]) + (0.0722 * lit.baked[2]);
         ++rays;
     }
     float Mean() const
@@ -946,8 +948,8 @@ inline std::optional<Lit> Look(Level &level, std::span<const Geometry *const> ab
     const level::LitTriangle &triangle = nearest->lit[hit.triangle];
     const float w = 1 - hit.u - hit.v;
     return level.LitAt(triangle.atlas,
-                       {w * triangle.uv[0][0] + hit.u * triangle.uv[1][0] + hit.v * triangle.uv[2][0],
-                        w * triangle.uv[0][1] + hit.u * triangle.uv[1][1] + hit.v * triangle.uv[2][1]},
+                       {(w * triangle.uv[0][0]) + (hit.u * triangle.uv[1][0]) + (hit.v * triangle.uv[2][0]),
+                        (w * triangle.uv[0][1]) + (hit.u * triangle.uv[1][1]) + (hit.v * triangle.uv[2][1])},
                        hit.distance);
 }
 

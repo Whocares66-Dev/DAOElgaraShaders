@@ -191,8 +191,8 @@ struct Photograph
     {
         const std::size_t face = index / (std::size_t{side} * side);
         const std::size_t within = index % (std::size_t{side} * side);
-        const float u = (static_cast<float>(within % side) + 0.5F) / static_cast<float>(side) * 2 - 1; // to the right
-        const float v = (static_cast<float>(within / side) + 0.5F) / static_cast<float>(side) * 2 - 1; // down
+        const float u = ((static_cast<float>(within % side) + 0.5F) / static_cast<float>(side) * 2) - 1; // to the right
+        const float v = ((static_cast<float>(within / side) + 0.5F) / static_cast<float>(side) * 2) - 1; // down
         const std::array<core::Point, 6> ways{
             {{1, -v, -u}, {-1, -v, u}, {u, 1, v}, {u, -1, -v}, {u, -v, 1}, {-u, -v, -1}}};
         const core::Point &way = ways.at(face);
@@ -231,7 +231,7 @@ struct Photograph
             return std::min<std::size_t>(
                 static_cast<std::size_t>(std::clamp((at + 1) / 2, 0.0F, 1.0F) * static_cast<float>(side)), side - 1);
         };
-        return (face * side + cell(v)) * side + cell(u);
+        return (((face * side) + cell(v)) * side) + cell(u);
     }
 };
 
@@ -278,7 +278,7 @@ std::optional<Photograph> PhotographOf(std::span<const std::byte> file)
         before += picture < wanted ? bytesOf(picture) : 0;
         face += bytesOf(picture);
     }
-    if (file.size() < kHeader + 6 * face)
+    if (file.size() < kHeader + (6 * face))
     {
         return std::nullopt;
     }
@@ -290,7 +290,7 @@ std::optional<Photograph> PhotographOf(std::span<const std::byte> file)
     std::memcpy(one.data() + 16, &photograph.side, sizeof photograph.side);
     for (std::size_t i = 0; i < 6; ++i)
     {
-        std::memcpy(one.data() + kHeader, file.data() + kHeader + i * face + before, bytesOf(wanted));
+        std::memcpy(one.data() + kHeader, file.data() + kHeader + (i * face) + before, bytesOf(wanted));
         const std::optional<core::dds::Image> image = core::dds::Decode(one);
         if (!image || image->width != photograph.side || image->height != photograph.side)
         {
@@ -299,8 +299,8 @@ std::optional<Photograph> PhotographOf(std::span<const std::byte> file)
         for (std::size_t texel = 0; texel < std::size_t{photograph.side} * photograph.side; ++texel)
         {
             photograph.texels.push_back({static_cast<float>(image->rgba[texel * 4]) / 255.0F,
-                                         static_cast<float>(image->rgba[texel * 4 + 1]) / 255.0F,
-                                         static_cast<float>(image->rgba[texel * 4 + 2]) / 255.0F});
+                                         static_cast<float>(image->rgba[(texel * 4) + 1]) / 255.0F,
+                                         static_cast<float>(image->rgba[(texel * 4) + 2]) / 255.0F});
         }
     }
     return photograph;
@@ -514,8 +514,8 @@ std::optional<probes::Coefficients> Reckon(Level &level, std::span<const Geometr
             }
             for (std::size_t channel = 0; channel < 3; ++channel)
             {
-                colour.at(channel) = sends.ofBaked.at(channel) * lit->baked.at(channel) +
-                                     sends.ofSun.at(channel) * lit->sun + sends.ofNothing.at(channel);
+                colour.at(channel) = (sends.ofBaked.at(channel) * lit->baked.at(channel)) +
+                                     (sends.ofSun.at(channel) * lit->sun) + sends.ofNothing.at(channel);
             }
         }
         else
@@ -603,8 +603,8 @@ std::vector<core::Point> PlacesOn(std::span<const Geometry *const> about, float 
     const auto upward = [](const core::Triangle &t) {
         const core::Point e1{t.b[0] - t.a[0], t.b[1] - t.a[1], t.b[2] - t.a[2]};
         const core::Point e2{t.c[0] - t.a[0], t.c[1] - t.a[1], t.c[2] - t.a[2]};
-        const core::Point normal{e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
-                                 e1[0] * e2[1] - e1[1] * e2[0]};
+        const core::Point normal{(e1[1] * e2[2]) - (e1[2] * e2[1]), (e1[2] * e2[0]) - (e1[0] * e2[2]),
+                                 (e1[0] * e2[1]) - (e1[1] * e2[0])};
         return normal[2] / std::max(std::hypot(normal[0], normal[1], normal[2]), 1e-30F);
     };
     for (const auto &[from, to] : tile.ground)
@@ -651,7 +651,7 @@ std::vector<core::Point> PlacesOn(std::span<const Geometry *const> about, float 
                 }
             }
             std::ranges::sort(stood);
-            float last = low[2] - 2 * kSameFloor;
+            float last = low[2] - (2 * kSameFloor);
             for (const float floor : stood)
             {
                 if (floor - last < kSameFloor)
@@ -871,9 +871,9 @@ void Index(Room &room)
     const auto cellOf = [&](const probes::Probe &probe) {
         const auto x = std::min(static_cast<std::uint32_t>((probe.at[0] - room.lowX) / kCell), room.across - 1);
         const auto y = std::min(static_cast<std::uint32_t>((probe.at[1] - room.lowY) / kCell), room.down - 1);
-        return std::size_t{y} * room.across + x;
+        return (std::size_t{y} * room.across) + x;
     };
-    room.starts.assign(std::size_t{room.across} * room.down + 1, 0);
+    room.starts.assign((std::size_t{room.across} * room.down) + 1, 0);
     for (const probes::Probe &probe : room.probes)
     {
         ++room.starts[cellOf(probe) + 1];
@@ -949,6 +949,7 @@ std::optional<std::vector<Room>> Read(std::span<const std::byte> file, std::uint
 
 struct State
 {
+    std::shared_ptr<const std::vector<float>> lamps = std::make_shared<const std::vector<float>>(); // BakedLamps
     std::filesystem::path kept;
     std::filesystem::path data;
     std::filesystem::path relit; // where lightmaps of our own are looked for
@@ -1055,6 +1056,31 @@ std::size_t ProbesIn(const std::vector<Room> &rooms)
     return count;
 }
 
+// Takes a level's own lamps' places from its bake's .lamps file into the
+// state's, with those of the levels before it.
+void ReadLamps(State &state, const std::filesystem::path &file)
+{
+    std::ifstream in(file, std::ios::binary);
+    std::array<char, 4> magic{};
+    std::uint32_t count = 0;
+    in.read(magic.data(), magic.size());
+    in.read(reinterpret_cast<char *>(&count), sizeof count);
+    if (!in || magic != std::array<char, 4>{'E', 'L', 'G', 'L'} || count > 100000)
+    {
+        return;
+    }
+    std::vector<float> places(std::size_t{count} * 3);
+    in.read(reinterpret_cast<char *>(places.data()), static_cast<std::streamsize>(places.size() * sizeof(float)));
+    if (!in)
+    {
+        return;
+    }
+    const std::scoped_lock lock(state.lock);
+    auto all = std::make_shared<std::vector<float>>(*state.lamps);
+    all->insert(all->end(), places.begin(), places.end());
+    state.lamps = std::move(all);
+}
+
 // A level's table: the one kept, or baked now and kept.
 void BakeLevel(State &state, const std::filesystem::path &levelRim)
 {
@@ -1070,6 +1096,7 @@ void BakeLevel(State &state, const std::filesystem::path &levelRim)
         {
             spdlog::info("light probes: {} lit again, {} rooms, {} probes of its own lights", levelRim.stem().string(),
                          rooms->size(), ProbesIn(*rooms));
+            ReadLamps(state, state.relit / (levelRim.stem().wstring() + L".lamps"));
             Publish(state, std::move(*rooms));
             return;
         }
@@ -1189,6 +1216,13 @@ void Want(const std::filesystem::path &levelRim)
     state.wake.notify_one();
 }
 
+std::shared_ptr<const std::vector<float>> BakedLamps()
+{
+    State &state = TheState();
+    const std::scoped_lock lock(state.lock);
+    return state.lamps;
+}
+
 std::shared_ptr<const Rooms> AllRooms()
 {
     State &state = TheState();
@@ -1237,19 +1271,19 @@ void Nearest(const Room &room, const float *place, std::vector<probes::Near> &ou
         float sure = std::numeric_limits<float>::infinity();
         if (left > 0)
         {
-            sure = std::min(sure, place[0] - (room.lowX + static_cast<float>(left) * kCell));
+            sure = std::min(sure, place[0] - (room.lowX + (static_cast<float>(left) * kCell)));
         }
         if (right < static_cast<int>(room.across) - 1)
         {
-            sure = std::min(sure, room.lowX + static_cast<float>(right + 1) * kCell - place[0]);
+            sure = std::min(sure, room.lowX + (static_cast<float>(right + 1) * kCell) - place[0]);
         }
         if (top > 0)
         {
-            sure = std::min(sure, place[1] - (room.lowY + static_cast<float>(top) * kCell));
+            sure = std::min(sure, place[1] - (room.lowY + (static_cast<float>(top) * kCell)));
         }
         if (bottom < static_cast<int>(room.down) - 1)
         {
-            sure = std::min(sure, room.lowY + static_cast<float>(bottom + 1) * kCell - place[1]);
+            sure = std::min(sure, room.lowY + (static_cast<float>(bottom + 1) * kCell) - place[1]);
         }
         if (std::isinf(sure))
         {

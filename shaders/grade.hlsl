@@ -106,9 +106,19 @@ float3 DaoRolled(float3 light)
 }
 
 // How bright a colour keeps its hue as it is rolled off, and from how bright
-// it burns out to white, in parts of the range.
-static const float kDaoBurnFrom = 0.4;
-static const float kDaoBurnTo = 1.0;
+// it burns out towards white, in whites.
+//
+// These were parts of the range (0.4 of it to all of it), and a level lit
+// again has a range of eight whites: a flame, drawn two and a half whites
+// bright by the look's Fire, kept its hue whole and was a flat deep orange
+// where vanilla's, cut at white a channel at a time, is yellow at its heart
+// (the user, 2026-10-11: "fire looks too orange. dunno if we're manipulating
+// the color balance, contrast, or what"). What burns out is a matter of how
+// bright a thing is against white, not against the most the picture holds:
+// from 0.8 of white to 2.2, whatever the range, which is what the old
+// numbers came to out of doors at a range of two.
+static const float kDaoBurnFrom = 0.8;
+static const float kDaoBurnTo = 2.2;
 
 // A colour of the scene as the picture can hold it. With the scene drawn
 // into a 16-bit target (Graphics.cpp's own scene target) a colour may be
@@ -129,10 +139,8 @@ float3 DaoShoulder(float3 colour, float3 glow)
     const float peak = max(colour.r, max(colour.g, colour.b));
     const float3 hued = peak > DaoKnee() ? colour * (DaoRolled(peak).x / peak) : colour;
     const float3 burnt = DaoRolled(colour);
-    const float range = max(fDaoRange, 1.01);
-    // From its hue at kDaoBurnFrom times white to burnt out at kDaoBurnTo.
-    const float3 kept =
-        lerp(hued, burnt, saturate((peak / range - kDaoBurnFrom) / (kDaoBurnTo - kDaoBurnFrom)));
+    // From its hue at kDaoBurnFrom whites to burnt out at kDaoBurnTo.
+    const float3 kept = lerp(hued, burnt, saturate((peak - kDaoBurnFrom) / (kDaoBurnTo - kDaoBurnFrom)));
     return lerp(saturate(colour), kept, fDaoHighlights);
 }
 

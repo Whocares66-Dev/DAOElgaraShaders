@@ -95,6 +95,11 @@ std::vector<std::byte> Write(const std::vector<Room> &rooms, std::uint64_t stamp
 // never changes; ask again for the rooms baked since.
 std::shared_ptr<const Rooms> AllRooms();
 
+// Returns where the lamps of the levels lit again are, every such level's that
+// has been come into, as their bakes said them (<level>.lamps): three floats
+// a lamp. The answer is whole and never changes; ask again for more.
+std::shared_ptr<const std::vector<float>> BakedLamps();
+
 // Adds to `out` those of a room's probes that can be among the nearest few
 // to a place, each with one over its distance for its score: every probe
 // nearer than the nearest few's furthest is among them.
