@@ -25,7 +25,7 @@ The plugin is `elgarashaders`: `build\<preset>\daolib\plugins\elgarashaders\` is
 
 ## DAOLib
 
-What is general belongs in DAOLib and is DAOLib's own session's (lib-agent's) to integrate: the pure, tested parts the baker stands on (`dao/core/Erf.h`, `Dds.h`, `Level.h`, `RayCast.h`, `LightProbes.h`, the GFF4 reader's floats and raw lists), `CCArea::Scene`, and the address rows. They are on DAOLib's branch `gh-76-level-readers` (its issue 76), which the submodule is at (b725782, 2026-10-11) until DAOLib's master has them; move the submodule to master when lib-agent says so. `DAOLIB_DIR` (the environment's, or CMake's) builds against another checkout of DAOLib instead.
+What is general belongs in DAOLib and is DAOLib's own session's (lib-agent's) to integrate: the pure, tested parts the baker stands on (`dao/core/Erf.h`, `Dds.h`, `Level.h`, `RayCast.h`, `LightProbes.h`, the GFF4 reader's floats and raw lists), `CCArea::Scene`, and the address rows. They are on DAOLib's master since its issue 76 (bbd057f, 2026-10-11), which the submodule is at. `DAOLIB_DIR` (the environment's, or CMake's) builds against another checkout of DAOLib instead.
 
 A change DAOLib needs is asked of lib-agent, not made from here (one agent, one repo). An engine address is read in the GOG exe and named through the address library's session (addr-lib-agent), as DAOLib's `CLAUDE.md` says.
 

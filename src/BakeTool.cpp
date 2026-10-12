@@ -30,10 +30,10 @@ int main(int argc, char **argv)
     const std::filesystem::path game(argv[1]);
     const std::filesystem::path level(argv[2]);
     const auto began = std::chrono::steady_clock::now();
-    const std::vector<dao::core::probes::Room> rooms =
+    const std::vector<probebaker::Room> rooms =
         probebaker::BakeNow(game / "packages" / "core" / "env" / level / (level.string() + ".rim"), game);
     std::size_t probes = 0;
-    for (const dao::core::probes::Room &room : rooms)
+    for (const probebaker::Room &room : rooms)
     {
         probes += room.probes.size();
     }
@@ -41,7 +41,7 @@ int main(int argc, char **argv)
     spdlog::info("{}: {} rooms, {} probes, {} ms", level.string(), rooms.size(), probes, took.count());
     if (argc > 3)
     {
-        const std::vector<std::byte> file = dao::core::probes::Write(rooms);
+        const std::vector<std::byte> file = probebaker::Write(rooms);
         std::ofstream out(argv[3], std::ios::binary);
         out.write(reinterpret_cast<const char *>(file.data()), static_cast<std::streamsize>(file.size()));
     }

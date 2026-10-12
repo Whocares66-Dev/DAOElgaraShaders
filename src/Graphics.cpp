@@ -715,14 +715,16 @@ thread_local FiguresList t_figuresList = FiguresList::None;
 // light is.
 //
 // The probes mixed are the plugin's own where it has any: baked from the
-// level's lightmaps on a thread of its own as the player comes into a level
-// (ProbeBaker.h), a room the place of the probe the level itself has there
-// and the probes baked for it, and had here once the whole level is done.
-// The engine's choice says which rooms: a probe of the level's that scores
-// for a figure is of the figure's room or the next, and the baked room with
-// that probe's place is the one. Where there is no such room the level's own
-// probes are mixed. Nothing of the game's is replaced, and with ProbeBlend
-// at 0 a figure's light is vanilla's.
+// level's files on a thread of its own as the player comes into a level
+// (ProbeBaker.h), a room the place and the light of the probe the level
+// itself has there and the probes baked for it, and had here once the whole
+// level is done. The engine's choice says which rooms: a probe of the
+// level's that scores for a figure is of the figure's room or the next, and
+// the baked room with that probe's place and light is the one; in a level
+// made of terrain the level's one probe scores everywhere and its room is
+// the whole level's. Where there is no such room the level's own probes are
+// mixed. Nothing of the game's is replaced, and with ProbeBlend at 0 a
+// figure's light is vanilla's.
 //
 // Where it goes, read 2026-10-11: a figure's lights are chosen into its
 // light state (the groups at +0, +0x10, +0x20 for probes, +0x30), and the
@@ -757,8 +759,11 @@ using StateFillFn = std::uintptr_t(__fastcall *)(void *, int, std::uintptr_t);
 dao::Detour<LightScoreFn> g_probeScore;
 dao::Detour<StateFillFn> g_stateFill;
 std::atomic<float> g_probeBlend{0}; // the game thread's word: the look's ProbeBlend
-using ProbeRoom = dao::core::probes::Room;
-using ProbeRooms = std::shared_ptr<const std::vector<ProbeRoom>>;
+using ProbeRoom = probebaker::Room;
+using ProbeRooms = std::shared_ptr<const probebaker::Rooms>;
+// How near a level's probe's light is to a room's for the room to be its:
+// the level's files and the engine's copy of them are the same numbers.
+constexpr float kProbeLightWithin = 1e-4F;
 struct ScoredProbe
 {
     void *node;
@@ -768,7 +773,7 @@ struct Blend
 {
     Irradiance light;
     bool wanted; // or the state is to have its own probe's light back
-    bool own;    // the mix is of the table's probes
+    bool whole;  // the mix is of probes that hold all the light of a place, and is not lifted
 };
 thread_local std::vector<ScoredProbe> *t_probesScored = nullptr;
 std::mutex g_blendsLock;
@@ -778,7 +783,8 @@ std::unordered_set<void *> g_statesWritten; // the light states whose matrices a
 // light a figure takes where its area has no sun, 1 for twice. A level's own
 // probe is the light that comes off the surfaces about it, as a camera
 // there took it, and has none of the lamps' own: with the fills turned down
-// it is lifted to stand for both. A probe of the table's is baked as all
+// it is lifted to stand for both, and so is a probe baked as the level's
+// own was made, a terrain level's. A probe of a room's table is baked as all
 // the light a surface there receives and is taken as it is. The lift was the
 // shaders' until the table came (a multiplication where the ambient light
 // joins a figure's lights), which could not tell the two apart.
@@ -793,7 +799,7 @@ float Distance(const float *a, const float *b)
     return std::hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 }
 
-// The baked room whose key is where this probe of the level's is, or null.
+// Where a light is, by the engine's own word.
 std::array<float, 4> PlaceOfLight(void *node)
 {
     alignas(16) std::array<float, 4> at{};
@@ -802,14 +808,42 @@ std::array<float, 4> PlaceOfLight(void *node)
     return at;
 }
 
+// The light a probe of the level's has, as the engine keeps it, or null.
+const float *LightOfProbe(const void *node)
+{
+    const std::byte *blueprint = nullptr;
+    std::memcpy(&blueprint, static_cast<const std::byte *>(node) + kProbeBlueprint, sizeof blueprint);
+    return blueprint != nullptr ? reinterpret_cast<const float *>(blueprint + kBlueprintIrradiance) : nullptr;
+}
+
+// The baked room of this probe of the level's, or null: the one whose key
+// is where the probe is and whose own light is the probe's. The light tells
+// two levels with a probe at one place apart, a village by day and by night.
 const ProbeRoom *RoomOf(const ProbeRooms &rooms, void *node)
 {
     const std::array<float, 4> at = PlaceOfLight(node);
-    for (const ProbeRoom &room : *rooms)
+    const float *light = LightOfProbe(node);
+    for (const std::shared_ptr<const ProbeRoom> &room : *rooms)
     {
-        if (Distance(room.key.data(), at.data()) <= kProbeKeyWithin)
+        if (Distance(room->key.data(), at.data()) > kProbeKeyWithin || light == nullptr)
         {
-            return &room;
+            continue;
+        }
+        const bool same = std::equal(room->own.begin(), room->own.end(), light,
+                                     [](float ours, float theirs) { return std::abs(ours - theirs) <= kProbeLightWithin; });
+        if (same)
+        {
+            return room.get();
+        }
+        // A few times a session: a room at the probe's place whose light is
+        // not the probe's is another level's, or the files are not read as
+        // the engine reads them, which the log is to say.
+        static std::atomic<int> said{0};
+        if (said.fetch_add(1) < 8)
+        {
+            spdlog::info("light probes: a room's key is the place of a probe whose light is not the room's ({:.4f} "
+                         "against {:.4f}, {:.4f} against {:.4f})",
+                         room->own[0], light[0], room->own[15], light[15]);
         }
     }
     return nullptr;
@@ -832,31 +866,33 @@ std::uintptr_t __fastcall ProbeScore(void *node, int unused, const float *place,
 }
 
 // The probes there are to mix for a figure at `place`, of the level's own
-// that scored for it: the baked ones for each room there are any for, else
-// the level's. `own` says whether any is a baked one.
+// that scored for it: the baked ones of each room there are any for, and
+// then no others; else the level's own. `baked` says which, and `whole`
+// whether the baked ones hold all the light of their place.
 void LightsToMix(const ProbeRooms &rooms, const std::vector<ScoredProbe> &scored, const float *place,
-                 std::vector<dao::core::probes::Near> &lights, bool &own)
+                 std::vector<dao::core::probes::Near> &lights, bool &baked, bool &whole)
 {
     lights.clear();
-    own = false;
+    baked = false;
+    whole = true;
     for (const ScoredProbe &probe : scored)
     {
-        if (const ProbeRoom *room = RoomOf(rooms, probe.node); room != nullptr)
+        if (const ProbeRoom *room = RoomOf(rooms, probe.node); room != nullptr && !room->probes.empty())
         {
-            own = own || !room->probes.empty();
-            for (const dao::core::probes::Probe &baked : room->probes)
+            if (!baked)
             {
-                lights.push_back({1.0F / std::max(Distance(baked.at.data(), place), 1e-3F), baked.light.data()});
+                lights.clear();
             }
-            continue;
+            baked = true;
+            whole = whole && room->whole;
+            probebaker::Nearest(*room, place, lights);
         }
-        const std::byte *blueprint = nullptr;
-        std::memcpy(&blueprint, static_cast<const std::byte *>(probe.node) + kProbeBlueprint, sizeof blueprint);
-        if (blueprint != nullptr)
+        else if (const float *light = baked ? nullptr : LightOfProbe(probe.node))
         {
-            lights.push_back({probe.score, reinterpret_cast<const float *>(blueprint + kBlueprintIrradiance)});
+            lights.push_back({probe.score, light});
         }
     }
+    whole = whole && baked;
 }
 
 // Keeps the mix for the light state whose probes were just chosen into
@@ -873,16 +909,17 @@ void KeepBlend(void *group, const std::vector<ScoredProbe> &scored, const float 
         return;
     }
     thread_local std::vector<dao::core::probes::Near> lights;
-    bool own = false;
+    bool baked = false;
+    bool whole = false;
     // The rooms as they are now, held while their probes' light is pointed at.
-    const ProbeRooms rooms = probebaker::Rooms();
-    LightsToMix(rooms, scored, place, lights, own);
-    const std::optional<Irradiance> mix = own || lights.size() > 1 ? dao::core::probes::Mix(lights) : std::nullopt;
+    const ProbeRooms rooms = probebaker::AllRooms();
+    LightsToMix(rooms, scored, place, lights, baked, whole);
+    const std::optional<Irradiance> mix = baked || lights.size() > 1 ? dao::core::probes::Mix(lights) : std::nullopt;
     void *state = static_cast<std::byte *>(group) - kStateProbes;
     const std::scoped_lock lock(g_blendsLock);
     if (mix)
     {
-        g_blends[state] = {*mix, true, own};
+        g_blends[state] = {*mix, true, whole};
     }
     else if (const auto found = g_blends.find(state); found != g_blends.end())
     {
@@ -1000,7 +1037,7 @@ std::uintptr_t __fastcall StateFill(void *state, int unused, std::uintptr_t argu
     {
         return result;
     }
-    if (!mix || !mix->own)
+    if (!mix || !mix->whole)
     {
         for (float &value : *light)
         {
