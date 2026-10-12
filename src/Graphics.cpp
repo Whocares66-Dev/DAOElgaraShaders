@@ -74,6 +74,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -183,8 +184,7 @@ bool CarriesTheScene(UINT width, UINT height, DWORD usage, D3DFORMAT format)
     // eight bits a faint glow is laid on in steps.
     const bool quarter = width == g_backWidth / 4 && height == g_backHeight / 4;
     const bool sixteenth = width == g_backWidth / 16 && height == g_backHeight / 16;
-    return (usage & D3DUSAGE_RENDERTARGET) != 0 && format == D3DFMT_A8R8G8B8 &&
-           (whole || half || quarter || sixteenth);
+    return (usage & D3DUSAGE_RENDERTARGET) != 0 && format == D3DFMT_A8R8G8B8 && (whole || half || quarter || sixteenth);
 }
 
 HRESULT __stdcall CreateTexture(IDirect3DDevice9 *device, UINT width, UINT height, UINT levels, DWORD usage,
@@ -295,8 +295,8 @@ Scene g_scene;
 // copy 128 across, which costs a reading of 80 KB.
 constexpr UINT kMeterWidth = 128;
 constexpr UINT kMeterHeight = 80;
-constexpr int kMeterEvery = 8;        // frames
-constexpr float kMeterBurnt = 0.9F;   // of white: a pixel this bright is burnt out
+constexpr int kMeterEvery = 8;      // frames
+constexpr float kMeterBurnt = 0.9F; // of white: a pixel this bright is burnt out
 std::atomic<float> g_burnt{0};
 IDirect3DDevice9 *g_device = nullptr; // the game's, for the swap chain's Present, which is handed none
 
@@ -368,9 +368,19 @@ float HalfAsFloat(std::uint16_t half)
 {
     const int exponent = (half >> 10) & 0x1F;
     const float mantissa = static_cast<float>(half & 0x3FF) / 1024.0F;
-    const float value = exponent == 0    ? std::ldexp(mantissa, -14)
-                        : exponent == 31 ? 65504.0F
-                                         : std::ldexp(1.0F + mantissa, exponent - 15);
+    float value = 0;
+    if (exponent == 0)
+    {
+        value = std::ldexp(mantissa, -14);
+    }
+    else if (exponent == 31)
+    {
+        value = 65504.0F;
+    }
+    else
+    {
+        value = std::ldexp(1.0F + mantissa, exponent - 15);
+    }
     return (half & 0x8000) != 0 ? -value : value;
 }
 
@@ -397,7 +407,8 @@ void MeterScene(IDirect3DDevice9 *device)
                                                                   (static_cast<std::size_t>(y) * pixels.Pitch));
         for (UINT x = kMeterWidth / 8; x < kMeterWidth - (kMeterWidth / 8); ++x)
         {
-            const float most = std::max({HalfAsFloat(row[4 * x]), HalfAsFloat(row[(4 * x) + 1]), HalfAsFloat(row[(4 * x) + 2])});
+            const float most =
+                std::max({HalfAsFloat(row[4 * x]), HalfAsFloat(row[(4 * x) + 1]), HalfAsFloat(row[(4 * x) + 2])});
             burnt += most >= kMeterBurnt ? 1 : 0;
             ++counted;
         }
@@ -526,8 +537,15 @@ std::string Described(IDirect3DDevice9 *device, IDirect3DSurface9 *surface)
     {
         back->Release();
     }
-    const std::string_view which =
-        isBack ? "the back buffer, " : surface == g_scene.own ? "our scene target, " : "";
+    std::string_view which;
+    if (isBack)
+    {
+        which = "the back buffer, ";
+    }
+    else if (surface == g_scene.own)
+    {
+        which = "our scene target, ";
+    }
     return fmt::format("{}{} by {}, format {}, {} samples, at {}", which, is.Width, is.Height,
                        static_cast<int>(is.Format), static_cast<int>(is.MultiSampleType),
                        static_cast<const void *>(surface));
@@ -587,10 +605,9 @@ std::map<LightsHanded, int> g_lights; // each set a draw found, and how many dra
 // Here a lamp, a point light of the level's lists with a lamp's reach, is put
 // in both of the figures' lists as well, beside the fills in the flagged one
 // (+0x6C) and alone in the unflagged (+0x84), by the list's own insert as the
-// manager takes it in, and taken out as the manager lets it go. Left at that the fills would still take all three places: a
-// score is strength times what is left of the reach, and a fill's reach is a
-// thousand metres. So while the figures' chooser runs, a fill's score is made
-// next to nothing (kFillScore), and a lamp's too where the figure is past
+// manager takes it in, and taken out as the manager lets it go. Left at that the fills would still take all three
+// places: a score is strength times what is left of the reach, and a fill's reach is a thousand metres. So while the
+// figures' chooser runs, a fill's score is made next to nothing (kFillScore), and a lamp's too where the figure is past
 // the part of its reach that lights it (kLampNear). The engine then takes a
 // figure's best three with the lamps that light it first and the fills for
 // whatever places are left: beside three lamps no fill at all, away from
@@ -615,7 +632,7 @@ std::map<LightsHanded, int> g_lights; // each set a draw found, and how many dra
 // values that were no lights, and knew only the lamps in view (the user,
 // 2026-10-11: "are we hacking ourselves into a corner w/ the lamps?"). All
 // of that is gone.
-constexpr std::size_t kLevelsFlagged = 0x24;         // the manager's lists
+constexpr std::size_t kLevelsFlagged = 0x24; // the manager's lists
 constexpr std::size_t kLevelsUnflagged = 0xC;
 constexpr std::size_t kFiguresFlagged = 0x6C;
 constexpr std::size_t kFiguresUnflagged = 0x84;
@@ -631,7 +648,7 @@ constexpr float kFillScore = 1.0e-6F;
 // 2026-10-11). A judgement.
 constexpr float kLampNear = 0.6F;
 using NodePlaceFn = void(__fastcall *)(void *, int, float *);
-constexpr std::size_t kNodePlaceSlot = 3; // the node's virtual that says where it is in the world
+constexpr std::size_t kNodePlaceSlot = 3;      // the node's virtual that says where it is in the world
 constexpr std::size_t kLightNodeReach = 0x1B0; // a float, metres
 constexpr float kLampReachMost = 100.0F;       // metres; a light that reaches further is a fill
 // Metres; a light that reaches less is a glow on a thing, not a lamp in a
@@ -661,8 +678,11 @@ std::unordered_set<void *> g_ourLamps;
 std::unordered_set<void *> g_areasOwn;
 thread_local bool t_lampsMoved = false;
 // Every light in the level's lists, of any reach, and those of them found to
-// be lamps of a level lit again (DimBakedLamps).
-std::unordered_map<void *, void *> g_levelLights; // each with the manager whose list it is in
+// be lamps of a level lit again (DimBakedLamps). In the order of their
+// addresses, so that going through them is the same from one time to the
+// next: a table by the pointers' hashes is gone through in an order that is
+// nobody's (clang-tidy's bugprone-nondeterministic-pointer-iteration-order).
+std::map<void *, void *> g_levelLights; // each with the manager whose list it is in
 std::unordered_set<void *> g_bakedLamps;
 std::atomic<std::size_t> g_bakedLampsCount{0};
 
@@ -834,7 +854,7 @@ constexpr std::size_t kStateProbeKept = 0x110;  // the probe its matrices were l
 constexpr std::size_t kStateIrradiance = 0x130; // the three matrices
 constexpr std::size_t kProbeBlueprint = 0x174;  // in a probe's node
 constexpr std::size_t kBlueprintIrradiance = 0x160;
-constexpr std::uintptr_t kNoProbe = 1; // kept in a state to have its probe's light copied again
+constexpr std::uintptr_t kNoProbe = 1;   // kept in a state to have its probe's light copied again
 constexpr float kProbeKeyWithin = 0.05F; // metres: how near a level's probe is to a room's key to be it
 // Where a light is, as its score asks: the second virtual of the light the
 // node has at +0x180 (0x0053D423 in the probe's score). The node's own
@@ -925,7 +945,7 @@ std::atomic<float> g_relitAdapt{0};
 float AdaptFor(std::span<const ProbeRoom *const> rooms)
 {
     constexpr float kTowers = 0.12F; // the same quartile in the Circle's tower (lak303d, measured 2026-10-11)
-    constexpr float kShare = 1.0F; // the whole of it; the look's InteriorAdapt says how much is used
+    constexpr float kShare = 1.0F;   // the whole of it; the look's InteriorAdapt says how much is used
     std::vector<float> lumas;
     for (const ProbeRoom *room : rooms)
     {
@@ -1024,7 +1044,8 @@ std::array<float, 4> PlaceOfLight(void *node)
 const float *LightOfProbe(const void *node)
 {
     const std::byte *blueprint = nullptr;
-    std::memcpy(&blueprint, static_cast<const std::byte *>(node) + kProbeBlueprint, sizeof blueprint);
+    std::memcpy(static_cast<void *>(&blueprint), static_cast<const std::byte *>(node) + kProbeBlueprint,
+                sizeof blueprint);
     return blueprint != nullptr ? reinterpret_cast<const float *>(blueprint + kBlueprintIrradiance) : nullptr;
 }
 
@@ -1041,8 +1062,9 @@ const ProbeRoom *RoomOf(const ProbeRooms &rooms, void *node)
         {
             continue;
         }
-        const bool same = std::equal(room->own.begin(), room->own.end(), light,
-                                     [](float ours, float theirs) { return std::abs(ours - theirs) <= kProbeLightWithin; });
+        const bool same = std::equal(room->own.begin(), room->own.end(), light, [](float ours, float theirs) {
+            return std::abs(ours - theirs) <= kProbeLightWithin;
+        });
         if (same)
         {
             return room.get();
@@ -1128,7 +1150,8 @@ void LightsToMix(const ProbeRooms &rooms, const std::vector<ScoredProbe> &scored
 void KeepBlend(void *group, const std::vector<ScoredProbe> &scored, const float *place)
 {
     std::array<const std::byte *, 2> chosen{}; // the group's vector: its first and its end
-    std::memcpy(chosen.data(), static_cast<const std::byte *>(group) + sizeof(void *), sizeof chosen);
+    std::memcpy(static_cast<void *>(chosen.data()), static_cast<const std::byte *>(group) + sizeof(void *),
+                sizeof chosen);
     if (scored.empty() && chosen[0] != chosen[1])
     {
         return;
@@ -1153,12 +1176,10 @@ void KeepBlend(void *group, const std::vector<ScoredProbe> &scored, const float 
 }
 
 // The engine making a source of a level's archive (ECResMan::ResMan::
-// MakeSource): what tells the baker which level the player has come into. A level's rooms are in <level>\<level>.rim, the archive of
-// a level's folder that has the folder's name. Read 2026-10-11: __thiscall,
-// the archive's path as the engine's wide string, the source's kind, its
-// priority and two more, `ret 0x14`;
-// what it returns, the source made or nothing, is passed on. Whichever
-// thread opens it; the baker only notes the path.
+// MakeSource): what tells the baker which level the player has come into. A level's rooms are in <level>\<level>.rim,
+// the archive of a level's folder that has the folder's name. Read 2026-10-11: __thiscall, the archive's path as the
+// engine's wide string, the source's kind, its priority and two more, `ret 0x14`; what it returns, the source made or
+// nothing, is passed on. Whichever thread opens it; the baker only notes the path.
 using OpenArchiveFn = std::uintptr_t(__fastcall *)(void *, int, const dao::core::WStringRep *, std::uintptr_t,
                                                    std::uintptr_t, std::uintptr_t, std::uintptr_t);
 dao::Detour<OpenArchiveFn> g_openArchive;
@@ -1175,7 +1196,8 @@ std::uintptr_t __fastcall OpenArchive(void *self, int unused, const dao::core::W
     {
         const std::filesystem::path file(path->View().substr(kLevels.size()));
         std::wstring extension = file.extension().wstring();
-        std::ranges::transform(extension, extension.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+        std::ranges::transform(extension, extension.begin(),
+                               [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
         if (extension == L".rim" && _wcsicmp(file.stem().c_str(), file.parent_path().c_str()) == 0)
         {
             probebaker::Want(dao::Module::Path().parent_path().parent_path() / "packages" / "core" / "env" / file);
@@ -1222,13 +1244,13 @@ std::optional<Blend> BlendOf(void *state)
 std::optional<Irradiance> OwnProbesLight(const void *state)
 {
     const std::byte *node = nullptr;
-    std::memcpy(&node, static_cast<const std::byte *>(state) + kStateProbeKept, sizeof node);
+    std::memcpy(static_cast<void *>(&node), static_cast<const std::byte *>(state) + kStateProbeKept, sizeof node);
     if (reinterpret_cast<std::uintptr_t>(node) <= kNoProbe)
     {
         return std::nullopt;
     }
     const std::byte *blueprint = nullptr;
-    std::memcpy(&blueprint, node + kProbeBlueprint, sizeof blueprint);
+    std::memcpy(static_cast<void *>(&blueprint), node + kProbeBlueprint, sizeof blueprint);
     if (blueprint == nullptr)
     {
         return std::nullopt;
@@ -1388,9 +1410,18 @@ std::uintptr_t __fastcall ChooseFromList(void *list, int unused, void *place, fl
 {
     if (t_figuresManager != nullptr)
     {
-        t_figuresList = list == ListOf(t_figuresManager, kFiguresFlagged)     ? FiguresList::Flagged
-                        : list == ListOf(t_figuresManager, kFiguresUnflagged) ? FiguresList::Unflagged
-                                                                              : FiguresList::None;
+        if (list == ListOf(t_figuresManager, kFiguresFlagged))
+        {
+            t_figuresList = FiguresList::Flagged;
+        }
+        else if (list == ListOf(t_figuresManager, kFiguresUnflagged))
+        {
+            t_figuresList = FiguresList::Unflagged;
+        }
+        else
+        {
+            t_figuresList = FiguresList::None;
+        }
     }
     // The probes' list of the manager last seen, which is the area's: a thing
     // that does not move (a door, a shop's goods, a banner) has its probes
@@ -1423,8 +1454,9 @@ std::uintptr_t __fastcall ChooseFromList(void *list, int unused, void *place, fl
         if (static std::atomic<int> said{0}; still && said.fetch_add(1) < 3)
         {
             const auto *at = static_cast<const float *>(place);
-            spdlog::info("light probes: a thing that does not move had its probes chosen at ({:.1f}, {:.1f}, {:.1f}), {} scored",
-                         at[0], at[1], at[2], scored.size());
+            spdlog::info(
+                "light probes: a thing that does not move had its probes chosen at ({:.1f}, {:.1f}, {:.1f}), {} scored",
+                at[0], at[1], at[2], scored.size());
         }
     }
     return result;
@@ -1462,7 +1494,8 @@ float ScoreScale(FiguresList list, void *node, const float *place)
     if (!ours)
     {
         void *scene = nullptr;
-        std::memcpy(&scene, static_cast<const std::byte *>(t_figuresManager) + kManagerScene, sizeof scene);
+        std::memcpy(static_cast<void *>(&scene), static_cast<const std::byte *>(t_figuresManager) + kManagerScene,
+                    sizeof scene);
         const bool fill = reach > kLampReachMost && scene == g_areasScene.load(std::memory_order_relaxed);
         if (fill)
         {
@@ -1532,7 +1565,7 @@ HRESULT __stdcall SetPixelFloats(IDirect3DDevice9 *device, UINT first, const flo
     for (UINT i = 0; i < count && first + i < 12; ++i)
     {
         std::copy_n(values + (4 * static_cast<std::size_t>(i)), 4,
-                    g_handed.registers.begin() + (4 * static_cast<std::size_t>(first + i)));
+                    g_handed.registers.begin() + static_cast<std::ptrdiff_t>(4 * static_cast<std::size_t>(first + i)));
     }
     return g_setPixelFloats.Original()(device, first, values, count);
 }
@@ -1549,6 +1582,7 @@ HRESULT __stdcall SetPixelBools(IDirect3DDevice9 *device, UINT first, const BOOL
 void LogLightsHanded()
 {
     std::vector<std::pair<int, LightsHanded>> sets;
+    sets.reserve(g_lights.size());
     for (const auto &[handed, draws] : g_lights)
     {
         sets.emplace_back(draws, handed);
@@ -2247,8 +2281,8 @@ void KeepLookRegisters()
     // A look's value by its place in the registers (look.hlsl); those with no
     // name here are reckoned, below and in KeepSun.
     constexpr std::array<std::string_view, 14> kKeys{
-        "Relief", "Materials", "ShadowOnFigures", "Lamps",        "FillsLess",   "Ambient",   "Fire",
-        "",       "",          "",                "Highlights",   "LampsOnLevel", "AmbientLess", "BakedLess"};
+        "Relief", "Materials", "ShadowOnFigures", "Lamps",        "FillsLess",   "Ambient",  "Fire", "",
+        "",       "",          "Highlights",      "LampsOnLevel", "AmbientLess", "BakedLess"};
     for (std::size_t i = 0; i < kKeys.size(); ++i)
     {
         if (kKeys.at(i).empty())
@@ -2265,9 +2299,8 @@ void KeepLookRegisters()
     // The fills, the same: a level lit again has the light of its place in
     // its probes, and the fills are what it would be flat by.
     constexpr float kRelitFillsLess = 1.0F; // all of them: see kRelitKeyLess
-    g_fillsLess.store(g_levelRelit.load(std::memory_order_relaxed)
-                          ? std::max(ChosenValue("FillsLess"), kRelitFillsLess)
-                          : ChosenValue("FillsLess"),
+    g_fillsLess.store(g_levelRelit.load(std::memory_order_relaxed) ? std::max(ChosenValue("FillsLess"), kRelitFillsLess)
+                                                                   : ChosenValue("FillsLess"),
                       std::memory_order_relaxed);
     g_probeBlend.store(ChosenValue("ProbeBlend"), std::memory_order_relaxed);
     g_ambient.store(ChosenValue("Ambient"), std::memory_order_relaxed);
@@ -2336,7 +2369,6 @@ void KeepSky(float haze, float clouds, float clear, float sky)
     wanted.fogGreen += haze * sunBright * kSkyLight[1];
     wanted.fogBlue += haze * sunBright * kSkyLight[2];
     const float day = Daylight(*sun);
-    haze *= day;
     clear *= day;
     sky *= day;
     const float lit = std::clamp(clouds, 0.0F, 1.0F) * day;
@@ -2346,7 +2378,8 @@ void KeepSky(float haze, float clouds, float clear, float sky)
     wanted.cloudDensity = own->cloudDensity * (1 - (kCloudsThinner * lit));
     wanted.fogCap = own->fogCap * (1 - (kCapLess * std::clamp(clear, 0.0F, 1.0F)));
     wanted.fogIntensity = own->fogIntensity * (1 - (kFogThinner * std::clamp(clear, 0.0F, 1.0F)));
-    wanted.atmosphereAlpha = std::lerp(own->atmosphereAlpha, std::max(own->atmosphereAlpha, 1.0F), std::clamp(sky, 0.0F, 1.0F));
+    wanted.atmosphereAlpha =
+        std::lerp(own->atmosphereAlpha, std::max(own->atmosphereAlpha, 1.0F), std::clamp(sky, 0.0F, 1.0F));
     // A level lit again has no fog. An area's fog is a colour laid over what
     // is far off, the Circle's a warm yellow-brown: in a hall as dark as its
     // candles leave it that is a light with no source, and the far end of a
@@ -2419,11 +2452,75 @@ float FocalLength(const std::array<float, 2> &a, const std::array<float, 2> &b, 
     for (int step = 0; step < 40; ++step)
     {
         const float f = std::sqrt(low * high);
-        const float between = ((a[0] * b[0]) + (a[1] * b[1]) + (f * f)) /
-                              std::sqrt(((a[0] * a[0]) + (a[1] * a[1]) + (f * f)) * ((b[0] * b[0]) + (b[1] * b[1]) + (f * f)));
+        const float between =
+            ((a[0] * b[0]) + (a[1] * b[1]) + (f * f)) /
+            std::sqrt(((a[0] * a[0]) + (a[1] * a[1]) + (f * f)) * ((b[0] * b[0]) + (b[1] * b[1]) + (f * f)));
         (between < cosine ? low : high) = f;
     }
     return std::sqrt(low * high);
+}
+
+// A way in the world as the picture has it.
+struct SeenWay
+{
+    std::array<float, 3> way;
+    std::array<float, 2> at; // pixels from the middle
+    float off;
+};
+
+// Where the picture has a way in the world: a point far off along it from
+// the eye, asked its place on the screen. Nothing for a way behind the
+// camera.
+// @param middle the picture's middle, in pixels
+std::optional<SeenWay> SeeWay(const dao::Vector &eye, const std::array<float, 2> &middle,
+                              const std::array<float, 3> &way)
+{
+    constexpr float kFar = 20000.0F; // metres: far enough that where the camera is does not matter
+    const std::optional<dao::world::ScreenPoint> point =
+        dao::world::ToScreen({eye.x + (kFar * way[0]), eye.y + (kFar * way[1]), eye.z + (kFar * way[2])});
+    if (!point || !point->inFront)
+    {
+        return std::nullopt;
+    }
+    const std::array<float, 2> at{point->x - middle[0], point->y - middle[1]};
+    return SeenWay{way, at, std::hypot(at[0], at[1])};
+}
+
+// The two of fourteen ways about that are drawn nearest the middle: the
+// nearest, and the next.
+std::pair<std::optional<SeenWay>, std::optional<SeenWay>> NearestTheMiddle(const dao::Vector &eye,
+                                                                           const std::array<float, 2> &middle)
+{
+    std::optional<SeenWay> first;
+    std::optional<SeenWay> second;
+    for (int x = -1; x <= 1; ++x)
+    {
+        for (int y = -1; y <= 1; ++y)
+        {
+            for (int z = -1; z <= 1; ++z)
+            {
+                const int axes = std::abs(x) + std::abs(y) + std::abs(z);
+                if (axes != 1 && axes != 3)
+                {
+                    continue;
+                }
+                const float length = std::sqrt(static_cast<float>(axes));
+                std::optional<SeenWay> seen = SeeWay(
+                    eye, middle,
+                    {static_cast<float>(x) / length, static_cast<float>(y) / length, static_cast<float>(z) / length});
+                if (seen && (!first || seen->off < first->off))
+                {
+                    second = first;
+                    first = seen;
+                }
+                else if (seen && (!second || seen->off < second->off))
+                {
+                    second = seen;
+                }
+            }
+        }
+    }
+    return {first, second};
 }
 
 // Tells the picture's last passes where the sun is in it, each frame, and
@@ -2437,9 +2534,7 @@ float FocalLength(const std::array<float, 2> &a, const std::array<float, 2> &b, 
 // is behind.
 void KeepAir()
 {
-    constexpr float kFar = 20000.0F; // metres: far enough that where the camera is does not matter
-    const float strength =
-        g_chosen < g_looks.size() ? std::max(ChosenValue("SunHaze"), ChosenValue("Shafts")) : 0.0F;
+    const float strength = g_chosen < g_looks.size() ? std::max(ChosenValue("SunHaze"), ChosenValue("Shafts")) : 0.0F;
     const std::optional<dao::atmosphere::Sunlight> sun = dao::atmosphere::AreaOwnSunlight();
     const std::optional<dao::atmosphere::Sky> sky = dao::atmosphere::CurrentSky();
     const std::optional<dao::world::ViewSize> size = dao::world::ScreenSize();
@@ -2448,7 +2543,7 @@ void KeepAir()
     const dao::CameraController *controller = modes != nullptr ? modes->Camera() : nullptr;
     const dao::SceneCamera *camera = controller != nullptr ? controller->Scene() : nullptr;
     const float lit = sun && strength > 0 ? Daylight(*sun) : 0.0F;
-    if (lit <= 0 || !sky || !size || camera == nullptr || size->width <= 0 || size->height <= 0)
+    if (!sun || lit <= 0 || !sky || !size || camera == nullptr || size->width <= 0 || size->height <= 0)
     {
         KeepQuietly(L"DaoSunRed", 0);
         KeepQuietly(L"DaoSunGreen", 0);
@@ -2457,64 +2552,20 @@ void KeepAir()
     }
     const dao::Vector eye = camera->Position();
     const std::array<float, 2> middle{static_cast<float>(size->width) / 2, static_cast<float>(size->height) / 2};
-    struct Seen
-    {
-        std::array<float, 3> way;
-        std::array<float, 2> at; // pixels from the middle
-        float off;
-    };
-    const auto see = [&](const std::array<float, 3> &way) -> std::optional<Seen> {
-        const std::optional<dao::world::ScreenPoint> point =
-            dao::world::ToScreen({eye.x + (kFar * way[0]), eye.y + (kFar * way[1]), eye.z + (kFar * way[2])});
-        if (!point || !point->inFront)
-        {
-            return std::nullopt;
-        }
-        const std::array<float, 2> at{point->x - middle[0], point->y - middle[1]};
-        return Seen{way, at, std::hypot(at[0], at[1])};
-    };
-    // The two of fourteen ways about that are drawn nearest the middle.
-    std::optional<Seen> first;
-    std::optional<Seen> second;
-    for (int x = -1; x <= 1; ++x)
-    {
-        for (int y = -1; y <= 1; ++y)
-        {
-            for (int z = -1; z <= 1; ++z)
-            {
-                const int axes = std::abs(x) + std::abs(y) + std::abs(z);
-                if (axes != 1 && axes != 3)
-                {
-                    continue;
-                }
-                const float length = std::sqrt(static_cast<float>(axes));
-                std::optional<Seen> seen = see({static_cast<float>(x) / length, static_cast<float>(y) / length,
-                                                static_cast<float>(z) / length});
-                if (seen && (!first || seen->off < first->off))
-                {
-                    second = first;
-                    first = seen;
-                }
-                else if (seen && (!second || seen->off < second->off))
-                {
-                    second = seen;
-                }
-            }
-        }
-    }
+    const auto [first, second] = NearestTheMiddle(eye, middle);
     if (!first || !second || std::hypot(first->at[0] - second->at[0], first->at[1] - second->at[1]) < 8)
     {
         return; // nothing to tell the lens by this frame: the values stay
     }
-    const float cosine = (first->way[0] * second->way[0]) + (first->way[1] * second->way[1]) +
-                         (first->way[2] * second->way[2]);
+    const float cosine =
+        (first->way[0] * second->way[0]) + (first->way[1] * second->way[1]) + (first->way[2] * second->way[2]);
     const float focal = FocalLength(first->at, second->at, cosine);
     const std::array<float, 3> toSun{-sun->direction[0], -sun->direction[1], -sun->direction[2]};
-    std::optional<Seen> where = see(toSun);
+    std::optional<SeenWay> where = SeeWay(eye, middle, toSun);
     float side = 1;
     if (!where)
     {
-        where = see({-toSun[0], -toSun[1], -toSun[2]});
+        where = SeeWay(eye, middle, {-toSun[0], -toSun[1], -toSun[2]});
         side = -1;
     }
     if (!where)
@@ -2532,6 +2583,92 @@ void KeepAir()
     KeepQuietly(L"DaoSunBlue", lit * g_sunHeld * sun->color[2]);
 }
 
+// Whether a light stands where a level's bake says one of the level's own
+// lamps is.
+// @param places the bake's lamps, three floats each (probebaker::BakedLamps)
+bool IsBakedLamp(void *node, const std::vector<float> &places)
+{
+    // Where a light is, is asked of the light within the node (PlaceOfLight):
+    // the node's own word for its place, which a figure's lamps are scored
+    // by, is nothing for a light as it stands in the level's lists.
+    constexpr float kSamePlace = 0.3F; // metres
+    const std::array<float, 4> at = PlaceOfLight(node);
+    for (std::size_t i = 0; i + 2 < places.size(); i += 3)
+    {
+        if (std::hypot(at[0] - places[i], at[1] - places[i + 1], at[2] - places[i + 2]) < kSamePlace)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Finds the bake's lamps among the level's lights not yet known to be, and
+// has the managers whose lights they are choose again. g_ourLampsLock is the
+// caller's to hold.
+void FindBakedLamps(const std::vector<float> &places)
+{
+    std::set<void *> changed; // the managers whose lights are to be chosen again
+    for (const auto &[node, manager] : g_levelLights)
+    {
+        if (!g_bakedLamps.contains(node) && IsBakedLamp(node, places))
+        {
+            g_bakedLamps.insert(node);
+            changed.insert(manager);
+        }
+    }
+    g_bakedLampsCount.store(g_bakedLamps.size(), std::memory_order_relaxed);
+    for (void *manager : changed)
+    {
+        // As the engine does when it changes a manager's lists itself.
+        reinterpret_cast<ManagerChangedFn>(dao::Module::Address(dao::addr::kLightManager_MarkChanged))(manager, 0);
+    }
+}
+
+// Says how many of the level's lights are its bake's lamps, each time that
+// is another number. g_ourLampsLock is the caller's to hold.
+void SayBakedLamps(const std::vector<float> &places)
+{
+    static std::size_t said = ~std::size_t{0};
+    static std::size_t saidOf = 0;
+    if (g_bakedLamps.size() == said && g_levelLights.size() == saidOf)
+    {
+        return;
+    }
+    said = g_bakedLamps.size();
+    saidOf = g_levelLights.size();
+    // And how near the nearest light that is not one stands to a lamp
+    // of the bake's, which says whether the places are read alike.
+    float nearest = std::numeric_limits<float>::infinity();
+    for (const auto &[node, manager] : g_levelLights)
+    {
+        if (g_bakedLamps.contains(node))
+        {
+            continue;
+        }
+        const std::array<float, 4> at = PlaceOfLight(node);
+        for (std::size_t i = 0; i + 2 < places.size(); i += 3)
+        {
+            nearest = std::min(nearest, std::hypot(at[0] - places[i], at[1] - places[i + 1], at[2] - places[i + 2]));
+        }
+    }
+    int shown = 0;
+    for (const auto &[node, manager] : g_levelLights)
+    {
+        if (shown++ >= 6)
+        {
+            break;
+        }
+        const std::array<float, 4> at = PlaceOfLight(node);
+        float reach = 0;
+        std::memcpy(&reach, static_cast<const std::byte *>(node) + kLightNodeReach, sizeof reach);
+        spdlog::debug("lamps: a light at ({:.1f}, {:.1f}, {:.1f}) reaching {:.1f} m", at[0], at[1], at[2], reach);
+    }
+    spdlog::info("lamps: {} of the level's {} lights are its own lamps, in its bake ({} said), and are put out; "
+                 "of the rest the nearest to one is {:.2f} m off",
+                 g_bakedLamps.size(), g_levelLights.size(), places.size() / 3, nearest);
+}
+
 // Puts out the lamps of a level lit again: the lights in the level's lists that
 // stand where the bake says the level's own lamps are (<level>.lamps), by
 // their strength, which is what the engine multiplies a light's colour by for
@@ -2541,11 +2678,7 @@ void KeepAir()
 // nowhere the bake knows, a spell's or an effect's, is left as it is.
 void DimBakedLamps()
 {
-    // Where a light is, is asked of the light within the node (PlaceOfLight):
-    // the node's own word for its place, which a figure's lamps are scored
-    // by, is nothing for a light as it stands in the level's lists.
-    constexpr float kSamePlace = 0.3F; // metres
-    constexpr int kLookAgain = 30;     // frames between looks at the lights not yet known
+    constexpr int kLookAgain = 30; // frames between looks at the lights not yet known
     static int frames = 0;
     if (!g_levelRelit.load(std::memory_order_relaxed))
     {
@@ -2556,67 +2689,8 @@ void DimBakedLamps()
     const std::scoped_lock lock(g_ourLampsLock);
     if (look)
     {
-        std::unordered_set<void *> changed; // the managers whose lights are to be chosen again
-        for (const auto &[node, manager] : g_levelLights)
-        {
-            if (g_bakedLamps.contains(node))
-            {
-                continue;
-            }
-            const std::array<float, 4> at = PlaceOfLight(node);
-            for (std::size_t i = 0; i + 2 < places->size(); i += 3)
-            {
-                if (std::hypot(at[0] - (*places)[i], at[1] - (*places)[i + 1], at[2] - (*places)[i + 2]) < kSamePlace)
-                {
-                    g_bakedLamps.insert(node);
-                    changed.insert(manager);
-                    break;
-                }
-            }
-        }
-        g_bakedLampsCount.store(g_bakedLamps.size(), std::memory_order_relaxed);
-        for (void *manager : changed)
-        {
-            // As the engine does when it changes a manager's lists itself.
-            reinterpret_cast<ManagerChangedFn>(dao::Module::Address(dao::addr::kLightManager_MarkChanged))(manager, 0);
-        }
-        static std::size_t said = ~std::size_t{0};
-        static std::size_t saidOf = 0;
-        if (g_bakedLamps.size() != said || g_levelLights.size() != saidOf)
-        {
-            said = g_bakedLamps.size();
-            saidOf = g_levelLights.size();
-            // And how near the nearest light that is not one stands to a lamp
-            // of the bake's, which says whether the places are read alike.
-            float nearest = std::numeric_limits<float>::infinity();
-            for (const auto &[node, manager] : g_levelLights)
-            {
-                if (g_bakedLamps.contains(node))
-                {
-                    continue;
-                }
-                const std::array<float, 4> at = PlaceOfLight(node);
-                for (std::size_t i = 0; i + 2 < places->size(); i += 3)
-                {
-                    nearest = std::min(nearest, std::hypot(at[0] - (*places)[i], at[1] - (*places)[i + 1], at[2] - (*places)[i + 2]));
-                }
-            }
-            int shown = 0;
-            for (const auto &[node, manager] : g_levelLights)
-            {
-                if (shown++ >= 6)
-                {
-                    break;
-                }
-                const std::array<float, 4> at = PlaceOfLight(node);
-                float reach = 0;
-                std::memcpy(&reach, static_cast<const std::byte *>(node) + kLightNodeReach, sizeof reach);
-                spdlog::debug("lamps: a light at ({:.1f}, {:.1f}, {:.1f}) reaching {:.1f} m", at[0], at[1], at[2], reach);
-            }
-            spdlog::info("lamps: {} of the level's {} lights are its own lamps, in its bake ({} said), and are put out; "
-                         "of the rest the nearest to one is {:.2f} m off",
-                         g_bakedLamps.size(), g_levelLights.size(), places->size() / 3, nearest);
-        }
+        FindBakedLamps(*places);
+        SayBakedLamps(*places);
     }
 }
 

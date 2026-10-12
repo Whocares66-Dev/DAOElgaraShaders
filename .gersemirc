@@ -3,7 +3,11 @@
 # is a stock preset. The definitions teach it the commands we define, so it
 # lays out their arguments by keyword; Catch2's catch_discover_tests lives in
 # vcpkg's tree, so the warning about an unknown command is off.
+#
+# add_daolib_plugin is DAOLib's, in the submodule: named as cmake/DAOLib.cmake,
+# DAOLib's own path for it, gersemi found no such file here and the format
+# target stopped before it reached the PowerShell (found 2026-10-11).
 definitions:
   - CMakeLists.txt
-  - cmake/DAOLib.cmake
+  - extern/DAOLib/cmake/DAOLib.cmake
 warn_about_unknown_commands: false

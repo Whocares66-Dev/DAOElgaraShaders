@@ -99,11 +99,11 @@ namespace level = dao::core::level;
 namespace probes = dao::core::probes;
 using namespace levelfiles;
 
-constexpr float kSpacing = 5.0F;                 // metres between a room's probes
-constexpr float kTerrainSpacing = 8.0F;          // and between a terrain tile's, where light changes over more ground
-constexpr std::size_t kRays = 384;               // from each probe
-constexpr std::uint32_t kSkySide = 32;           // a face of a probe's photograph is read this large
-constexpr float kCell = 10.0F;                   // metres a side: a cell of a room's grid of probes
+constexpr float kSpacing = 5.0F;        // metres between a room's probes
+constexpr float kTerrainSpacing = 8.0F; // and between a terrain tile's, where light changes over more ground
+constexpr std::size_t kRays = 384;      // from each probe
+constexpr std::uint32_t kSkySide = 32;  // a face of a probe's photograph is read this large
+constexpr float kCell = 10.0F;          // metres a side: a cell of a room's grid of probes
 // How many metres along the ground a metre of height counts for, in how near
 // a probe is: light changes more from one floor to the next than along one,
 // and a probe on a roof is not near the figure under it. Up to kSameStorey
@@ -126,12 +126,28 @@ constexpr float kNearWallShare = 0.3F;
 // not say: the share the Circle's own probes were of a bake with every
 // surface white (0.6, DAOLib #65).
 constexpr float kSendsOn = 0.6F;
-constexpr float kSendsMost = 4.0F;   // the most a fitted share may be
+constexpr float kSendsMost = 4.0F;    // the most a fitted share may be
 constexpr std::size_t kFitLeast = 64; // surfaces seen in the photograph, under which nothing is fitted
 
-
 constexpr std::uint32_t kTableMagic = 0x50474C45; // "ELGP"
-constexpr std::uint32_t kTableVersion = 3; // 2: a room's `seen`; 3: the stamp of the lightmaps baked from
+constexpr std::uint32_t kTableVersion = 3;        // 2: a room's `seen`; 3: the stamp of the lightmaps baked from
+
+// The light at a place as a room's probe has it: all the light a surface of
+// the place receives, by the lightmaps its rays land on. Nothing for a place
+// closed in.
+// @param seen what the rays land on is added to, for a room's `seen`
+std::optional<probes::Coefficients> BakeAt(Level &level, std::span<const Geometry *const> about,
+                                           const core::Point &place, std::span<const core::Point> rays, SeenSum &seen)
+{
+    return probes::Bake(rays, [&](const core::Point &ray) -> std::optional<probes::Landed> {
+        const std::optional<Lit> lit = Look(level, about, place, ray);
+        if (lit)
+        {
+            seen.Add(*lit);
+        }
+        return lit ? std::optional<probes::Landed>(probes::Landed{lit->baked, lit->distance}) : std::nullopt;
+    });
+}
 
 // The probes of one room of a level of rooms: baked against its own
 // triangles and those of the rooms seen from it.
@@ -156,24 +172,16 @@ std::optional<Room> BakeRoom(Level &level, const std::wstring &id, std::span<con
     SeenSum seen;
     for (const core::Point &place : probes::FloorPlaces(*about.front()->tree, kSpacing))
     {
-        const std::optional<probes::Coefficients> light =
-            probes::Bake(rays, [&](const core::Point &ray) -> std::optional<probes::Landed> {
-                const std::optional<Lit> lit = Look(level, about, place, ray);
-                if (lit)
-                {
-                    seen.Add(*lit);
-                }
-                return lit ? std::optional<probes::Landed>(probes::Landed{lit->baked, lit->distance}) : std::nullopt;
-            });
-        if (light)
+        if (const std::optional<probes::Coefficients> light = BakeAt(level, about, place, rays, seen))
         {
             baked.probes.push_back({place, probes::Matrices(*light)});
         }
     }
     baked.seen = seen.Mean();
-    spdlog::debug("light probes: room {}: key {:.2f} {:.2f} {:.2f}, {} triangles of its own, {} rooms about it, {} probes",
-                  Text(id), baked.key[0], baked.key[1], baked.key[2], about.front()->lit.size(), about.size() - 1,
-                  baked.probes.size());
+    spdlog::debug(
+        "light probes: room {}: key {:.2f} {:.2f} {:.2f}, {} triangles of its own, {} rooms about it, {} probes",
+        Text(id), baked.key[0], baked.key[1], baked.key[2], about.front()->lit.size(), about.size() - 1,
+        baked.probes.size());
     return baked;
 }
 
@@ -191,8 +199,10 @@ struct Photograph
     {
         const std::size_t face = index / (std::size_t{side} * side);
         const std::size_t within = index % (std::size_t{side} * side);
-        const float u = ((static_cast<float>(within % side) + 0.5F) / static_cast<float>(side) * 2) - 1; // to the right
-        const float v = ((static_cast<float>(within / side) + 0.5F) / static_cast<float>(side) * 2) - 1; // down
+        const std::size_t column = within % side;
+        const std::size_t row = within / side;
+        const float u = ((static_cast<float>(column) + 0.5F) / static_cast<float>(side) * 2) - 1; // to the right
+        const float v = ((static_cast<float>(row) + 0.5F) / static_cast<float>(side) * 2) - 1;    // down
         const std::array<core::Point, 6> ways{
             {{1, -v, -u}, {-1, -v, u}, {u, 1, v}, {u, -1, -v}, {u, -v, 1}, {-u, -v, -1}}};
         const core::Point &way = ways.at(face);
@@ -342,6 +352,114 @@ struct FitSums
     }
 };
 
+// The equations of those of the three shares that are chosen, a row for each:
+// what multiplies each of them, and in the last column what the photograph
+// shows.
+struct Equations
+{
+    std::array<std::size_t, 3> which{}; // the shares chosen, of the baked light, the sun's reach and 1
+    std::size_t count = 0;              // and how many they are
+    std::array<std::array<double, 4>, 3> rows{};
+};
+
+// @param chosen a bit for each of the three shares
+Equations EquationsOf(const FitSums &sums, unsigned chosen)
+{
+    Equations equations;
+    for (std::size_t i = 0; i < 3; ++i)
+    {
+        if ((chosen >> i & 1U) != 0)
+        {
+            equations.which.at(equations.count++) = i;
+        }
+    }
+    for (std::size_t i = 0; i < equations.count; ++i)
+    {
+        for (std::size_t j = 0; j < equations.count; ++j)
+        {
+            equations.rows.at(i).at(j) = sums.among.at(equations.which.at(i)).at(equations.which.at(j));
+        }
+        equations.rows.at(i).at(3) = sums.shown.at(equations.which.at(i));
+    }
+    return equations;
+}
+
+// Takes the share of one row out of every other row, the row with the most
+// of it brought to its place first.
+// @return false where no row has enough of it to divide by
+bool Eliminate(Equations &equations, const FitSums &sums, std::size_t i)
+{
+    auto &rows = equations.rows;
+    std::size_t pivot = i;
+    for (std::size_t k = i + 1; k < equations.count; ++k)
+    {
+        pivot = std::abs(rows.at(k).at(i)) > std::abs(rows.at(pivot).at(i)) ? k : pivot;
+    }
+    std::swap(rows.at(i), rows.at(pivot));
+    const std::size_t share = equations.which.at(i);
+    const bool enough = std::abs(rows.at(i).at(i)) > 1e-9 * std::max(sums.among.at(share).at(share), 1e-30);
+    if (!enough)
+    {
+        return false;
+    }
+    for (std::size_t k = 0; k < equations.count; ++k)
+    {
+        if (k != i)
+        {
+            const double by = rows.at(k).at(i) / rows.at(i).at(i);
+            for (std::size_t j = 0; j < 4; ++j)
+            {
+                rows.at(k).at(j) -= by * rows.at(i).at(j);
+            }
+        }
+    }
+    return true;
+}
+
+// The shares that come nearest what the photograph shows with only those
+// chosen let be more than nothing: their own equations, solved by
+// elimination. Nothing where the equations do not say, or say a share less
+// than nothing.
+std::optional<std::array<double, 3>> SharesOf(const FitSums &sums, unsigned chosen)
+{
+    Equations equations = EquationsOf(sums, chosen);
+    for (std::size_t i = 0; i < equations.count; ++i)
+    {
+        if (!Eliminate(equations, sums, i))
+        {
+            return std::nullopt;
+        }
+    }
+    std::array<double, 3> shares{};
+    for (std::size_t i = 0; i < equations.count; ++i)
+    {
+        const double share = equations.rows.at(i).at(3) / equations.rows.at(i).at(i);
+        const bool some = share >= 0;
+        if (!some)
+        {
+            return std::nullopt;
+        }
+        shares.at(equations.which.at(i)) = share;
+    }
+    return shares;
+}
+
+// What is left of the photograph's square with these shares: the less, the
+// nearer they come to what it shows.
+double LeftWith(const FitSums &sums, const std::array<double, 3> &shares)
+{
+    double left = sums.square;
+    for (std::size_t i = 0; i < 3; ++i)
+    {
+        left -= 2 * shares.at(i) * sums.shown.at(i);
+        for (std::size_t j = 0; j < 3; ++j)
+        {
+            left += shares.at(i) * shares.at(j) * sums.among.at(i).at(j);
+        }
+    }
+    return left;
+}
+
 // The shares that come nearest what the photograph shows, none less than
 // nothing: least squares over the baked light, the sun's reach and 1, and
 // where that makes a share negative, over the two or the one of them that
@@ -352,71 +470,16 @@ std::array<double, 3> Fit(const FitSums &sums)
     double least = std::numeric_limits<double>::infinity();
     for (unsigned chosen = 1; chosen < 8; ++chosen)
     {
-        // The chosen shares' own equations, solved by elimination.
-        std::array<std::size_t, 3> which{};
-        std::size_t count = 0;
-        for (std::size_t i = 0; i < 3; ++i)
-        {
-            if ((chosen >> i & 1U) != 0)
-            {
-                which.at(count++) = i;
-            }
-        }
-        std::array<std::array<double, 4>, 3> rows{};
-        for (std::size_t i = 0; i < count; ++i)
-        {
-            for (std::size_t j = 0; j < count; ++j)
-            {
-                rows.at(i).at(j) = sums.among.at(which.at(i)).at(which.at(j));
-            }
-            rows.at(i).at(3) = sums.shown.at(which.at(i));
-        }
-        bool solved = true;
-        for (std::size_t i = 0; i < count && solved; ++i)
-        {
-            std::size_t pivot = i;
-            for (std::size_t k = i + 1; k < count; ++k)
-            {
-                pivot = std::abs(rows.at(k).at(i)) > std::abs(rows.at(pivot).at(i)) ? k : pivot;
-            }
-            std::swap(rows.at(i), rows.at(pivot));
-            solved = std::abs(rows.at(i).at(i)) > 1e-9 * std::max(sums.among.at(which.at(i)).at(which.at(i)), 1e-30);
-            for (std::size_t k = 0; k < count && solved; ++k)
-            {
-                if (k != i)
-                {
-                    const double by = rows.at(k).at(i) / rows.at(i).at(i);
-                    for (std::size_t j = 0; j < 4; ++j)
-                    {
-                        rows.at(k).at(j) -= by * rows.at(i).at(j);
-                    }
-                }
-            }
-        }
-        std::array<double, 3> shares{};
-        for (std::size_t i = 0; i < count && solved; ++i)
-        {
-            shares.at(which.at(i)) = rows.at(i).at(3) / rows.at(i).at(i);
-            solved = shares.at(which.at(i)) >= 0;
-        }
-        if (!solved)
+        const std::optional<std::array<double, 3>> shares = SharesOf(sums, chosen);
+        if (!shares)
         {
             continue;
         }
-        // What is left of the photograph's square with these shares.
-        double left = sums.square;
-        for (std::size_t i = 0; i < 3; ++i)
-        {
-            left -= 2 * shares.at(i) * sums.shown.at(i);
-            for (std::size_t j = 0; j < 3; ++j)
-            {
-                left += shares.at(i) * shares.at(j) * sums.among.at(i).at(j);
-            }
-        }
+        const double left = LeftWith(sums, *shares);
         if (left < least)
         {
             least = left;
-            best = shares;
+            best = *shares;
         }
     }
     return best;
@@ -485,19 +548,19 @@ void KeepSky(Level &level, std::span<const Geometry *const> about, const OwnProb
         if (landed[texel])
         {
             const std::size_t band = bandOf(photograph.Direction(texel));
-            photograph.texels[texel] = count.at(band) != 0
-                                           ? mean.at(band)
-                                           : probes::Colour{all[0] / static_cast<float>(sky), all[1] / static_cast<float>(sky),
-                                                            all[2] / static_cast<float>(sky)};
+            photograph.texels[texel] =
+                count.at(band) != 0 ? mean.at(band)
+                                    : probes::Colour{all[0] / static_cast<float>(sky), all[1] / static_cast<float>(sky),
+                                                     all[2] / static_cast<float>(sky)};
         }
     }
 }
 
 // The light at a place as its photograph would have it: along each ray what
 // the surface it lands on sends, or the sky. Nothing for a place closed in.
-std::optional<probes::Coefficients> Reckon(Level &level, std::span<const Geometry *const> about, const core::Point &place,
-                                           std::span<const core::Point> rays, const Sends &sends, const Photograph &sky,
-                                           SeenSum *seen = nullptr)
+std::optional<probes::Coefficients> Reckon(Level &level, std::span<const Geometry *const> about,
+                                           const core::Point &place, std::span<const core::Point> rays,
+                                           const Sends &sends, const Photograph &sky, SeenSum *seen = nullptr)
 {
     probes::Coefficients light{};
     const float each = 4 * std::numbers::pi_v<float> / static_cast<float>(rays.size());
@@ -564,6 +627,120 @@ std::wstring TileAt(Level &level, const core::Point &place)
     return nearest;
 }
 
+// How far up a triangle faces, by the order of its corners: 1 for one that
+// lies flat with its face up, -1 for one with its face down.
+float Upward(const core::Triangle &t)
+{
+    const core::Point e1{t.b[0] - t.a[0], t.b[1] - t.a[1], t.b[2] - t.a[2]};
+    const core::Point e2{t.c[0] - t.a[0], t.c[1] - t.a[1], t.c[2] - t.a[2]};
+    const core::Point normal{(e1[1] * e2[2]) - (e1[2] * e2[1]), (e1[2] * e2[0]) - (e1[0] * e2[2]),
+                             (e1[0] * e2[1]) - (e1[1] * e2[0])};
+    return normal[2] / std::max(std::hypot(normal[0], normal[1], normal[2]), 1e-30F);
+}
+
+// A tile's triangles for its floors to be found among: the ground's turned
+// to face up, which the ground always does, and the rest left as they are
+// (PlacesOn has why).
+std::vector<core::Triangle> TurnedUp(const Geometry &tile)
+{
+    std::vector<core::Triangle> corners;
+    corners.reserve(tile.lit.size());
+    for (const level::LitTriangle &triangle : tile.lit)
+    {
+        corners.push_back(triangle.corners);
+    }
+    for (const auto &[from, to] : tile.ground)
+    {
+        for (std::size_t i = from; i < to; ++i)
+        {
+            if (Upward(corners[i]) < 0)
+            {
+                std::swap(corners[i].b, corners[i].c);
+            }
+        }
+    }
+    return corners;
+}
+
+// The box about some triangles.
+struct Bounds
+{
+    core::Point low{std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(),
+                    std::numeric_limits<float>::infinity()};
+    core::Point high{-std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(),
+                     -std::numeric_limits<float>::infinity()};
+};
+
+Bounds BoundsOf(std::span<const core::Triangle> triangles)
+{
+    Bounds bounds;
+    for (const core::Triangle &triangle : triangles)
+    {
+        for (const core::Point *corner : {&triangle.a, &triangle.b, &triangle.c})
+        {
+            for (std::size_t axis = 0; axis < 3; ++axis)
+            {
+                bounds.low.at(axis) = std::min(bounds.low.at(axis), corner->at(axis));
+                bounds.high.at(axis) = std::max(bounds.high.at(axis), corner->at(axis));
+            }
+        }
+    }
+    return bounds;
+}
+
+// The lines of the level's grid along one way that lie from `low` up to
+// `high`: the grid is the whole level's, its lines `spacing` apart, the
+// first of them half a spacing from nothing. Counted in whole steps from the
+// first line in reach, and not by adding the spacing to a float time after
+// time (clang-tidy's bugprone-float-loop-counter); the two say the same for
+// a spacing whose multiples a float holds whole, as the 4 and 8 metres asked
+// for are.
+std::vector<float> GridLines(float low, float high, float spacing)
+{
+    const float first = (std::floor(low / spacing) + 0.5F) * spacing;
+    std::vector<float> lines;
+    for (int step = 0;; ++step)
+    {
+        const float at = first + (static_cast<float>(step) * spacing);
+        const bool within = at < high;
+        if (!within)
+        {
+            break;
+        }
+        if (at >= low)
+        {
+            lines.push_back(at);
+        }
+    }
+    return lines;
+}
+
+// The heights of the surfaces under a point of the grid that face up, from
+// the lowest: every one of them a ray let down from over the tile goes
+// through.
+// @param top the height of the tile's highest corner
+// @param stood the heights, in a list that is used again for the next point
+void FloorsUnder(const core::TriangleTree &floors, float x, float y, float top, std::vector<float> &stood)
+{
+    const core::Point down{0, 0, -1};
+    stood.clear();
+    core::Point from{x, y, top + 1};
+    for (std::size_t layer = 0; layer < kLayersMost; ++layer)
+    {
+        const std::optional<core::RayHit> hit = floors.Cast(from, down);
+        if (!hit)
+        {
+            break;
+        }
+        from[2] -= hit->distance;
+        if (Upward(floors.At(hit->triangle)) > kFacesUp)
+        {
+            stood.push_back(from[2]);
+        }
+    }
+    std::ranges::sort(stood);
+}
+
 } // namespace
 
 // The places to stand on a tile: over a grid that is the whole level's, a
@@ -582,76 +759,24 @@ std::wstring TileAt(Level &level, const core::Point &place)
 // a ceiling is no floor.
 std::vector<core::Point> PlacesOn(std::span<const Geometry *const> about, float spacing)
 {
-    const Geometry &tile = *about.front();
-    std::vector<core::Triangle> corners;
-    corners.reserve(tile.lit.size());
-    core::Point low{std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(),
-                    std::numeric_limits<float>::infinity()};
-    core::Point high{-low[0], -low[1], -low[2]};
-    for (const level::LitTriangle &triangle : tile.lit)
-    {
-        corners.push_back(triangle.corners);
-        for (const core::Point *corner : {&triangle.corners.a, &triangle.corners.b, &triangle.corners.c})
-        {
-            for (std::size_t axis = 0; axis < 3; ++axis)
-            {
-                low.at(axis) = std::min(low.at(axis), corner->at(axis));
-                high.at(axis) = std::max(high.at(axis), corner->at(axis));
-            }
-        }
-    }
-    const auto upward = [](const core::Triangle &t) {
-        const core::Point e1{t.b[0] - t.a[0], t.b[1] - t.a[1], t.b[2] - t.a[2]};
-        const core::Point e2{t.c[0] - t.a[0], t.c[1] - t.a[1], t.c[2] - t.a[2]};
-        const core::Point normal{(e1[1] * e2[2]) - (e1[2] * e2[1]), (e1[2] * e2[0]) - (e1[0] * e2[2]),
-                                 (e1[0] * e2[1]) - (e1[1] * e2[0])};
-        return normal[2] / std::max(std::hypot(normal[0], normal[1], normal[2]), 1e-30F);
-    };
-    for (const auto &[from, to] : tile.ground)
-    {
-        for (std::size_t i = from; i < to; ++i)
-        {
-            if (upward(corners[i]) < 0)
-            {
-                std::swap(corners[i].b, corners[i].c);
-            }
-        }
-    }
+    const std::vector<core::Triangle> corners = TurnedUp(*about.front());
     std::vector<core::Point> places;
     if (corners.empty())
     {
         return places;
     }
+    const Bounds bounds = BoundsOf(corners);
     const core::TriangleTree floors(corners);
-    const core::Point down{0, 0, -1};
     const core::Point up{0, 0, 1};
+    const std::vector<float> ys = GridLines(bounds.low[1], bounds.high[1], spacing);
     std::vector<float> stood;
-    for (float x = (std::floor(low[0] / spacing) + 0.5F) * spacing; x < high[0]; x += spacing)
+    for (const float x : GridLines(bounds.low[0], bounds.high[0], spacing))
     {
-        for (float y = (std::floor(low[1] / spacing) + 0.5F) * spacing; y < high[1]; y += spacing)
+        for (const float y : ys)
         {
-            if (x < low[0] || y < low[1])
-            {
-                continue;
-            }
             // Every surface under this point that faces up, from the top down.
-            stood.clear();
-            core::Point from{x, y, high[2] + 1};
-            for (std::size_t layer = 0; layer < kLayersMost; ++layer)
-            {
-                const std::optional<core::RayHit> hit = floors.Cast(from, down);
-                if (!hit)
-                {
-                    break;
-                }
-                from[2] -= hit->distance;
-                if (upward(floors.At(hit->triangle)) > kFacesUp)
-                {
-                    stood.push_back(from[2]);
-                }
-            }
-            std::ranges::sort(stood);
-            float last = low[2] - (2 * kSameFloor);
+            FloorsUnder(floors, x, y, bounds.high[2], stood);
+            float last = bounds.low[2] - (2 * kSameFloor);
             for (const float floor : stood)
             {
                 if (floor - last < kSameFloor)
@@ -675,6 +800,31 @@ std::vector<core::Point> PlacesOn(std::span<const Geometry *const> about, float 
 
 namespace
 {
+
+// Where a probe of a level's own is, and one taken with its photograph.
+const core::Point &PlaceOf(const OwnProbe &probe)
+{
+    return probe.at;
+}
+const core::Point &PlaceOf(const Taken &taken)
+{
+    return taken.probe.at;
+}
+
+// Which of a level's own probes is nearest a place: of two as near, the
+// first. A place stood on is the room's whose own probe that is.
+template <class Probes> std::size_t NearestOf(const Probes &owns, const core::Point &place)
+{
+    std::size_t nearest = 0;
+    for (std::size_t i = 1; i < owns.size(); ++i)
+    {
+        if (Distance(PlaceOf(owns[i]), place) < Distance(PlaceOf(owns[nearest]), place))
+        {
+            nearest = i;
+        }
+    }
+    return nearest;
+}
 
 // The probes of a level of terrain that is lit again (Relighter.h), a room
 // for each of the level's own: baked as a room's are, each side of a figure
@@ -709,21 +859,8 @@ std::vector<Room> BakeTerrainRelit(Level &level, std::span<const core::Point> ra
         }
         for (const core::Point &place : PlacesOn(about, kTerrainSpacing))
         {
-            std::size_t own = 0;
-            for (std::size_t i = 1; i < owns.size(); ++i)
-            {
-                own = Distance(owns[i].at, place) < Distance(owns[own].at, place) ? i : own;
-            }
-            const std::optional<probes::Coefficients> light =
-                probes::Bake(rays, [&](const core::Point &ray) -> std::optional<probes::Landed> {
-                    const std::optional<Lit> lit = Look(level, about, place, ray);
-                    if (lit)
-                    {
-                        seen.at(own).Add(*lit);
-                    }
-                    return lit ? std::optional<probes::Landed>(probes::Landed{lit->baked, lit->distance}) : std::nullopt;
-                });
-            if (light)
+            const std::size_t own = NearestOf(owns, place);
+            if (const std::optional<probes::Coefficients> light = BakeAt(level, about, place, rays, seen.at(own)))
             {
                 rooms[own].probes.push_back({place, probes::Matrices(*light)});
             }
@@ -736,12 +873,11 @@ std::vector<Room> BakeTerrainRelit(Level &level, std::span<const core::Point> ra
     return rooms;
 }
 
-// The probes of a level of terrain, a room for each of the level's own.
-std::vector<Room> BakeTerrain(Level &level, std::span<const core::Point> rays)
+// A terrain level's own probes, each with its photograph made the sky alone
+// (KeepSky); the surfaces the photographs show go to the fit's sums.
+std::vector<Taken> TakePhotographs(Level &level, std::array<FitSums, 3> &sums, std::size_t &surfaces)
 {
     std::vector<Taken> taken;
-    std::array<FitSums, 3> sums{};
-    std::size_t surfaces = 0;
     for (OwnProbe &probe : level.ProbesOf(L""))
     {
         const std::optional<std::vector<std::byte>> file = level.Find(probe.cube);
@@ -756,11 +892,14 @@ std::vector<Room> BakeTerrain(Level &level, std::span<const core::Point> rays)
         KeepSky(level, about, probe, *photograph, sums, surfaces);
         taken.push_back({std::move(probe), std::move(*photograph)});
     }
-    if (taken.empty())
-    {
-        spdlog::debug("light probes: {}: no probe of its own with a photograph", Text(level.Name()));
-        return {};
-    }
+    return taken;
+}
+
+// What a lit surface of the level sends on: fitted to what the photographs
+// show of the surfaces, where they show enough of them, and else what a
+// surface is taken to send where nothing says.
+Sends SendsOf(const std::array<FitSums, 3> &sums, std::size_t surfaces)
+{
     Sends sends;
     if (surfaces >= kFitLeast)
     {
@@ -773,6 +912,48 @@ std::vector<Room> BakeTerrain(Level &level, std::span<const core::Point> rays)
             sends.ofNothing.at(channel) = bounded(shares[2]);
         }
     }
+    return sends;
+}
+
+// The check: one of the level's own probes reckoned again at its own place,
+// and said beside what the level's files have for it.
+// @param own the probe's light as the level's files have it
+void SayReckonedAgain(Level &level, std::span<const core::Point> rays, const Sends &sends, const Taken &taken,
+                      const probes::Irradiance &own)
+{
+    const std::vector<const Geometry *> about = About(level, TileAt(level, taken.probe.at));
+    const auto again = Reckon(level, about, taken.probe.at, rays, sends, taken.sky);
+    if (!again)
+    {
+        return;
+    }
+    const probes::Irradiance ours = probes::Matrices(*again);
+    double both = 0;
+    double oursSquared = 0;
+    double theirsSquared = 0;
+    for (std::size_t at = 0; at < ours.size(); ++at)
+    {
+        both += double{ours.at(at)} * own.at(at);
+        oursSquared += double{ours.at(at)} * ours.at(at);
+        theirsSquared += double{own.at(at)} * own.at(at);
+    }
+    spdlog::info("light probes: {}: its own probe reckoned again is {:.3f} like it and {:.2f} as bright",
+                 Text(level.Name()), both / std::sqrt(std::max(oursSquared * theirsSquared, 1e-30)),
+                 std::sqrt(oursSquared / std::max(theirsSquared, 1e-30)));
+}
+
+// The probes of a level of terrain, a room for each of the level's own.
+std::vector<Room> BakeTerrain(Level &level, std::span<const core::Point> rays)
+{
+    std::array<FitSums, 3> sums{};
+    std::size_t surfaces = 0;
+    const std::vector<Taken> taken = TakePhotographs(level, sums, surfaces);
+    if (taken.empty())
+    {
+        spdlog::debug("light probes: {}: no probe of its own with a photograph", Text(level.Name()));
+        return {};
+    }
+    const Sends sends = SendsOf(sums, surfaces);
     spdlog::info("light probes: {}: {} of its own, {} surfaces in their photographs; a surface sends on "
                  "({:.2f}, {:.2f}, {:.2f}) of its baked light, ({:.2f}, {:.2f}, {:.2f}) of the sun and "
                  "({:.3f}, {:.3f}, {:.3f}) with neither",
@@ -784,37 +965,9 @@ std::vector<Room> BakeTerrain(Level &level, std::span<const core::Point> rays)
     {
         rooms[i].key = taken[i].probe.at;
         rooms[i].own = taken[i].probe.light;
-        // The check: the level's own probe reckoned again at its own place.
-        const std::vector<const Geometry *> about = About(level, TileAt(level, taken[i].probe.at));
-        if (const auto again = Reckon(level, about, taken[i].probe.at, rays, sends, taken[i].sky))
-        {
-            const probes::Irradiance ours = probes::Matrices(*again);
-            double both = 0;
-            double oursSquared = 0;
-            double theirsSquared = 0;
-            for (std::size_t at = 0; at < ours.size(); ++at)
-            {
-                both += double{ours.at(at)} * rooms[i].own.at(at);
-                oursSquared += double{ours.at(at)} * ours.at(at);
-                theirsSquared += double{rooms[i].own.at(at)} * rooms[i].own.at(at);
-            }
-            spdlog::info("light probes: {}: its own probe reckoned again is {:.3f} like it and {:.2f} as bright",
-                         Text(level.Name()), both / std::sqrt(std::max(oursSquared * theirsSquared, 1e-30)),
-                         std::sqrt(oursSquared / std::max(theirsSquared, 1e-30)));
-        }
+        SayReckonedAgain(level, rays, sends, taken[i], rooms[i].own);
     }
     std::vector<SeenSum> seen(taken.size());
-    const auto nearestOwn = [&](const core::Point &place) {
-        std::size_t nearest = 0;
-        for (std::size_t i = 1; i < taken.size(); ++i)
-        {
-            if (Distance(taken[i].probe.at, place) < Distance(taken[nearest].probe.at, place))
-            {
-                nearest = i;
-            }
-        }
-        return nearest;
-    };
     for (const std::wstring &id : level.Rooms())
     {
         if (const std::optional<Tile> tile = TileOf(id))
@@ -830,15 +983,15 @@ std::vector<Room> BakeTerrain(Level &level, std::span<const core::Point> rays)
         std::size_t open = 0;
         for (const core::Point &place : places)
         {
-            const std::size_t own = nearestOwn(place);
+            const std::size_t own = NearestOf(taken, place);
             if (const auto light = Reckon(level, about, place, rays, sends, taken[own].sky, &seen.at(own)))
             {
                 rooms[own].probes.push_back({place, probes::Matrices(*light)});
                 ++open;
             }
         }
-        spdlog::debug("light probes: tile {}: {} triangles, {} tiles about it, {} places, {} of them open",
-                      Text(id), about.front()->lit.size(), about.size() - 1, places.size(), open);
+        spdlog::debug("light probes: tile {}: {} triangles, {} tiles about it, {} places, {} of them open", Text(id),
+                      about.front()->lit.size(), about.size() - 1, places.size(), open);
     }
     for (std::size_t i = 0; i < rooms.size(); ++i)
     {
@@ -929,8 +1082,7 @@ std::optional<std::vector<Room>> Read(std::span<const std::byte> file, std::uint
         std::uint32_t whole = 0;
         std::uint32_t probes = 0;
         if (!Take(file, room.key) || !Take(file, room.own) || !Take(file, whole) || !Take(file, room.seen) ||
-            !Take(file, probes) ||
-            file.size() / sizeof(probes::Probe) < probes)
+            !Take(file, probes) || file.size() / sizeof(probes::Probe) < probes)
         {
             return std::nullopt;
         }
@@ -1070,7 +1222,8 @@ void ReadLamps(State &state, const std::filesystem::path &file)
         return;
     }
     std::vector<float> places(std::size_t{count} * 3);
-    in.read(reinterpret_cast<char *>(places.data()), static_cast<std::streamsize>(places.size() * sizeof(float)));
+    const std::span<std::byte> bytes = std::as_writable_bytes(std::span(places));
+    in.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     if (!in)
     {
         return;
@@ -1092,7 +1245,8 @@ void BakeLevel(State &state, const std::filesystem::path &levelRim)
     {
         std::ifstream in(state.relit / (levelRim.stem().wstring() + L".elgp"), std::ios::binary);
         const std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-        if (std::optional<std::vector<Room>> rooms = Read(std::as_bytes(std::span(bytes.data(), bytes.size())), kAnyStamp))
+        if (std::optional<std::vector<Room>> rooms =
+                Read(std::as_bytes(std::span(bytes.data(), bytes.size())), kAnyStamp))
         {
             spdlog::info("light probes: {} lit again, {} rooms, {} probes of its own lights", levelRim.stem().string(),
                          rooms->size(), ProbesIn(*rooms));
@@ -1230,6 +1384,65 @@ std::shared_ptr<const Rooms> AllRooms()
     return state.rooms;
 }
 
+namespace
+{
+
+// A square of a room's grid, by the cells at its edges, which may lie
+// outside the grid.
+struct Square
+{
+    int left = 0;
+    int right = 0;
+    int top = 0;
+    int bottom = 0;
+};
+
+// Adds to `out` the probes in a square's cells, each with one over its
+// distance from a place for its score.
+void AddCells(const Room &room, const float *place, const Square &square, std::vector<probes::Near> &out)
+{
+    for (int cy = std::max(square.top, 0); cy <= std::min(square.bottom, static_cast<int>(room.down) - 1); ++cy)
+    {
+        const std::size_t row = static_cast<std::size_t>(cy) * room.across;
+        const std::uint32_t from = room.starts[row + static_cast<std::size_t>(std::max(square.left, 0))];
+        const std::uint32_t to =
+            room.starts[row + static_cast<std::size_t>(std::min(square.right, static_cast<int>(room.across) - 1)) + 1];
+        for (std::uint32_t at = from; at < to; ++at)
+        {
+            const probes::Probe &probe = room.probes[room.order[at]];
+            const float higher = std::max(std::abs(probe.at[2] - place[2]) - kSameStorey, 0.0F);
+            const float distance = std::hypot(probe.at[0] - place[0], probe.at[1] - place[1], kHeightCounts * higher);
+            out.push_back({1.0F / std::max(distance, 1e-3F), probe.light.data()});
+        }
+    }
+}
+
+// How far from a place anything outside a square of a room's grid is, at the
+// least; infinity where the square is the whole grid.
+float SureWithin(const Room &room, const float *place, const Square &square)
+{
+    float sure = std::numeric_limits<float>::infinity();
+    if (square.left > 0)
+    {
+        sure = std::min(sure, place[0] - (room.lowX + (static_cast<float>(square.left) * kCell)));
+    }
+    if (square.right < static_cast<int>(room.across) - 1)
+    {
+        sure = std::min(sure, room.lowX + (static_cast<float>(square.right + 1) * kCell) - place[0]);
+    }
+    if (square.top > 0)
+    {
+        sure = std::min(sure, place[1] - (room.lowY + (static_cast<float>(square.top) * kCell)));
+    }
+    if (square.bottom < static_cast<int>(room.down) - 1)
+    {
+        sure = std::min(sure, room.lowY + (static_cast<float>(square.bottom + 1) * kCell) - place[1]);
+    }
+    return sure;
+}
+
+} // namespace
+
 void Nearest(const Room &room, const float *place, std::vector<probes::Near> &out)
 {
     if (room.across == 0 || room.down == 0)
@@ -1248,43 +1461,10 @@ void Nearest(const Room &room, const float *place, std::vector<probes::Near> &ou
     for (int ring = 1;; ++ring)
     {
         out.resize(first);
-        const int left = x - ring;
-        const int right = x + ring;
-        const int top = y - ring;
-        const int bottom = y + ring;
-        for (int cy = std::max(top, 0); cy <= std::min(bottom, static_cast<int>(room.down) - 1); ++cy)
-        {
-            const std::size_t row = static_cast<std::size_t>(cy) * room.across;
-            const std::uint32_t from = room.starts[row + static_cast<std::size_t>(std::max(left, 0))];
-            const std::uint32_t to =
-                room.starts[row + static_cast<std::size_t>(std::min(right, static_cast<int>(room.across) - 1)) + 1];
-            for (std::uint32_t at = from; at < to; ++at)
-            {
-                const probes::Probe &probe = room.probes[room.order[at]];
-                const float higher = std::max(std::abs(probe.at[2] - place[2]) - kSameStorey, 0.0F);
-                const float distance =
-                    std::hypot(probe.at[0] - place[0], probe.at[1] - place[1], kHeightCounts * higher);
-                out.push_back({1.0F / std::max(distance, 1e-3F), probe.light.data()});
-            }
-        }
+        const Square square{x - ring, x + ring, y - ring, y + ring};
+        AddCells(room, place, square, out);
         // How far from the place anything outside the square is, at the least.
-        float sure = std::numeric_limits<float>::infinity();
-        if (left > 0)
-        {
-            sure = std::min(sure, place[0] - (room.lowX + (static_cast<float>(left) * kCell)));
-        }
-        if (right < static_cast<int>(room.across) - 1)
-        {
-            sure = std::min(sure, room.lowX + (static_cast<float>(right + 1) * kCell) - place[0]);
-        }
-        if (top > 0)
-        {
-            sure = std::min(sure, place[1] - (room.lowY + (static_cast<float>(top) * kCell)));
-        }
-        if (bottom < static_cast<int>(room.down) - 1)
-        {
-            sure = std::min(sure, room.lowY + (static_cast<float>(bottom + 1) * kCell) - place[1]);
-        }
+        const float sure = SureWithin(room, place, square);
         if (std::isinf(sure))
         {
             return; // the square is the whole grid
@@ -1296,7 +1476,8 @@ void Nearest(const Room &room, const float *place, std::vector<probes::Near> &ou
             {
                 scores.push_back(out[at].score);
             }
-            std::ranges::nth_element(scores, scores.begin() + static_cast<std::ptrdiff_t>(probes::kMixed), std::greater{});
+            std::ranges::nth_element(scores, scores.begin() + static_cast<std::ptrdiff_t>(probes::kMixed),
+                                     std::greater{});
             if (scores[probes::kMixed] >= 1.0F / sure)
             {
                 return;

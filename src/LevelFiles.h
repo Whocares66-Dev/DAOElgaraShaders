@@ -24,11 +24,13 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace levelfiles
@@ -52,10 +54,10 @@ inline constexpr std::size_t kNodesDeep = 64;
 // of the light's share of this.
 inline constexpr float kRelitMost = 8.0F;
 // And for what it says of a lamp, and a model's tree of a mesh's material.
-inline constexpr std::uint32_t kMaterial = 6001;    // MMHMaterialObject
-inline constexpr std::uint32_t kMeshChunk = 6006;   // the chunk of the mesh file a node draws
-inline constexpr std::uint32_t kLampColour = 6007;  // MMHNodePointLightColor
-inline constexpr std::uint32_t kLampReach = 6008;   // MMHNodePointLightRadius
+inline constexpr std::uint32_t kMaterial = 6001;   // MMHMaterialObject
+inline constexpr std::uint32_t kMeshChunk = 6006;  // the chunk of the mesh file a node draws
+inline constexpr std::uint32_t kLampColour = 6007; // MMHNodePointLightColor
+inline constexpr std::uint32_t kLampReach = 6008;  // MMHNodePointLightRadius
 
 // A file's or a room's name for the log: they are plain letters and digits.
 inline std::string Text(const std::wstring &name)
@@ -65,8 +67,25 @@ inline std::string Text(const std::wstring &name)
 
 inline std::wstring Lower(std::wstring text)
 {
-    std::ranges::transform(text, text.begin(), [](wchar_t letter) { return static_cast<wchar_t>(std::towlower(letter)); });
+    std::ranges::transform(text, text.begin(),
+                           [](wchar_t letter) { return static_cast<wchar_t>(std::towlower(letter)); });
     return text;
+}
+
+// A table by name: a list of names, each with its value, in the names' order
+// and none twice. What a std::map would be, but for this: the library's map
+// cannot be moved without memory asked for, which may not be had, and so
+// nothing that holds one can be moved without the chance of an exception
+// (clang-tidy's bugprone-exception-escape, of Archive and ModelParts). These
+// tables are made once and read from then on, which a sorted list does as
+// well.
+template <class Value> using ByName = std::vector<std::pair<std::wstring, Value>>;
+
+// The value a table has for a name, or null.
+template <class Value> const Value *Found(const ByName<Value> &table, const std::wstring &name)
+{
+    const auto found = std::ranges::lower_bound(table, name, {}, &std::pair<std::wstring, Value>::first);
+    return found != table.end() && found->first == name ? &found->second : nullptr;
 }
 
 // One of the game's archives: its directory, and any file of it by name.
@@ -101,32 +120,40 @@ class Archive
         for (core::erf::Entry &entry : core::erf::Entries(std::span(header).first(
                  core::erf::kHeaderSize + static_cast<std::size_t>(std::max<std::streamsize>(file.gcount(), 0)))))
         {
-            archive.entries_.emplace(Lower(entry.name), entry);
+            archive.entries_.emplace_back(Lower(entry.name), entry);
         }
+        // In the names' order, and of two files of one name the first.
+        std::ranges::stable_sort(archive.entries_, {}, &std::pair<std::wstring, core::erf::Entry>::first);
+        const auto twice = std::ranges::unique(archive.entries_, {}, &std::pair<std::wstring, core::erf::Entry>::first);
+        archive.entries_.erase(twice.begin(), twice.end());
         return archive;
     }
 
     bool Has(const std::wstring &name) const
     {
-        return entries_.contains(Lower(name));
+        return Found(entries_, Lower(name)) != nullptr;
     }
 
     std::optional<std::vector<std::byte>> Read(const std::wstring &name) const
     {
-        const auto found = entries_.find(Lower(name));
-        if (found == entries_.end())
+        const core::erf::Entry *found = Found(entries_, Lower(name));
+        if (found == nullptr)
         {
             return std::nullopt;
         }
-        std::vector<std::byte> bytes(found->second.size);
+        std::vector<std::byte> bytes(found->size);
         std::ifstream opened;
-        std::ifstream &file = held_ ? file_ : opened;
+        if (held_ && file_ == nullptr)
+        {
+            file_ = std::make_unique<std::ifstream>();
+        }
+        std::ifstream &file = held_ ? *file_ : opened;
         if (!file.is_open())
         {
             file.open(path_, std::ios::binary);
         }
         file.clear();
-        file.seekg(found->second.offset);
+        file.seekg(found->offset);
         if (!file.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size())))
         {
             return std::nullopt;
@@ -134,7 +161,7 @@ class Archive
         return bytes;
     }
 
-    const std::map<std::wstring, core::erf::Entry> &Entries() const
+    const ByName<core::erf::Entry> &Entries() const
     {
         return entries_;
     }
@@ -142,8 +169,11 @@ class Archive
   private:
     std::filesystem::path path_;
     bool held_ = false;
-    mutable std::ifstream file_; // open from the first reading on, if held
-    std::map<std::wstring, core::erf::Entry> entries_;
+    // Open from the first reading on, if held. Behind a pointer, as a stream
+    // is another thing the library cannot move without the chance of an
+    // exception.
+    mutable std::unique_ptr<std::ifstream> file_;
+    ByName<core::erf::Entry> entries_;
 };
 
 // A lightmap as three or four bytes a pixel: its colour, and for a terrain
@@ -199,7 +229,7 @@ struct ModelParts
 {
     level::Model model;
     std::vector<level::MeshChunk> chunks;
-    std::map<std::wstring, std::wstring> materials;
+    ByName<std::wstring> materials;
 };
 
 // A lamp of a level's own, as a layout has it: a point light.
@@ -224,9 +254,9 @@ struct Lamp
 struct Geometry
 {
     std::vector<level::LitTriangle> lit;
-    std::optional<core::TriangleTree> tree; // over `lit`, in its order; none for a room not read
-    std::set<std::uint32_t> atlases;        // the lightmaps its triangles are in
-    std::vector<std::wstring> models;       // the models that are the level's own, a tile's ground
+    std::optional<core::TriangleTree> tree;                  // over `lit`, in its order; none for a room not read
+    std::set<std::uint32_t> atlases;                         // the lightmaps its triangles are in
+    std::vector<std::wstring> models;                        // the models that are the level's own, a tile's ground
     std::vector<std::pair<std::size_t, std::size_t>> ground; // their triangles in `lit`: from, and to before
 };
 
@@ -257,7 +287,8 @@ inline std::optional<int> WholeNumber(std::wstring_view text)
 {
     const bool minus = text.starts_with(L'-');
     const std::wstring_view digits = text.substr(minus ? 1 : 0);
-    if (digits.empty() || digits.size() > 6 || !std::ranges::all_of(digits, [](wchar_t c) { return std::iswdigit(c) != 0; }))
+    if (digits.empty() || digits.size() > 6 ||
+        !std::ranges::all_of(digits, [](wchar_t c) { return std::iswdigit(c) != 0; }))
     {
         return std::nullopt;
     }
@@ -321,7 +352,7 @@ inline void ProbesUnder(const core::gff4::Struct &node, std::size_t deep, std::v
                     const std::vector<float> matrix = part.Floats(kIrradianceRed + channel);
                     lit = lit && matrix.size() == 16;
                     std::copy_n(matrix.begin(), std::min<std::size_t>(matrix.size(), 16),
-                                probe.light.begin() + static_cast<std::ptrdiff_t>(channel * 16));
+                                probe.light.begin() + (static_cast<std::ptrdiff_t>(channel) * 16));
                 }
             }
         }
@@ -373,8 +404,8 @@ class Level
 {
   public:
     Level(std::filesystem::path folder, std::wstring name, Archive rooms, Archive *hierarchies, Archive *meshes)
-        : folder_(std::move(folder)), name_(Lower(std::move(name))), rooms_(std::move(rooms)), hierarchies_(hierarchies),
-          meshes_(meshes)
+        : folder_(std::move(folder)), name_(Lower(std::move(name))), rooms_(std::move(rooms)),
+          hierarchies_(hierarchies), meshes_(meshes)
     {
         // Every archive of the level's folder but the rooms' definitions: a
         // room's layout and its lightmaps are in one or another of them.
@@ -501,9 +532,8 @@ class Level
         {
             return found;
         }
-        const auto placed = std::ranges::find_if(room->models, [&](const level::Placed &model) {
-            return Lower(model.file) == layout;
-        });
+        const auto placed =
+            std::ranges::find_if(room->models, [&](const level::Placed &model) { return Lower(model.file) == layout; });
         const auto file = core::gff4::File::Parse(*bytes);
         const std::optional<core::gff4::Struct> root = file ? file->Root() : std::nullopt;
         if (placed == room->models.end() || !root)
@@ -529,9 +559,8 @@ class Level
         {
             return found;
         }
-        const auto placed = std::ranges::find_if(room->models, [&](const level::Placed &model) {
-            return Lower(model.file) == layout;
-        });
+        const auto placed =
+            std::ranges::find_if(room->models, [&](const level::Placed &model) { return Lower(model.file) == layout; });
         const auto file = core::gff4::File::Parse(*bytes);
         const std::optional<core::gff4::Struct> root = file ? file->Root() : std::nullopt;
         if (placed == room->models.end() || !root)
@@ -570,8 +599,8 @@ class Level
             {
                 continue;
             }
-            const auto material = parts->materials.find(Lower(node.chunk));
-            const std::wstring *named = material != parts->materials.end() ? &material->second : &kNone;
+            const std::wstring *material = Found(parts->materials, Lower(node.chunk));
+            const std::wstring *named = material != nullptr ? material : &kNone;
             const auto corner = [&](std::uint32_t index) {
                 const core::Point inModel = level::Turned(node.turn, chunk->positions[index]);
                 return level::InLevel(*room, placed,
@@ -678,16 +707,17 @@ class Level
         {
             return {{}, 0, distance};
         }
-        const auto x = static_cast<std::size_t>(std::clamp(uv[0] * static_cast<float>(image.width), 0.0F,
-                                                           static_cast<float>(image.width - 1)));
-        const auto y = static_cast<std::size_t>(std::clamp(uv[1] * static_cast<float>(image.height), 0.0F,
-                                                           static_cast<float>(image.height - 1)));
+        const auto x = static_cast<std::size_t>(
+            std::clamp(uv[0] * static_cast<float>(image.width), 0.0F, static_cast<float>(image.width - 1)));
+        const auto y = static_cast<std::size_t>(
+            std::clamp(uv[1] * static_cast<float>(image.height), 0.0F, static_cast<float>(image.height - 1)));
         const std::uint8_t *pixel = &image.pixels[((y * image.width) + x) * image.channels];
         const auto light = [&](std::size_t channel) {
             const float stored = static_cast<float>(pixel[channel]) / 255.0F;
             return image.ours ? stored * stored * kRelitMost : stored;
         };
-        return {{light(0), light(1), light(2)}, image.channels > 3 ? static_cast<float>(pixel[3]) / 255.0F : 0.0F,
+        return {{light(0), light(1), light(2)},
+                image.channels > 3 ? static_cast<float>(pixel[3]) / 255.0F : 0.0F,
                 distance};
     }
 
@@ -733,7 +763,9 @@ class Level
             read.model = level::ModelOf(*file);
             if (const std::optional<core::gff4::Struct> root = file->Root())
             {
-                MaterialsUnder(*root, 0, read.materials);
+                std::map<std::wstring, std::wstring> materials;
+                MaterialsUnder(*root, 0, materials);
+                read.materials.assign(materials.begin(), materials.end());
             }
             std::wstring meshFile = read.model.meshFile.empty() ? key : read.model.meshFile;
             if (!meshFile.ends_with(L".msh"))
@@ -784,7 +816,8 @@ class Level
                 std::ifstream ours(relit_ / atlasNames_[number], std::ios::binary);
                 if (ours)
                 {
-                    const std::vector<char> read((std::istreambuf_iterator<char>(ours)), std::istreambuf_iterator<char>());
+                    const std::vector<char> read((std::istreambuf_iterator<char>(ours)),
+                                                 std::istreambuf_iterator<char>());
                     bytes.emplace(read.size());
                     std::memcpy(bytes->data(), read.data(), read.size());
                     made = true;
@@ -923,7 +956,7 @@ struct SeenSum
 
 // What a ray from a place lands on, or nothing.
 inline std::optional<Lit> Look(Level &level, std::span<const Geometry *const> about, const core::Point &place,
-                        const core::Point &ray)
+                               const core::Point &ray)
 {
     const Geometry *nearest = nullptr;
     core::RayHit hit;

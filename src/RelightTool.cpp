@@ -45,7 +45,9 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -67,11 +69,10 @@ std::array<float, 3> ColourAt(const char *&at)
     return colour;
 }
 
-// Takes one value into the options; false for a name there is none of.
-bool Take(relighter::Options &options, const std::string &name, const std::string &value)
+// Takes a value that is one number into the options; false for a name that
+// is not one of those.
+bool TakeNumber(relighter::Options &options, const std::string &name, const std::string &value)
 {
-    const std::size_t colon = value.find(':');
-    const char *after = colon == std::string::npos ? "" : value.c_str() + colon + 1;
     if (name == "side")
     {
         options.side = static_cast<std::uint32_t>(std::strtoul(value.c_str(), nullptr, 10));
@@ -94,7 +95,7 @@ bool Take(relighter::Options &options, const std::string &name, const std::strin
     }
     else if (name == "bounces")
     {
-        options.bounces = std::atoi(value.c_str());
+        options.bounces = static_cast<int>(std::strtol(value.c_str(), nullptr, 10));
     }
     else if (name == "rays")
     {
@@ -108,49 +109,109 @@ bool Take(relighter::Options &options, const std::string &name, const std::strin
     {
         options.kept = std::strtof(value.c_str(), nullptr);
     }
-    else if (name == "flame")
+    else
     {
-        relighter::Flame flame;
-        flame.named = std::filesystem::path(value.substr(0, colon)).wstring();
-        flame.colour = ColourAt(after);
-        // The reach, then how far above its place it burns, then how far about it is clear.
-        flame.reach = 12.0F;
-        // And a fourth, 1 for a light that lands (a shaft through a roof): Relighter.h's Flame.
-        for (float *number : {&flame.reach, &flame.lift, &flame.clear, &flame.lands})
+        return false;
+    }
+    return true;
+}
+
+// A value that says what it is of by a name, `<name>:<numbers>`: the name,
+// and where in the value what follows its colon starts ("" with no colon).
+struct Named
+{
+    std::wstring named;
+    const char *after = "";
+};
+
+Named NamedIn(const std::string &value)
+{
+    const std::size_t colon = value.find(':');
+    return {std::filesystem::path(value.substr(0, colon)).wstring(),
+            colon == std::string::npos ? "" : value.c_str() + colon + 1};
+}
+
+relighter::Flame FlameOf(const std::string &value)
+{
+    const Named named = NamedIn(value);
+    const char *after = named.after;
+    relighter::Flame flame;
+    flame.named = named.named;
+    flame.colour = ColourAt(after);
+    // The reach, then how far above its place it burns, then how far about it is clear.
+    flame.reach = 12.0F;
+    // And a fourth, 1 for a light that lands (a shaft through a roof): Relighter.h's Flame.
+    for (float *number : {&flame.reach, &flame.lift, &flame.clear, &flame.lands})
+    {
+        if (*after != ':')
         {
-            if (*after != ':')
-            {
-                break;
-            }
-            char *end = nullptr;
-            *number = std::strtof(after + 1, &end);
-            after = end;
+            break;
         }
-        options.flames.push_back(std::move(flame));
+        char *end = nullptr;
+        *number = std::strtof(after + 1, &end);
+        after = end;
+    }
+    return flame;
+}
+
+relighter::Beam BeamOf(const std::string &value)
+{
+    const Named named = NamedIn(value);
+    const char *after = named.after;
+    relighter::Beam beam;
+    beam.named = named.named;
+    beam.colour = ColourAt(after);
+    if (*after == ':')
+    {
+        ++after;
+        beam.travels = ColourAt(after);
+    }
+    return beam;
+}
+
+// Takes the sky of the openings a beam of that name has, or of a beam of no light.
+void TakeSky(relighter::Options &options, const std::string &value)
+{
+    const Named named = NamedIn(value);
+    const char *after = named.after;
+    auto beam = std::ranges::find(options.beams, named.named, &relighter::Beam::named);
+    if (beam == options.beams.end())
+    {
+        options.beams.push_back({named.named, {}, {0, 0, -1}, {}});
+        beam = options.beams.end() - 1;
+    }
+    beam->sky = ColourAt(after);
+}
+
+relighter::Glow GlowOf(const std::string &value)
+{
+    const Named named = NamedIn(value);
+    const char *after = named.after;
+    relighter::Glow glow;
+    glow.named = named.named;
+    glow.colour = ColourAt(after);
+    glow.own = *after == ':' ? std::strtof(after + 1, nullptr) : 0.0F;
+    return glow;
+}
+
+// Takes one value into the options; false for a name there is none of.
+bool Take(relighter::Options &options, const std::string &name, const std::string &value)
+{
+    if (TakeNumber(options, name, value))
+    {
+        return true;
+    }
+    if (name == "flame")
+    {
+        options.flames.push_back(FlameOf(value));
     }
     else if (name == "beam")
     {
-        relighter::Beam beam;
-        beam.named = std::filesystem::path(value.substr(0, colon)).wstring();
-        beam.colour = ColourAt(after);
-        if (*after == ':')
-        {
-            ++after;
-            beam.travels = ColourAt(after);
-        }
-        options.beams.push_back(std::move(beam));
+        options.beams.push_back(BeamOf(value));
     }
     else if (name == "sky")
     {
-        // The sky of the openings a beam of that name has, or of a beam of no light.
-        const std::wstring named = std::filesystem::path(value.substr(0, colon)).wstring();
-        auto beam = std::ranges::find(options.beams, named, &relighter::Beam::named);
-        if (beam == options.beams.end())
-        {
-            options.beams.push_back({named, {}, {0, 0, -1}, {}});
-            beam = options.beams.end() - 1;
-        }
-        beam->sky = ColourAt(after);
+        TakeSky(options, value);
     }
     else if (name == "param" || name == "model" || name == "texture")
     {
@@ -158,11 +219,7 @@ bool Take(relighter::Options &options, const std::string &name, const std::strin
     }
     else if (name == "glow")
     {
-        relighter::Glow glow;
-        glow.named = std::filesystem::path(value.substr(0, colon)).wstring();
-        glow.colour = ColourAt(after);
-        glow.own = *after == ':' ? std::strtof(after + 1, nullptr) : 0.0F;
-        options.glows.push_back(std::move(glow));
+        options.glows.push_back(GlowOf(value));
     }
     else
     {
@@ -211,9 +268,9 @@ bool TakeFile(relighter::Options &options, const std::filesystem::path &file, co
     return has;
 }
 
-} // namespace
-
-int main(int argc, char **argv)
+// The command itself.
+// @return 0 for a level lit again, 1 for one that was not, 2 for a command not understood
+int Run(int argc, char **argv)
 {
     if (argc < 4)
     {
@@ -250,4 +307,25 @@ int main(int argc, char **argv)
     const std::size_t written = relighter::Relight(
         game / "packages" / "core" / "env" / level / (level.string() + ".rim"), game, argv[3], options);
     return written != 0 ? 0 : 1;
+}
+
+} // namespace
+
+int main(int argc, char **argv)
+{
+    // What cannot be done may be said by an exception, memory that runs out
+    // above all: it is said here in a line, where it was the runtime's to
+    // end the program with none (0xC0000409). By the C library, which throws
+    // nothing: the log makes its line in memory it asks for.
+    try
+    {
+        return Run(argc, argv);
+    }
+    catch (const std::exception &error)
+    {
+        std::fputs("elgarashaders_relight: ", stderr);
+        std::fputs(error.what(), stderr);
+        std::fputs("\n", stderr);
+        return 3;
+    }
 }

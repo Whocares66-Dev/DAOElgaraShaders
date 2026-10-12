@@ -15,11 +15,18 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdio>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <vector>
 
-int main(int argc, char **argv)
+namespace
+{
+
+// The command itself.
+// @return 0 for a level baked, 1 for one with no rooms baked, 2 for a command not understood
+int Run(int argc, char **argv)
 {
     if (argc < 3)
     {
@@ -46,4 +53,25 @@ int main(int argc, char **argv)
         out.write(reinterpret_cast<const char *>(file.data()), static_cast<std::streamsize>(file.size()));
     }
     return rooms.empty() ? 1 : 0;
+}
+
+} // namespace
+
+int main(int argc, char **argv)
+{
+    // What cannot be done may be said by an exception, memory that runs out
+    // above all: it is said here in a line, where it was the runtime's to
+    // end the program with none (0xC0000409). By the C library, which throws
+    // nothing: the log makes its line in memory it asks for.
+    try
+    {
+        return Run(argc, argv);
+    }
+    catch (const std::exception &error)
+    {
+        std::fputs("elgarashaders_bake: ", stderr);
+        std::fputs(error.what(), stderr);
+        std::fputs("\n", stderr);
+        return 3;
+    }
 }

@@ -70,10 +70,16 @@ function Find-ReparsePoint([string] $Path) {
 }
 
 function Remove-PluginFolder {
+    # (ShouldProcess because PSScriptAnalyzer asks it of a function that removes; the
+    # script has no -WhatIf, so the answer is always yes.)
+    [CmdletBinding(SupportsShouldProcess)]
+    param()
     if (-not (Test-Path $pluginFolder)) { return }
     $link = Find-ReparsePoint $pluginFolder
     if ($link) { throw "$link is a link; the plugin's folder is not deleted through one. Remove it by hand." }
-    Remove-Item -LiteralPath $pluginFolder -Recurse -Force
+    if ($PSCmdlet.ShouldProcess($pluginFolder, 'Remove the folder')) {
+        Remove-Item -LiteralPath $pluginFolder -Recurse -Force
+    }
 }
 
 if ($Remove) {

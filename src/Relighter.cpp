@@ -40,6 +40,7 @@
 #include <numbers>
 #include <set>
 #include <thread>
+#include <utility>
 
 #ifdef ELGARA_EMBREE
 #include <embree4/rtcore.h>
@@ -57,14 +58,14 @@ namespace
 
 using namespace levelfiles;
 
-constexpr float kOffSurface = 0.03F;  // metres a ray starts off its surface
-constexpr float kShortOfLamp = 0.35F; // metres a shadow's ray stops short of a lamp, which stands in its own fitting
-constexpr float kGlowReach = 45.0F;   // metres from which a glowing thing is not counted
+constexpr float kOffSurface = 0.03F;   // metres a ray starts off its surface
+constexpr float kShortOfLamp = 0.35F;  // metres a shadow's ray stops short of a lamp, which stands in its own fitting
+constexpr float kGlowReach = 45.0F;    // metres from which a glowing thing is not counted
 constexpr std::size_t kGlowTried = 16; // points of each glowing thing tried from a texel
 constexpr float kGlowNearest = 1.0F;   // metres: a point nearer than this lights as if it were this far
 constexpr float kGlowPointsAMetre = 6.0F; // points spread over a square metre of a glowing thing
 constexpr float kOwnPointsAMetre = 70.0F; // and of one that is lit by its own glow: some 0.12 m apart
-constexpr int kFilled = 4;            // texels the light is spread out past the triangles' edges
+constexpr int kFilled = 4;                // texels the light is spread out past the triangles' edges
 
 using Colour = probes::Colour;
 
@@ -173,12 +174,12 @@ struct Map
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::vector<Texel> texels;
-    std::vector<Colour> own; // the game's baked light
+    std::vector<Colour> own;       // the game's baked light
     std::vector<std::uint8_t> sun; // its alpha
-    std::vector<Colour> straight; // the light that came straight from a lamp or a glow
-    std::vector<Colour> glowed;   // the glows' part of it, before it is smoothed and added
-    std::vector<Colour> came;     // the light of the bounce before, to be read by the next
-    std::vector<Colour> whole;    // all of it
+    std::vector<Colour> straight;  // the light that came straight from a lamp or a glow
+    std::vector<Colour> glowed;    // the glows' part of it, before it is smoothed and added
+    std::vector<Colour> came;      // the light of the bounce before, to be read by the next
+    std::vector<Colour> whole;     // all of it
 };
 
 // Something that glows, as points over its surface.
@@ -187,8 +188,8 @@ struct Glowing
     std::vector<core::Point> points;
     std::vector<core::Point> facings;
     core::Point middle{};
-    float reach = 0;  // how far its furthest point is from its middle
-    float patch = 0;  // the square metres a point stands for
+    float reach = 0; // how far its furthest point is from its middle
+    float patch = 0; // the square metres a point stands for
     Colour colour{};
     bool sky = false; // an opening the sky is seen through: it sends light the way it faces, and downward
     float own = 0;    // of its colour, what its own surface is lit by
@@ -259,10 +260,10 @@ RTCScene MakeEmbree(Embree &held, const Scene &scene)
         }
         const std::size_t count = geometry->lit.size();
         RTCGeometry mesh = rtcNewGeometry(held.device, RTC_GEOMETRY_TYPE_TRIANGLE);
-        auto *corners = static_cast<float *>(rtcSetNewGeometryBuffer(mesh, RTC_BUFFER_TYPE_VERTEX, 0, RTC_FORMAT_FLOAT3,
-                                                                    3 * sizeof(float), 3 * count));
-        auto *indices = static_cast<unsigned *>(rtcSetNewGeometryBuffer(mesh, RTC_BUFFER_TYPE_INDEX, 0, RTC_FORMAT_UINT3,
-                                                                       3 * sizeof(unsigned), count));
+        auto *corners = static_cast<float *>(
+            rtcSetNewGeometryBuffer(mesh, RTC_BUFFER_TYPE_VERTEX, 0, RTC_FORMAT_FLOAT3, 3 * sizeof(float), 3 * count));
+        auto *indices = static_cast<unsigned *>(
+            rtcSetNewGeometryBuffer(mesh, RTC_BUFFER_TYPE_INDEX, 0, RTC_FORMAT_UINT3, 3 * sizeof(unsigned), count));
         if (corners == nullptr || indices == nullptr)
         {
             rtcReleaseGeometry(mesh);
@@ -336,7 +337,8 @@ core::Point WhereItBurns(Level &level, const std::wstring &id, const level::Room
         {
             for (std::size_t axis = 0; axis < 3; ++axis)
             {
-                sum.at(axis) += (triangle.corners.a.at(axis) + triangle.corners.b.at(axis) + triangle.corners.c.at(axis)) / 3;
+                sum.at(axis) +=
+                    (triangle.corners.a.at(axis) + triangle.corners.b.at(axis) + triangle.corners.c.at(axis)) / 3;
             }
         }
         const auto count = static_cast<float>(drawn.size());
@@ -410,11 +412,11 @@ void AddFlames(Scene &scene, std::span<const core::Point> flames, const Flame &f
     for (const Group &group : groups)
     {
         const core::Point middle = group.Middle();
-        const bool lit = std::ranges::any_of(scene.lamps.begin(), scene.lamps.begin() + static_cast<std::ptrdiff_t>(levelsOwn),
-                                             [&](const Lamp &has) {
-                                                 const core::Point apart = Sub(has.at, middle);
-                                                 return Dot(apart, apart) < kLampsOwn * kLampsOwn;
-                                             });
+        const bool lit = std::ranges::any_of(
+            scene.lamps.begin(), scene.lamps.begin() + static_cast<std::ptrdiff_t>(levelsOwn), [&](const Lamp &has) {
+                const core::Point apart = Sub(has.at, middle);
+                return Dot(apart, apart) < kLampsOwn * kLampsOwn;
+            });
         if (lit)
         {
             continue;
@@ -508,7 +510,8 @@ bool Blocked(const Scene &scene, std::uint32_t room, const core::Point &from, co
 // machine has to spare.
 template <class Work> void ForEach(std::size_t count, const Work &work)
 {
-    const unsigned threads = std::max(1U, std::thread::hardware_concurrency() > 3 ? std::thread::hardware_concurrency() - 2 : 1U);
+    const unsigned threads =
+        std::max(1U, std::thread::hardware_concurrency() > 3 ? std::thread::hardware_concurrency() - 2 : 1U);
     std::atomic<std::size_t> next{0};
     constexpr std::size_t kBatch = 256;
     const auto run = [&] {
@@ -537,6 +540,120 @@ template <class Work> void ForEach(std::size_t count, const Work &work)
     }
 }
 
+// A triangle's three corners in a lightmap, in texels.
+using InMap = std::array<std::array<float, 2>, 3>;
+
+// A texel's place on a triangle, as shares of its three corners.
+struct OnTriangle
+{
+    std::array<float, 3> shares{};
+    bool loose = false; // the triangle only comes near the texel's middle
+};
+
+// The place on a triangle's edges nearest a texel's middle, where an edge
+// comes within the texel's own square; nothing where none does.
+std::optional<std::array<float, 3>> NearestOnEdges(const InMap &uv, float px, float py)
+{
+    std::optional<std::array<float, 3>> shares;
+    float nearest = 0.55F; // texels, squared: within the texel's own square, about
+    for (std::size_t edge = 0; edge < 3; ++edge)
+    {
+        const std::array<float, 2> &from = uv.at(edge);
+        const std::array<float, 2> &to = uv.at((edge + 1) % 3);
+        const float ex = to[0] - from[0];
+        const float ey = to[1] - from[1];
+        const float along = std::clamp(
+            (((px - from[0]) * ex) + ((py - from[1]) * ey)) / std::max((ex * ex) + (ey * ey), 1e-12F), 0.0F, 1.0F);
+        const float dx = from[0] + (along * ex) - px;
+        const float dy = from[1] + (along * ey) - py;
+        if ((dx * dx) + (dy * dy) < nearest)
+        {
+            nearest = (dx * dx) + (dy * dy);
+            shares.emplace();
+            shares->at(edge) = 1 - along;
+            shares->at((edge + 1) % 3) = along;
+        }
+    }
+    return shares;
+}
+
+// Where a texel's middle is on a triangle: nothing for a texel the triangle
+// neither covers nor comes near, or only comes near and another has already.
+// @param area twice the triangle's own in the lightmap, signed
+// @param covered whether a triangle has the texel already
+std::optional<OnTriangle> PlaceOn(const InMap &uv, float area, float px, float py, bool covered)
+{
+    // The texel's middle as shares of the three corners; a little
+    // outside still counts, so a triangle's edge is not left bare.
+    const float b = (((px - uv[0][0]) * (uv[2][1] - uv[0][1])) - ((uv[2][0] - uv[0][0]) * (py - uv[0][1]))) / area;
+    const float c = (((uv[1][0] - uv[0][0]) * (py - uv[0][1])) - ((px - uv[0][0]) * (uv[1][1] - uv[0][1]))) / area;
+    const float a = 1 - b - c;
+    constexpr float kOutside = -0.02F;
+    const bool outside = a < kOutside || b < kOutside || c < kOutside;
+    if (!outside)
+    {
+        return OnTriangle{{a, b, c}, false};
+    }
+    // A triangle that covers no texel's middle, the riser of a
+    // step a hand high, still has texels drawn from: left
+    // bare, they were filled from whatever lay beside them in
+    // the lightmap, and a platform's edge shone as lava does
+    // (the user, 2026-10-11: "why's the platform edge glowing?
+    // that's not lava"). So a texel no triangle covers takes
+    // the nearest place on one that comes within its square.
+    if (covered)
+    {
+        return std::nullopt;
+    }
+    const std::optional<std::array<float, 3>> near = NearestOnEdges(uv, px, py);
+    return near ? std::optional<OnTriangle>(OnTriangle{*near, true}) : std::nullopt;
+}
+
+// Lays one triangle into its lightmap, for Lay.
+void LayTriangle(Map &map, std::uint32_t room, const level::LitTriangle &triangle, const core::Point &facing)
+{
+    const auto w = static_cast<float>(map.width);
+    const auto h = static_cast<float>(map.height);
+    const InMap uv{{{triangle.uv[0][0] * w, triangle.uv[0][1] * h},
+                    {triangle.uv[1][0] * w, triangle.uv[1][1] * h},
+                    {triangle.uv[2][0] * w, triangle.uv[2][1] * h}}};
+    const float area =
+        ((uv[1][0] - uv[0][0]) * (uv[2][1] - uv[0][1])) - ((uv[2][0] - uv[0][0]) * (uv[1][1] - uv[0][1]));
+    if (std::abs(area) < 1e-9F)
+    {
+        return;
+    }
+    const int left = std::max(0, static_cast<int>(std::floor(std::min({uv[0][0], uv[1][0], uv[2][0]}) - 0.5F)));
+    const int right = std::min(static_cast<int>(map.width) - 1,
+                               static_cast<int>(std::ceil(std::max({uv[0][0], uv[1][0], uv[2][0]}) + 0.5F)));
+    const int top = std::max(0, static_cast<int>(std::floor(std::min({uv[0][1], uv[1][1], uv[2][1]}) - 0.5F)));
+    const int bottom = std::min(static_cast<int>(map.height) - 1,
+                                static_cast<int>(std::ceil(std::max({uv[0][1], uv[1][1], uv[2][1]}) + 0.5F)));
+    for (int y = top; y <= bottom; ++y)
+    {
+        for (int x = left; x <= right; ++x)
+        {
+            Texel &texel = map.texels[(static_cast<std::size_t>(y) * map.width) + static_cast<std::size_t>(x)];
+            const std::optional<OnTriangle> on =
+                PlaceOn(uv, area, static_cast<float>(x) + 0.5F, static_cast<float>(y) + 0.5F, texel.covered);
+            if (!on)
+            {
+                continue;
+            }
+            texel.loose = on->loose;
+            texel.covered = true;
+            texel.room = room;
+            texel.facing = facing;
+            for (std::size_t axis = 0; axis < 3; ++axis)
+            {
+                texel.at.at(axis) = (on->shares[0] * triangle.corners.a.at(axis)) +
+                                    (on->shares[1] * triangle.corners.b.at(axis)) +
+                                    (on->shares[2] * triangle.corners.c.at(axis));
+            }
+        }
+    }
+}
+
 // Lays a room's triangles into the lightmaps: each texel whose middle a
 // triangle covers is given its place on the triangle and the triangle's
 // facing.
@@ -545,7 +662,8 @@ void Lay(Scene &scene, std::uint32_t room, const Geometry &geometry)
     std::vector<bool> ground(geometry.lit.size());
     for (const auto &[from, to] : geometry.ground)
     {
-        std::fill(ground.begin() + static_cast<std::ptrdiff_t>(from), ground.begin() + static_cast<std::ptrdiff_t>(to), true);
+        std::fill(ground.begin() + static_cast<std::ptrdiff_t>(from), ground.begin() + static_cast<std::ptrdiff_t>(to),
+                  true);
     }
     for (std::size_t index = 0; index < geometry.lit.size(); ++index)
     {
@@ -555,96 +673,94 @@ void Lay(Scene &scene, std::uint32_t room, const Geometry &geometry)
         {
             continue;
         }
-        Map &map = found->second;
-        core::Point facing = Unit(Cross(Sub(triangle.corners.b, triangle.corners.a), Sub(triangle.corners.c, triangle.corners.a)));
+        core::Point facing =
+            Unit(Cross(Sub(triangle.corners.b, triangle.corners.a), Sub(triangle.corners.c, triangle.corners.a)));
         if (ground[index] && facing[2] < 0)
         {
             facing = {-facing[0], -facing[1], -facing[2]};
         }
-        const auto w = static_cast<float>(map.width);
-        const auto h = static_cast<float>(map.height);
-        const std::array<std::array<float, 2>, 3> uv{{{triangle.uv[0][0] * w, triangle.uv[0][1] * h},
-                                                      {triangle.uv[1][0] * w, triangle.uv[1][1] * h},
-                                                      {triangle.uv[2][0] * w, triangle.uv[2][1] * h}}};
-        const float area = ((uv[1][0] - uv[0][0]) * (uv[2][1] - uv[0][1])) - ((uv[2][0] - uv[0][0]) * (uv[1][1] - uv[0][1]));
-        if (std::abs(area) < 1e-9F)
-        {
-            continue;
-        }
-        const int left = std::max(0, static_cast<int>(std::floor(std::min({uv[0][0], uv[1][0], uv[2][0]}) - 0.5F)));
-        const int right = std::min(static_cast<int>(map.width) - 1, static_cast<int>(std::ceil(std::max({uv[0][0], uv[1][0], uv[2][0]}) + 0.5F)));
-        const int top = std::max(0, static_cast<int>(std::floor(std::min({uv[0][1], uv[1][1], uv[2][1]}) - 0.5F)));
-        const int bottom = std::min(static_cast<int>(map.height) - 1, static_cast<int>(std::ceil(std::max({uv[0][1], uv[1][1], uv[2][1]}) + 0.5F)));
-        for (int y = top; y <= bottom; ++y)
-        {
-            for (int x = left; x <= right; ++x)
-            {
-                const float px = static_cast<float>(x) + 0.5F;
-                const float py = static_cast<float>(y) + 0.5F;
-                // The texel's middle as shares of the three corners; a little
-                // outside still counts, so a triangle's edge is not left bare.
-                const float b = (((px - uv[0][0]) * (uv[2][1] - uv[0][1])) - ((uv[2][0] - uv[0][0]) * (py - uv[0][1]))) / area;
-                const float c = (((uv[1][0] - uv[0][0]) * (py - uv[0][1])) - ((px - uv[0][0]) * (uv[1][1] - uv[0][1]))) / area;
-                const float a = 1 - b - c;
-                constexpr float kOutside = -0.02F;
-                Texel &texel = map.texels[(static_cast<std::size_t>(y) * map.width) + static_cast<std::size_t>(x)];
-                std::array<float, 3> shares{a, b, c};
-                if (a < kOutside || b < kOutside || c < kOutside)
-                {
-                    // A triangle that covers no texel's middle, the riser of a
-                    // step a hand high, still has texels drawn from: left
-                    // bare, they were filled from whatever lay beside them in
-                    // the lightmap, and a platform's edge shone as lava does
-                    // (the user, 2026-10-11: "why's the platform edge glowing?
-                    // that's not lava"). So a texel no triangle covers takes
-                    // the nearest place on one that comes within its square.
-                    if (texel.covered)
-                    {
-                        continue;
-                    }
-                    float nearest = 0.55F; // texels, squared: within the texel's own square, about
-                    bool near = false;
-                    for (std::size_t edge = 0; edge < 3; ++edge)
-                    {
-                        const std::array<float, 2> &from = uv.at(edge);
-                        const std::array<float, 2> &to = uv.at((edge + 1) % 3);
-                        const float ex = to[0] - from[0];
-                        const float ey = to[1] - from[1];
-                        const float along =
-                            std::clamp((((px - from[0]) * ex) + ((py - from[1]) * ey)) / std::max((ex * ex) + (ey * ey), 1e-12F),
-                                       0.0F, 1.0F);
-                        const float dx = from[0] + (along * ex) - px;
-                        const float dy = from[1] + (along * ey) - py;
-                        if ((dx * dx) + (dy * dy) < nearest)
-                        {
-                            nearest = (dx * dx) + (dy * dy);
-                            shares = {0, 0, 0};
-                            shares.at(edge) = 1 - along;
-                            shares.at((edge + 1) % 3) = along;
-                            near = true;
-                        }
-                    }
-                    if (!near)
-                    {
-                        continue;
-                    }
-                    texel.loose = true;
-                }
-                else
-                {
-                    texel.loose = false;
-                }
-                texel.covered = true;
-                texel.room = room;
-                texel.facing = facing;
-                for (std::size_t axis = 0; axis < 3; ++axis)
-                {
-                    texel.at.at(axis) = (shares[0] * triangle.corners.a.at(axis)) + (shares[1] * triangle.corners.b.at(axis)) +
-                                        (shares[2] * triangle.corners.c.at(axis));
-                }
-            }
-        }
+        LayTriangle(found->second, room, triangle, facing);
     }
+}
+
+// A light as it reaches a place: the way to it, and its light on a surface
+// that faces it.
+struct Reaching
+{
+    core::Point way{};
+    Colour strength{};
+};
+
+// A lamp's light at a place, with a ray cast for its shadow; nothing where
+// the lamp does not reach, is faced away from, or is shadowed.
+std::optional<Reaching> LampAt(const Scene &scene, std::uint32_t room, const core::Point &from,
+                               const core::Point *facing, const Options &options, const Lamp &lamp)
+{
+    const core::Point to = Sub(lamp.at, from);
+    const float far = std::sqrt(Dot(to, to));
+    // Every light falls off by the square of the distance, as light does
+    // (the user, 2026-10-11: "The light should behave in a physically
+    // accurate way"), from a ball of light `core` across and not from a
+    // point, so that a wall half a metre from a lamp is not thirty times
+    // as bright as the floor under it; and is brought to nothing at its
+    // reach with no edge.
+    //
+    // A lamp of the level's own says how strong it is by its colour and
+    // nothing by its reach: the mage tower's lanterns reach one metre,
+    // enough to colour their own fittings, and the light they were meant
+    // to give was in the game's bake. Fitted to that reach they "barely
+    // give off any light" (the user, 2026-10-11). So a lamp is its
+    // colour, by the look's `lamps`, a metre from a core a metre across,
+    // carrying twenty metres by `reach`.
+    constexpr float kLampCore = 1.0F;
+    constexpr float kLampCarries = 20.0F;
+    const bool ours = lamp.core > 0;
+    const float core = ours ? lamp.core : kLampCore;
+    const float reach = ours ? lamp.reach : kLampCarries * options.reach;
+    if (far >= reach || far < 1e-3F)
+    {
+        return std::nullopt;
+    }
+    const core::Point way{to[0] / far, to[1] / far, to[2] / far};
+    if (facing != nullptr && Dot(*facing, way) <= 0)
+    {
+        return std::nullopt;
+    }
+    const float shortOf = std::max(kShortOfLamp, lamp.clear);
+    if (far > shortOf && Blocked(scene, room, from, way, far - shortOf))
+    {
+        return std::nullopt;
+    }
+    const float within = 1 - ((far / reach) * (far / reach));
+    const float share = (ours ? 1.0F : options.lamps) * within * within / ((far * far) + (core * core));
+    return Reaching{way, Colour{share * lamp.colour[0], share * lamp.colour[1], share * lamp.colour[2]}};
+}
+
+// Whether a light from far off reaches a place: the way back along it goes
+// out by one of its openings before it meets anything of the level.
+bool BeamReaches(const Scene &scene, std::uint32_t room, const core::Point &from, const core::Point *facing,
+                 const Beaming &beam)
+{
+    constexpr float kBeamFar = 120.0F; // metres an opening may be from what it lights
+    if (!beam.openings || (facing != nullptr && Dot(*facing, beam.toSource) <= 0))
+    {
+        return false;
+    }
+    const std::optional<core::RayHit> out = beam.openings->Cast(from, beam.toSource, 1e-3F, kBeamFar);
+    if (!out || (out->distance > 0.1F && Blocked(scene, room, from, beam.toSource, out->distance - 0.05F)))
+    {
+        return false;
+    }
+    // The light comes in by an opening, from outside: a window in the wall
+    // the light is travelling towards lets none in, and with no word on
+    // which side is out, the wall about such a window was lit through it
+    // from the room (the user, 2026-10-11: "windows seem to have light
+    // shining on them instead of through them").
+    //
+    // (The tracery's own shadow is not cast: a window's model has its glass
+    // in it with its bars, and a pane that stops the light stops all of it.)
+    const bool fromInside = Dot(beam.toSource, beam.outward[out->triangle / 2]) <= 0;
+    return !fromInside;
 }
 
 // The lights that reach a place straight, each handed to `seen` as the way
@@ -657,69 +773,17 @@ void Direct(const Scene &scene, std::uint32_t room, const core::Point &from, con
 {
     for (const Lamp &lamp : scene.lamps)
     {
-        const core::Point to = Sub(lamp.at, from);
-        const float far = std::sqrt(Dot(to, to));
-        // Every light falls off by the square of the distance, as light does
-        // (the user, 2026-10-11: "The light should behave in a physically
-        // accurate way"), from a ball of light `core` across and not from a
-        // point, so that a wall half a metre from a lamp is not thirty times
-        // as bright as the floor under it; and is brought to nothing at its
-        // reach with no edge.
-        //
-        // A lamp of the level's own says how strong it is by its colour and
-        // nothing by its reach: the mage tower's lanterns reach one metre,
-        // enough to colour their own fittings, and the light they were meant
-        // to give was in the game's bake. Fitted to that reach they "barely
-        // give off any light" (the user, 2026-10-11). So a lamp is its
-        // colour, by the look's `lamps`, a metre from a core a metre across,
-        // carrying twenty metres by `reach`.
-        constexpr float kLampCore = 1.0F;
-        constexpr float kLampCarries = 20.0F;
-        const bool ours = lamp.core > 0;
-        const float core = ours ? lamp.core : kLampCore;
-        const float reach = ours ? lamp.reach : kLampCarries * options.reach;
-        if (far >= reach || far < 1e-3F)
+        if (const std::optional<Reaching> light = LampAt(scene, room, from, facing, options, lamp))
         {
-            continue;
+            seen(light->way, light->strength);
         }
-        const core::Point way{to[0] / far, to[1] / far, to[2] / far};
-        if (facing != nullptr && Dot(*facing, way) <= 0)
-        {
-            continue;
-        }
-        const float shortOf = std::max(kShortOfLamp, lamp.clear);
-        if (far > shortOf && Blocked(scene, room, from, way, far - shortOf))
-        {
-            continue;
-        }
-        const float within = 1 - ((far / reach) * (far / reach));
-        const float share = (ours ? 1.0F : options.lamps) * within * within / ((far * far) + (core * core));
-        seen(way, Colour{share * lamp.colour[0], share * lamp.colour[1], share * lamp.colour[2]});
     }
     for (const Beaming &beam : scene.beams)
     {
-        constexpr float kBeamFar = 120.0F; // metres an opening may be from what it lights
-        if (!beam.openings || (facing != nullptr && Dot(*facing, beam.toSource) <= 0))
+        if (BeamReaches(scene, room, from, facing, beam))
         {
-            continue;
+            seen(beam.toSource, beam.colour);
         }
-        const std::optional<core::RayHit> out = beam.openings->Cast(from, beam.toSource, 1e-3F, kBeamFar);
-        if (!out || (out->distance > 0.1F && Blocked(scene, room, from, beam.toSource, out->distance - 0.05F)))
-        {
-            continue;
-        }
-        // The light comes in by an opening, from outside: a window in the wall
-        // the light is travelling towards lets none in, and with no word on
-        // which side is out, the wall about such a window was lit through it
-        // from the room (the user, 2026-10-11: "windows seem to have light
-        // shining on them instead of through them").
-        if (Dot(beam.toSource, beam.outward[out->triangle / 2]) <= 0)
-        {
-            continue;
-        }
-        // (The tracery's own shadow is not cast: a window's model has its glass
-        // in it with its bars, and a pane that stops the light stops all of it.)
-        seen(beam.toSource, beam.colour);
     }
 }
 
@@ -834,8 +898,10 @@ Colour Straight(const Scene &scene, const Texel &texel, std::uint32_t seed, cons
 // The light a map has at a place of it, 0 to 1 each way, by the nearest texel.
 const Colour &At(const Map &map, const std::vector<Colour> &light, float u, float v)
 {
-    const auto x = static_cast<std::size_t>(std::clamp(u * static_cast<float>(map.width), 0.0F, static_cast<float>(map.width - 1)));
-    const auto y = static_cast<std::size_t>(std::clamp(v * static_cast<float>(map.height), 0.0F, static_cast<float>(map.height - 1)));
+    const auto x = static_cast<std::size_t>(
+        std::clamp(u * static_cast<float>(map.width), 0.0F, static_cast<float>(map.width - 1)));
+    const auto y = static_cast<std::size_t>(
+        std::clamp(v * static_cast<float>(map.height), 0.0F, static_cast<float>(map.height - 1)));
     return light[(y * map.width) + x];
 }
 
@@ -845,7 +911,8 @@ const Colour &At(const Map &map, const std::vector<Colour> &light, float u, floa
 Colour Back(const Scene &scene, const Texel &texel, std::uint32_t seed, const Options &options)
 {
     const core::Point from = Along(texel.at, texel.facing, kOffSurface);
-    const core::Point aside = Unit(std::abs(texel.facing[2]) < 0.9F ? Cross(texel.facing, {0, 0, 1}) : Cross(texel.facing, {1, 0, 0}));
+    const core::Point aside =
+        Unit(std::abs(texel.facing[2]) < 0.9F ? Cross(texel.facing, {0, 0, 1}) : Cross(texel.facing, {1, 0, 0}));
     const core::Point other = Cross(texel.facing, aside);
     Colour sum{};
     for (std::size_t ray = 0; ray < options.rays; ++ray)
@@ -853,10 +920,12 @@ Colour Back(const Scene &scene, const Texel &texel, std::uint32_t seed, const Op
         const float turn = 2 * std::numbers::pi_v<float> * Chance(seed, static_cast<std::uint32_t>(ray), 7);
         const float out = std::sqrt(Chance(seed, static_cast<std::uint32_t>(ray), 13));
         const float up = std::sqrt(std::max(0.0F, 1 - (out * out)));
-        const core::Point way{(aside[0] * out * std::cos(turn)) + (other[0] * out * std::sin(turn)) + (texel.facing[0] * up),
-                              (aside[1] * out * std::cos(turn)) + (other[1] * out * std::sin(turn)) + (texel.facing[1] * up),
-                              (aside[2] * out * std::cos(turn)) + (other[2] * out * std::sin(turn)) + (texel.facing[2] * up)};
-        const std::optional<Landing> landing = Cast(scene, texel.room, from, way, std::numeric_limits<float>::infinity());
+        const core::Point way{
+            (aside[0] * out * std::cos(turn)) + (other[0] * out * std::sin(turn)) + (texel.facing[0] * up),
+            (aside[1] * out * std::cos(turn)) + (other[1] * out * std::sin(turn)) + (texel.facing[1] * up),
+            (aside[2] * out * std::cos(turn)) + (other[2] * out * std::sin(turn)) + (texel.facing[2] * up)};
+        const std::optional<Landing> landing =
+            Cast(scene, texel.room, from, way, std::numeric_limits<float>::infinity());
         if (!landing)
         {
             continue;
@@ -868,9 +937,10 @@ Colour Back(const Scene &scene, const Texel &texel, std::uint32_t seed, const Op
             continue;
         }
         const float w = 1 - landing->hit.u - landing->hit.v;
-        const Colour &there = At(map->second, map->second.came,
-                                 (w * triangle.uv[0][0]) + (landing->hit.u * triangle.uv[1][0]) + (landing->hit.v * triangle.uv[2][0]),
-                                 (w * triangle.uv[0][1]) + (landing->hit.u * triangle.uv[1][1]) + (landing->hit.v * triangle.uv[2][1]));
+        const Colour &there =
+            At(map->second, map->second.came,
+               (w * triangle.uv[0][0]) + (landing->hit.u * triangle.uv[1][0]) + (landing->hit.v * triangle.uv[2][0]),
+               (w * triangle.uv[0][1]) + (landing->hit.u * triangle.uv[1][1]) + (landing->hit.v * triangle.uv[2][1]));
         for (std::size_t channel = 0; channel < 3; ++channel)
         {
             sum.at(channel) += there.at(channel);
@@ -909,7 +979,8 @@ void Smooth(std::span<const std::pair<Map *, std::uint32_t>> order, std::vector<
                 const std::size_t at = (static_cast<std::size_t>(ny) * map.width) + static_cast<std::size_t>(nx);
                 const Texel &other = map.texels[at];
                 const core::Point apart = Sub(other.at, texel.at);
-                if (!other.covered || Dot(other.facing, texel.facing) < kSameFacing || Dot(apart, apart) > kNearby * kNearby)
+                if (!other.covered || Dot(other.facing, texel.facing) < kSameFacing ||
+                    Dot(apart, apart) > kNearby * kNearby)
                 {
                     continue;
                 }
@@ -926,6 +997,43 @@ void Smooth(std::span<const std::pair<Map *, std::uint32_t>> order, std::vector<
     {
         (order[i].first->*which)[order[i].second] = smooth[i];
     }
+}
+
+// The mean light of the texels about one that have any, of the eight beside
+// it; nothing where none of them has.
+// @param has which texels of the map have light
+std::optional<Colour> MeanAbout(const Map &map, const std::vector<bool> &has, const std::vector<Colour> &light, int x,
+                                int y)
+{
+    Colour sum{};
+    int count = 0;
+    for (int dy = -1; dy <= 1; ++dy)
+    {
+        for (int dx = -1; dx <= 1; ++dx)
+        {
+            const int nx = x + dx;
+            const int ny = y + dy;
+            if (nx < 0 || ny < 0 || std::cmp_greater_equal(nx, map.width) || std::cmp_greater_equal(ny, map.height))
+            {
+                continue;
+            }
+            const std::size_t near = (static_cast<std::size_t>(ny) * map.width) + static_cast<std::size_t>(nx);
+            if (has[near])
+            {
+                ++count;
+                for (std::size_t channel = 0; channel < 3; ++channel)
+                {
+                    sum.at(channel) += light[near].at(channel);
+                }
+            }
+        }
+    }
+    if (count == 0)
+    {
+        return std::nullopt;
+    }
+    return Colour{sum[0] / static_cast<float>(count), sum[1] / static_cast<float>(count),
+                  sum[2] / static_cast<float>(count)};
 }
 
 // Gives the texels no triangle covers the mean of their covered neighbours',
@@ -951,32 +1059,10 @@ void Fill(const Map &map, std::vector<Colour> &light)
                 {
                     continue;
                 }
-                Colour sum{};
-                int count = 0;
-                for (int dy = -1; dy <= 1; ++dy)
+                if (const std::optional<Colour> mean =
+                        MeanAbout(map, has, light, static_cast<int>(x), static_cast<int>(y)))
                 {
-                    for (int dx = -1; dx <= 1; ++dx)
-                    {
-                        const int nx = static_cast<int>(x) + dx;
-                        const int ny = static_cast<int>(y) + dy;
-                        if (nx < 0 || ny < 0 || nx >= static_cast<int>(map.width) || ny >= static_cast<int>(map.height))
-                        {
-                            continue;
-                        }
-                        const std::size_t near = (static_cast<std::size_t>(ny) * map.width) + static_cast<std::size_t>(nx);
-                        if (has[near])
-                        {
-                            ++count;
-                            for (std::size_t channel = 0; channel < 3; ++channel)
-                            {
-                                sum.at(channel) += light[near].at(channel);
-                            }
-                        }
-                    }
-                }
-                if (count != 0)
-                {
-                    filled[at] = {sum[0] / static_cast<float>(count), sum[1] / static_cast<float>(count), sum[2] / static_cast<float>(count)};
+                    filled[at] = *mean;
                     next[at] = true;
                 }
             }
@@ -986,12 +1072,56 @@ void Fill(const Map &map, std::vector<Colour> &light)
     }
 }
 
+// The whole number nearest a number that is not less than nothing, a half
+// going up, as a byte. By the sum and not by std::lround, which is the plain
+// way to say it: the float just under a half and a half make one, where
+// std::lround makes nothing of it, and a lightmap is to be what it was to
+// the byte.
+std::uint8_t NearestByte(float value)
+{
+    return static_cast<std::uint8_t>(std::floor(value + 0.5F));
+}
+
+// A picture, four numbers a pixel, row by row.
+using Picture = std::vector<std::array<float, 4>>;
+
+// A picture at half its size each way, a pixel the mean of the four it
+// covers: the next smaller of a DDS file's.
+Picture Halved(const Picture &picture, std::uint32_t width, std::uint32_t height)
+{
+    const std::uint32_t nextWidth = std::max(width / 2, 1U);
+    const std::uint32_t nextHeight = std::max(height / 2, 1U);
+    Picture half(std::size_t{nextWidth} * nextHeight);
+    for (std::uint32_t y = 0; y < nextHeight; ++y)
+    {
+        for (std::uint32_t x = 0; x < nextWidth; ++x)
+        {
+            std::array<float, 4> sum{};
+            for (std::uint32_t dy = 0; dy < 2; ++dy)
+            {
+                for (std::uint32_t dx = 0; dx < 2; ++dx)
+                {
+                    const std::array<float, 4> &from =
+                        picture[(std::size_t{std::min((2 * y) + dy, height - 1)} * width) +
+                                std::min((2 * x) + dx, width - 1)];
+                    for (std::size_t channel = 0; channel < 4; ++channel)
+                    {
+                        sum.at(channel) += from.at(channel) / 4;
+                    }
+                }
+            }
+            half[(std::size_t{y} * nextWidth) + x] = sum;
+        }
+    }
+    return half;
+}
+
 // A lightmap as a DDS file, not packed, with its smaller pictures after it.
 std::vector<std::byte> DdsOf(const Map &map, const Options &options)
 {
     std::uint32_t width = map.width;
     std::uint32_t height = map.height;
-    std::vector<std::array<float, 4>> picture(std::size_t{width} * height);
+    Picture picture(std::size_t{width} * height);
     for (std::size_t i = 0; i < picture.size(); ++i)
     {
         for (std::size_t channel = 0; channel < 3; ++channel)
@@ -1031,35 +1161,12 @@ std::vector<std::byte> DdsOf(const Map &map, const Options &options)
         {
             for (const std::size_t channel : {std::size_t{2}, std::size_t{1}, std::size_t{0}, std::size_t{3}})
             {
-                file.push_back(static_cast<std::byte>(static_cast<std::uint8_t>((pixel.at(channel) * 255.0F) + 0.5F)));
+                file.push_back(static_cast<std::byte>(NearestByte(pixel.at(channel) * 255.0F)));
             }
         }
-        const std::uint32_t nextWidth = std::max(width / 2, 1U);
-        const std::uint32_t nextHeight = std::max(height / 2, 1U);
-        std::vector<std::array<float, 4>> half(std::size_t{nextWidth} * nextHeight);
-        for (std::uint32_t y = 0; y < nextHeight; ++y)
-        {
-            for (std::uint32_t x = 0; x < nextWidth; ++x)
-            {
-                std::array<float, 4> sum{};
-                for (std::uint32_t dy = 0; dy < 2; ++dy)
-                {
-                    for (std::uint32_t dx = 0; dx < 2; ++dx)
-                    {
-                        const std::array<float, 4> &from =
-                            picture[(std::size_t{std::min((2 * y) + dy, height - 1)} * width) + std::min((2 * x) + dx, width - 1)];
-                        for (std::size_t channel = 0; channel < 4; ++channel)
-                        {
-                            sum.at(channel) += from.at(channel) / 4;
-                        }
-                    }
-                }
-                half[(std::size_t{y} * nextWidth) + x] = sum;
-            }
-        }
-        picture = std::move(half);
-        width = nextWidth;
-        height = nextHeight;
+        picture = Halved(picture, width, height);
+        width = std::max(width / 2, 1U);
+        height = std::max(height / 2, 1U);
     }
     return file;
 }
@@ -1082,7 +1189,8 @@ void Shrink(const core::dds::Image &image, Map &map)
                 for (std::uint32_t dx = 0; dx < across; ++dx)
                 {
                     const std::size_t at = ((std::size_t{std::min((y * down) + dy, image.height - 1)} * image.width) +
-                                            std::min((x * across) + dx, image.width - 1)) * 4;
+                                            std::min((x * across) + dx, image.width - 1)) *
+                                           4;
                     for (std::size_t channel = 0; channel < 4; ++channel)
                     {
                         sum.at(channel) += static_cast<float>(image.rgba[at + channel]);
@@ -1092,9 +1200,88 @@ void Shrink(const core::dds::Image &image, Map &map)
             const float count = static_cast<float>(across * down) * 255.0F;
             const std::size_t to = (std::size_t{y} * map.width) + x;
             map.own[to] = {sum[0] / count, sum[1] / count, sum[2] / count};
-            map.sun[to] = static_cast<std::uint8_t>((sum[3] / static_cast<float>(across * down)) + 0.5F);
+            map.sun[to] = NearestByte(sum[3] / static_cast<float>(across * down));
         }
     }
+}
+
+// The triangles of a glowing thing, each with the area of those up to and
+// with it, in square metres: a place along that sum is a triangle, a larger
+// one the likelier.
+using GlowingParts = std::vector<std::pair<float, const Level::Drawn *>>;
+
+// Those of a model's triangles that a rule says glow.
+GlowingParts PartsThatGlow(const std::vector<Level::Drawn> &drawn, const level::Placed &placed, const Glow &rule)
+{
+    GlowingParts parts;
+    float area = 0;
+    // By its material's name, or by the model's own: a house's lit
+    // window in Orzammar (dne_window*) is of the material its walls
+    // are of, and no material's name tells it from them.
+    const bool whole = Lower(placed.file).find(Lower(rule.named)) != std::wstring::npos;
+    for (const Level::Drawn &triangle : drawn)
+    {
+        if (!whole && triangle.material->find(Lower(rule.named)) == std::wstring::npos)
+        {
+            continue;
+        }
+        const core::Point across =
+            Cross(Sub(triangle.corners.b, triangle.corners.a), Sub(triangle.corners.c, triangle.corners.a));
+        area += 0.5F * std::sqrt(Dot(across, across));
+        parts.emplace_back(area, &triangle);
+    }
+    return parts;
+}
+
+// What a rule makes of a model: the part of it that glows, as points spread
+// evenly over its surface; nothing for a model with none of it.
+// @param seed what the points' chances are drawn by, each thing's its own
+std::optional<Glowing> GlowOf(const std::vector<Level::Drawn> &drawn, const level::Placed &placed, const Glow &rule,
+                              std::uint32_t seed)
+{
+    const GlowingParts parts = PartsThatGlow(drawn, placed, rule);
+    const float area = parts.empty() ? 0.0F : parts.back().first;
+    if (parts.empty() || area < 1e-4F)
+    {
+        return std::nullopt;
+    }
+    Glowing glow;
+    glow.colour = rule.colour;
+    glow.own = rule.own;
+    // A thing lit by its own glow is found again by its points
+    // (Straight), and wants them close together.
+    const float density = rule.own > 0 ? kOwnPointsAMetre : kGlowPointsAMetre;
+    const auto count = static_cast<std::size_t>(std::clamp(area * density, 4.0F, 256.0F));
+    glow.patch = area / static_cast<float>(count);
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        const float along = (static_cast<float>(i) + 0.5F) / static_cast<float>(count) * area;
+        const auto part = std::ranges::lower_bound(parts, along, {}, [](const auto &entry) { return entry.first; });
+        const Level::Drawn &triangle = *(part != parts.end() ? part : parts.end() - 1)->second;
+        float b = Chance(seed, static_cast<std::uint32_t>(i), 1);
+        float c = Chance(seed, static_cast<std::uint32_t>(i), 2);
+        if (b + c > 1)
+        {
+            b = 1 - b;
+            c = 1 - c;
+        }
+        core::Point point{};
+        for (std::size_t axis = 0; axis < 3; ++axis)
+        {
+            point.at(axis) = ((1 - b - c) * triangle.corners.a.at(axis)) + (b * triangle.corners.b.at(axis)) +
+                             (c * triangle.corners.c.at(axis));
+            glow.middle.at(axis) += point.at(axis) / static_cast<float>(count);
+        }
+        glow.points.push_back(point);
+        glow.facings.push_back(
+            Unit(Cross(Sub(triangle.corners.b, triangle.corners.a), Sub(triangle.corners.c, triangle.corners.a))));
+    }
+    for (const core::Point &point : glow.points)
+    {
+        const core::Point apart = Sub(point, glow.middle);
+        glow.reach = std::max(glow.reach, std::sqrt(Dot(apart, apart)));
+    }
+    return glow;
 }
 
 // What glows among the models a room places, each model one glowing thing.
@@ -1110,63 +1297,10 @@ void FindGlows(Level &level, const std::wstring &id, const Options &options, std
         const std::vector<Level::Drawn> drawn = level.TrianglesOf(id, placed);
         for (const Glow &rule : options.glows)
         {
-            Glowing glow;
-            glow.colour = rule.colour;
-            glow.own = rule.own;
-            float area = 0;
-            std::vector<std::pair<float, const Level::Drawn *>> parts;
-            // By its material's name, or by the model's own: a house's lit
-            // window in Orzammar (dne_window*) is of the material its walls
-            // are of, and no material's name tells it from them.
-            const bool whole = Lower(placed.file).find(Lower(rule.named)) != std::wstring::npos;
-            for (const Level::Drawn &triangle : drawn)
+            if (std::optional<Glowing> glow = GlowOf(drawn, placed, rule, static_cast<std::uint32_t>(out.size())))
             {
-                if (!whole && triangle.material->find(Lower(rule.named)) == std::wstring::npos)
-                {
-                    continue;
-                }
-                const core::Point across = Cross(Sub(triangle.corners.b, triangle.corners.a), Sub(triangle.corners.c, triangle.corners.a));
-                area += 0.5F * std::sqrt(Dot(across, across));
-                parts.emplace_back(area, &triangle);
+                out.push_back(std::move(*glow));
             }
-            if (parts.empty() || area < 1e-4F)
-            {
-                continue;
-            }
-            // A thing lit by its own glow is found again by its points
-            // (Straight), and wants them close together.
-            const float density = rule.own > 0 ? kOwnPointsAMetre : kGlowPointsAMetre;
-            const auto count = static_cast<std::size_t>(std::clamp(area * density, 4.0F, 256.0F));
-            glow.patch = area / static_cast<float>(count);
-            const auto seed = static_cast<std::uint32_t>(out.size());
-            for (std::size_t i = 0; i < count; ++i)
-            {
-                const float along = (static_cast<float>(i) + 0.5F) / static_cast<float>(count) * area;
-                const auto part = std::ranges::lower_bound(parts, along, {}, [](const auto &entry) { return entry.first; });
-                const Level::Drawn &triangle = *(part != parts.end() ? part : parts.end() - 1)->second;
-                float b = Chance(seed, static_cast<std::uint32_t>(i), 1);
-                float c = Chance(seed, static_cast<std::uint32_t>(i), 2);
-                if (b + c > 1)
-                {
-                    b = 1 - b;
-                    c = 1 - c;
-                }
-                core::Point point{};
-                for (std::size_t axis = 0; axis < 3; ++axis)
-                {
-                    point.at(axis) = ((1 - b - c) * triangle.corners.a.at(axis)) + (b * triangle.corners.b.at(axis)) +
-                                     (c * triangle.corners.c.at(axis));
-                    glow.middle.at(axis) += point.at(axis) / static_cast<float>(count);
-                }
-                glow.points.push_back(point);
-                glow.facings.push_back(Unit(Cross(Sub(triangle.corners.b, triangle.corners.a), Sub(triangle.corners.c, triangle.corners.a))));
-            }
-            for (const core::Point &point : glow.points)
-            {
-                const core::Point apart = Sub(point, glow.middle);
-                glow.reach = std::max(glow.reach, std::sqrt(Dot(apart, apart)));
-            }
-            out.push_back(std::move(glow));
         }
     }
 }
@@ -1221,9 +1355,10 @@ std::optional<probes::Coefficients> ProbeAt(const Scene &scene, std::uint32_t ro
             continue;
         }
         const float w = 1 - landing->hit.u - landing->hit.v;
-        const Colour &there = At(map->second, map->second.whole,
-                                 (w * triangle.uv[0][0]) + (landing->hit.u * triangle.uv[1][0]) + (landing->hit.v * triangle.uv[2][0]),
-                                 (w * triangle.uv[0][1]) + (landing->hit.u * triangle.uv[1][1]) + (landing->hit.v * triangle.uv[2][1]));
+        const Colour &there =
+            At(map->second, map->second.whole,
+               (w * triangle.uv[0][0]) + (landing->hit.u * triangle.uv[1][0]) + (landing->hit.v * triangle.uv[2][0]),
+               (w * triangle.uv[0][1]) + (landing->hit.u * triangle.uv[1][1]) + (landing->hit.v * triangle.uv[2][1]));
         add(ray, there, options.surfaces * each);
     }
     if (static_cast<float>(close) > 0.3F * static_cast<float>(rays.size()))
@@ -1351,18 +1486,65 @@ std::optional<Tile> TileOfAnyDetail(std::wstring_view id)
     return TileOf(std::wstring(id.substr(0, last)) + L"_0");
 }
 
-// Lights one world of a level's rooms and writes its lightmaps: the rooms
-// `ids` are the world, each lit and each in the way of the others' light.
-// @param sources the rooms whose definitions place the level's fittings
-// @param withProbes whether the figures' probes are made of this world
-// @param done the lightmaps written so far, by name: none is written twice
-// @return how many lightmaps were written
-std::size_t LightRooms(Level &level, const std::filesystem::path &levelRim, const std::filesystem::path &out,
-                       const Options &options, const std::vector<std::wstring> &ids,
-                       const std::vector<std::wstring> &sources, bool withProbes, std::set<std::wstring> &done)
+// The rooms a ray from a room may land in, the room itself the first.
+// @param numbers each of the world's rooms' place in `ids`, by its name
+// @param room the room's own place in `ids`
+std::vector<std::size_t> RoomsAbout(Level &level, const std::vector<std::wstring> &ids,
+                                    const std::map<std::wstring, std::size_t> &numbers, std::size_t room)
 {
-    const auto began = std::chrono::steady_clock::now();
-    Scene scene;
+    std::vector<std::size_t> about{room};
+    for (const std::wstring &seen : level.SeenFrom(ids[room]))
+    {
+        if (const auto found = numbers.find(seen); found != numbers.end())
+        {
+            about.push_back(found->second);
+        }
+    }
+    // A tile's far detail has the tiles about it by its name; and the
+    // level's own room, its backdrop and the shell of its cave, is about
+    // every room as every room is about it.
+    if (const std::optional<Tile> tile =
+            level.Terrain() && !TileOf(ids[room]) ? TileOfAnyDetail(ids[room]) : std::nullopt)
+    {
+        for (std::size_t other = 0; other < ids.size(); ++other)
+        {
+            const std::optional<Tile> there = other != room ? TileOfAnyDetail(ids[other]) : std::nullopt;
+            if (there && std::abs(there->x - tile->x) <= kTilesAbout && std::abs(there->y - tile->y) <= kTilesAbout)
+            {
+                about.push_back(other);
+            }
+        }
+    }
+    for (std::size_t other = 0; other < ids.size(); ++other)
+    {
+        if (other != room && (ids[room].empty() || ids[other].empty()))
+        {
+            about.push_back(other);
+        }
+    }
+    return about;
+}
+
+// The lamps a room's layouts have. A tile's lamps are in the layout its
+// definition places, and in a terrain level that is often the layout of the
+// tile's other detail alone (Orzammar's Commons: <x>_<y>_1_ll in the level's
+// own archive, 60 lamps in all, of which the tiles seen from near name 27).
+std::vector<Lamp> LampsOfRoom(Level &level, const std::wstring &id)
+{
+    std::vector<Lamp> lamps = level.LampsOf(id);
+    if (level.Terrain() && id.ends_with(L"_0"))
+    {
+        const std::vector<Lamp> others = level.LampsOf(id.substr(0, id.size() - 1) + L"1");
+        lamps.insert(lamps.end(), others.begin(), others.end());
+    }
+    return lamps;
+}
+
+// The first step of lighting a world: its rooms into the scene, each with
+// its triangles, the box about them and the rooms about it, and with them
+// the lamps of the level's own and what glows.
+void GatherRooms(Level &level, Scene &scene, const Options &options, const std::vector<std::wstring> &ids)
+{
     scene.rooms.resize(ids.size());
     std::map<std::wstring, std::size_t> numbers;
     for (std::size_t i = 0; i < ids.size(); ++i)
@@ -1379,48 +1561,8 @@ std::size_t LightRooms(Level &level, const std::filesystem::path &levelRim, cons
             lit.box.Add(triangle.corners.b);
             lit.box.Add(triangle.corners.c);
         }
-        lit.about.push_back(i);
-        for (const std::wstring &seen : level.SeenFrom(ids[i]))
-        {
-            if (const auto found = numbers.find(seen); found != numbers.end())
-            {
-                lit.about.push_back(found->second);
-            }
-        }
-        // A tile's far detail has the tiles about it by its name; and the
-        // level's own room, its backdrop and the shell of its cave, is about
-        // every room as every room is about it.
-        if (const std::optional<Tile> tile = level.Terrain() && !TileOf(ids[i]) ? TileOfAnyDetail(ids[i]) : std::nullopt)
-        {
-            for (std::size_t other = 0; other < ids.size(); ++other)
-            {
-                const std::optional<Tile> there = other != i ? TileOfAnyDetail(ids[other]) : std::nullopt;
-                if (there && std::abs(there->x - tile->x) <= kTilesAbout && std::abs(there->y - tile->y) <= kTilesAbout)
-                {
-                    lit.about.push_back(other);
-                }
-            }
-        }
-        for (std::size_t other = 0; other < ids.size(); ++other)
-        {
-            if (other != i && (ids[i].empty() || ids[other].empty()))
-            {
-                lit.about.push_back(other);
-            }
-        }
-        // A tile's lamps are in the layout its definition places, and in a
-        // terrain level that is often the layout of the tile's other detail
-        // alone (Orzammar's Commons: <x>_<y>_1_ll in the level's own archive,
-        // 60 lamps in all, of which the tiles seen from near name 27).
-        std::vector<Lamp> lamps = level.LampsOf(ids[i]);
-        if (level.Terrain() && ids[i].ends_with(L"_0"))
-        {
-            for (const Lamp &lamp : level.LampsOf(ids[i].substr(0, ids[i].size() - 1) + L"1"))
-            {
-                lamps.push_back(lamp);
-            }
-        }
-        for (const Lamp &lamp : lamps)
+        lit.about = RoomsAbout(level, ids, numbers, i);
+        for (const Lamp &lamp : LampsOfRoom(level, ids[i]))
         {
             AddLamp(scene, lamp, options);
         }
@@ -1430,22 +1572,31 @@ std::size_t LightRooms(Level &level, const std::filesystem::path &levelRim, cons
     {
         AddLamp(scene, lamp, options);
     }
-    const char *caster = "DAOLib's tree, a room at a time";
+}
+
 #ifdef ELGARA_EMBREE
-    Embree embree;
-    if (options.caster != 0)
+// Makes Embree's scene of the world for the rays to be cast by, and says how
+// long that took.
+// @param name the level's, for the log
+// @return whether there is one: the rays are DAOLib's tree's where not
+bool CastByEmbree(Embree &held, Scene &scene, const std::string &name)
+{
+    const auto before = std::chrono::steady_clock::now();
+    scene.embree = MakeEmbree(held, scene);
+    if (scene.embree == nullptr)
     {
-        const auto before = std::chrono::steady_clock::now();
-        scene.embree = MakeEmbree(embree, scene);
-        if (scene.embree != nullptr)
-        {
-            caster = "Embree, the world as one scene";
-            spdlog::info("relight: {}: Embree's scene made in {} ms", levelRim.stem().string(),
-                         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - before).count());
-        }
+        return false;
     }
+    spdlog::info(
+        "relight: {}: Embree's scene made in {} ms", name,
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - before).count());
+    return true;
+}
 #endif
-    // The level's middle: the middle of its rooms' boxes together.
+
+// The level's middle: the middle of its rooms' boxes together.
+core::Point MiddleOf(const Scene &scene)
+{
     Box all;
     for (const RoomLit &lit : scene.rooms)
     {
@@ -1455,172 +1606,266 @@ std::size_t LightRooms(Level &level, const std::filesystem::path &levelRim, cons
             all.Add(lit.box.high);
         }
     }
-    const core::Point levelMiddle{(all.low[0] + all.high[0]) / 2, (all.low[1] + all.high[1]) / 2,
-                                  (all.low[2] + all.high[2]) / 2};
-    // The openings of each light from far off, the whole level's together. A
-    // window as the level has it is a model of its tracery alone, gilded bars
-    // before a dark pane that is the wall's own: with the bars themselves
-    // taken for the opening, the moon lit slivers of sill and arch beside
-    // them and nothing else (the user, 2026-10-11: "where's this random blue
-    // from?"). So a window's opening is the flat of its model, as wide and as
-    // high as the model is, a little in from its edges; and the bars are
-    // what stands in it, and shade what is behind them.
-    for (const Beam &beam : options.beams)
+    return {(all.low[0] + all.high[0]) / 2, (all.low[1] + all.high[1]) / 2, (all.low[2] + all.high[2]) / 2};
+}
+
+constexpr float kInFromTheEdge = 0.92F; // of a window's width and height, what its opening is
+
+// A window as the flat it is: its model's own three ways in the level, and
+// how far the opening's triangles go along each.
+struct Flat
+{
+    core::Point origin{};              // the model's own place in the level
+    std::array<core::Point, 3> ways{}; // its three ways, each of length 1
+    std::array<float, 3> low{};        // the least and the most its triangles go along each, from the origin
+    std::array<float, 3> high{};
+    std::size_t thin = 0; // the way it goes least along: its thickness, through the wall
+    std::size_t u = 0;    // and the two ways it is wide and high along
+    std::size_t v = 0;
+
+    float Wide() const
     {
-        constexpr float kInFromTheEdge = 0.92F;
-        std::vector<core::Triangle> openings;
-        std::vector<core::Triangle> bars;
-        std::vector<core::Point> outward;
-        std::size_t faced = 0; // openings with a face of the wall before them
-        for (std::size_t index = 0; index < ids.size(); ++index)
+        return high.at(u) - low.at(u);
+    }
+    float High() const
+    {
+        return high.at(v) - low.at(v);
+    }
+    float Thick() const
+    {
+        return high.at(thin) - low.at(thin);
+    }
+    // A place of the flat: `su` and `sv` from -1 to 1 across it and up it,
+    // a little in from its edges, and `off` metres out of it along its
+    // thickness.
+    core::Point Corner(float su, float sv, float off) const
+    {
+        const float alongU = ((low.at(u) + high.at(u)) / 2) + (su * kInFromTheEdge * (high.at(u) - low.at(u)) / 2);
+        const float alongV = ((low.at(v) + high.at(v)) / 2) + (sv * kInFromTheEdge * (high.at(v) - low.at(v)) / 2);
+        const float alongThin = ((low.at(thin) + high.at(thin)) / 2) + off;
+        core::Point at = origin;
+        for (std::size_t axis = 0; axis < 3; ++axis)
         {
-            const std::wstring &id = ids[index];
-            const level::Room *room = level.RoomOf(id);
-            for (const level::Placed &placed : room != nullptr ? room->models : std::vector<level::Placed>{})
+            at.at(axis) +=
+                (ways.at(u).at(axis) * alongU) + (ways.at(v).at(axis) * alongV) + (ways.at(thin).at(axis) * alongThin);
+        }
+        return at;
+    }
+};
+
+// The flat of a window's model, by those of its triangles that are the
+// opening's.
+Flat FlatOf(const level::Room &room, const level::Placed &placed, std::span<const core::Triangle> own)
+{
+    // The model's own three ways in the level, and how far it
+    // goes along each: the least is its thickness.
+    Flat flat;
+    flat.origin = level::InLevel(room, placed, {0, 0, 0});
+    flat.ways = {Unit(Sub(level::InLevel(room, placed, {1, 0, 0}), flat.origin)),
+                 Unit(Sub(level::InLevel(room, placed, {0, 1, 0}), flat.origin)),
+                 Unit(Sub(level::InLevel(room, placed, {0, 0, 1}), flat.origin))};
+    flat.low.fill(std::numeric_limits<float>::infinity());
+    flat.high.fill(-std::numeric_limits<float>::infinity());
+    for (const core::Triangle &triangle : own)
+    {
+        for (const core::Point *corner : {&triangle.a, &triangle.b, &triangle.c})
+        {
+            for (std::size_t axis = 0; axis < 3; ++axis)
             {
-                std::vector<core::Triangle> own;
-                for (const Level::Drawn &drawn : level.TrianglesOf(id, placed))
-                {
-                    if (drawn.material->find(Lower(beam.named)) != std::wstring::npos)
-                    {
-                        own.push_back(drawn.corners);
-                    }
-                }
-                if (own.empty())
-                {
-                    continue;
-                }
-                // The model's own three ways in the level, and how far it
-                // goes along each: the least is its thickness.
-                const core::Point origin = level::InLevel(*room, placed, {0, 0, 0});
-                std::array<core::Point, 3> ways{Unit(Sub(level::InLevel(*room, placed, {1, 0, 0}), origin)),
-                                                Unit(Sub(level::InLevel(*room, placed, {0, 1, 0}), origin)),
-                                                Unit(Sub(level::InLevel(*room, placed, {0, 0, 1}), origin))};
-                std::array<float, 3> low{};
-                std::array<float, 3> high{};
-                low.fill(std::numeric_limits<float>::infinity());
-                high.fill(-std::numeric_limits<float>::infinity());
-                for (const core::Triangle &triangle : own)
-                {
-                    for (const core::Point *corner : {&triangle.a, &triangle.b, &triangle.c})
-                    {
-                        for (std::size_t axis = 0; axis < 3; ++axis)
-                        {
-                            const float along = Dot(Sub(*corner, origin), ways.at(axis));
-                            low.at(axis) = std::min(low.at(axis), along);
-                            high.at(axis) = std::max(high.at(axis), along);
-                        }
-                    }
-                }
-                std::size_t thin = 0;
-                for (std::size_t axis = 1; axis < 3; ++axis)
-                {
-                    thin = high.at(axis) - low.at(axis) < high.at(thin) - low.at(thin) ? axis : thin;
-                }
-                const std::size_t u = (thin + 1) % 3;
-                const std::size_t v = (thin + 2) % 3;
-                const auto corner = [&](float su, float sv, float off) {
-                    const float alongU = ((low.at(u) + high.at(u)) / 2) + (su * kInFromTheEdge * (high.at(u) - low.at(u)) / 2);
-                    const float alongV = ((low.at(v) + high.at(v)) / 2) + (sv * kInFromTheEdge * (high.at(v) - low.at(v)) / 2);
-                    const float alongThin = ((low.at(thin) + high.at(thin)) / 2) + off;
-                    core::Point at = origin;
-                    for (std::size_t axis = 0; axis < 3; ++axis)
-                    {
-                        at.at(axis) += (ways.at(u).at(axis) * alongU) + (ways.at(v).at(axis) * alongV) +
-                                       (ways.at(thin).at(axis) * alongThin);
-                    }
-                    return at;
-                };
-                // Which side is the room: the one that is closed in. Outside a
-                // level there is nothing at all, so rays cast from the window's
-                // middle land on something on the room's side and on nothing on
-                // the other. (Taken the other way about, by where rays went
-                // furthest, every window faced out and no light came in:
-                // 2026-10-11.) A window stands in the thickness of its wall, in
-                // this level a little behind the wall's own face: where there is
-                // a face close before it on the room's side, the opening is put
-                // just clear of that; else just clear of the model.
-                const core::Point across = ways.at(thin);
-                const core::Point back{-across[0], -across[1], -across[2]};
-                constexpr float kLooked = 60.0F;
-                const core::Point middle = corner(0, 0, 0);
-                int ahead = 0;
-                int behind = 0;
-                for (const core::Point &ray : probes::Directions(128))
-                {
-                    if (Cast(scene, static_cast<std::uint32_t>(index), middle, ray, kLooked))
-                    {
-                        ++(Dot(ray, across) > 0 ? ahead : behind);
-                    }
-                }
-                // And where rays land on both sides, as they do from a window
-                // high in a tower's outer wall, with the level's other rooms
-                // behind it across the round: a window is in a level's outer
-                // wall, and the room is towards the level's middle.
-                const bool roomAhead = std::abs(ahead - behind) > 48 ? ahead > behind
-                                                                     : Dot(Sub(levelMiddle, middle), across) > 0;
-                const core::Point inward = roomAhead ? across : back;
-                constexpr float kFaceWithin = 1.5F; // metres: a face of the wall before the window
-                constexpr float kClear = 0.15F;     // metres the opening stands before it
-                const std::optional<Landing> face =
-                    Cast(scene, static_cast<std::uint32_t>(index), middle, inward, kFaceWithin);
-                const float proud =
-                    face ? face->hit.distance + kClear : ((high.at(thin) - low.at(thin)) / 2) + kClear;
-                faced += face ? 1 : 0;
-                const float shift = roomAhead ? proud : -proud;
-                openings.push_back({corner(-1, -1, shift), corner(1, -1, shift), corner(1, 1, shift)});
-                openings.push_back({corner(-1, -1, shift), corner(1, 1, shift), corner(-1, 1, shift)});
-                outward.push_back({-inward[0], -inward[1], -inward[2]});
-                if (std::max({beam.sky[0], beam.sky[1], beam.sky[2]}) > 0)
-                {
-                    constexpr int kAcross = 6;
-                    constexpr int kUp = 8;
-                    Glowing glow;
-                    glow.sky = true;
-                    glow.colour = beam.sky;
-                    glow.middle = corner(0, 0, shift);
-                    glow.patch = kInFromTheEdge * kInFromTheEdge * (high.at(u) - low.at(u)) * (high.at(v) - low.at(v)) /
-                                 static_cast<float>(kAcross * kUp);
-                    for (int i = 0; i < kAcross; ++i)
-                    {
-                        for (int j = 0; j < kUp; ++j)
-                        {
-                            const core::Point at = corner(((static_cast<float>(i) + 0.5F) / kAcross * 2) - 1,
-                                                          ((static_cast<float>(j) + 0.5F) / kUp * 2) - 1, shift);
-                            glow.points.push_back(at);
-                            glow.facings.push_back(inward);
-                            const core::Point apart = Sub(at, glow.middle);
-                            glow.reach = std::max(glow.reach, std::sqrt(Dot(apart, apart)));
-                        }
-                    }
-                    scene.glows.push_back(std::move(glow));
-                }
-                spdlog::debug("relight: an opening at {:.1f} {:.1f} {:.1f}, {:.1f} by {:.1f} m, rays landing {} to {}, "
-                              "a face {:.2f} m before it",
-                              middle[0], middle[1], middle[2], high.at(u) - low.at(u), high.at(v) - low.at(v),
-                              std::max(ahead, behind), std::min(ahead, behind), face ? face->hit.distance : -1.0F);
-                bars.insert(bars.end(), own.begin(), own.end());
+                const float along = Dot(Sub(*corner, flat.origin), flat.ways.at(axis));
+                flat.low.at(axis) = std::min(flat.low.at(axis), along);
+                flat.high.at(axis) = std::max(flat.high.at(axis), along);
             }
         }
+    }
+    for (std::size_t axis = 1; axis < 3; ++axis)
+    {
+        flat.thin = flat.high.at(axis) - flat.low.at(axis) < flat.high.at(flat.thin) - flat.low.at(flat.thin)
+                        ? axis
+                        : flat.thin;
+    }
+    flat.u = (flat.thin + 1) % 3;
+    flat.v = (flat.thin + 2) % 3;
+    return flat;
+}
+
+// Which side of a window the room is on.
+struct Sides
+{
+    int ahead = 0;          // rays from the window's middle that land on something the way of its thickness
+    int behind = 0;         // and the other way
+    bool roomAhead = false; // the room is the way of its thickness
+};
+
+// Which side is the room: the one that is closed in. Outside a
+// level there is nothing at all, so rays cast from the window's
+// middle land on something on the room's side and on nothing on
+// the other. (Taken the other way about, by where rays went
+// furthest, every window faced out and no light came in:
+// 2026-10-11.)
+// @param room the number of the room that places the window
+// @param across the way of the window's thickness
+Sides SidesOf(const Scene &scene, std::uint32_t room, const core::Point &middle, const core::Point &across,
+              const core::Point &levelMiddle)
+{
+    constexpr float kLooked = 60.0F;
+    Sides sides;
+    for (const core::Point &ray : probes::Directions(128))
+    {
+        if (Cast(scene, room, middle, ray, kLooked))
+        {
+            ++(Dot(ray, across) > 0 ? sides.ahead : sides.behind);
+        }
+    }
+    // And where rays land on both sides, as they do from a window
+    // high in a tower's outer wall, with the level's other rooms
+    // behind it across the round: a window is in a level's outer
+    // wall, and the room is towards the level's middle.
+    sides.roomAhead = std::abs(sides.ahead - sides.behind) > 48 ? sides.ahead > sides.behind
+                                                                : Dot(Sub(levelMiddle, middle), across) > 0;
+    return sides;
+}
+
+// The sky's own light through an opening, as a glowing thing: points over
+// the opening, `shift` out of the window's flat, that send into the room.
+Glowing SkyThrough(const Flat &flat, const Colour &sky, float shift, const core::Point &inward)
+{
+    constexpr int kAcross = 6;
+    constexpr int kUp = 8;
+    Glowing glow;
+    glow.sky = true;
+    glow.colour = sky;
+    glow.middle = flat.Corner(0, 0, shift);
+    glow.patch = kInFromTheEdge * kInFromTheEdge * flat.Wide() * flat.High() / static_cast<float>(kAcross * kUp);
+    for (int i = 0; i < kAcross; ++i)
+    {
+        for (int j = 0; j < kUp; ++j)
+        {
+            const core::Point at = flat.Corner(((static_cast<float>(i) + 0.5F) / kAcross * 2) - 1,
+                                               ((static_cast<float>(j) + 0.5F) / kUp * 2) - 1, shift);
+            glow.points.push_back(at);
+            glow.facings.push_back(inward);
+            const core::Point apart = Sub(at, glow.middle);
+            glow.reach = std::max(glow.reach, std::sqrt(Dot(apart, apart)));
+        }
+    }
+    return glow;
+}
+
+// The openings of a light from far off, as they are found window by window.
+struct Openings
+{
+    std::vector<core::Triangle> flats; // two triangles an opening
+    std::vector<core::Triangle> bars;  // what stands in them: the windows' own triangles
+    std::vector<core::Point> outward;  // each opening's way out of the level
+    std::size_t faced = 0;             // openings with a face of the wall before them
+};
+
+// Takes a window as an opening of a light from far off, and where the light
+// has the sky's with it, as a glowing thing of the scene's.
+// @param room the number of the room that places the window
+void AddOpening(Scene &scene, const Beam &beam, std::uint32_t room, const Flat &flat, const core::Point &levelMiddle,
+                Openings &found)
+{
+    // A window stands in the thickness of its wall, in
+    // this level a little behind the wall's own face: where there is
+    // a face close before it on the room's side, the opening is put
+    // just clear of that; else just clear of the model.
+    const core::Point across = flat.ways.at(flat.thin);
+    const core::Point back{-across[0], -across[1], -across[2]};
+    const core::Point middle = flat.Corner(0, 0, 0);
+    const Sides sides = SidesOf(scene, room, middle, across, levelMiddle);
+    const core::Point inward = sides.roomAhead ? across : back;
+    constexpr float kFaceWithin = 1.5F; // metres: a face of the wall before the window
+    constexpr float kClear = 0.15F;     // metres the opening stands before it
+    const std::optional<Landing> face = Cast(scene, room, middle, inward, kFaceWithin);
+    const float proud = face ? face->hit.distance + kClear : (flat.Thick() / 2) + kClear;
+    found.faced += face ? 1 : 0;
+    const float shift = sides.roomAhead ? proud : -proud;
+    found.flats.push_back({flat.Corner(-1, -1, shift), flat.Corner(1, -1, shift), flat.Corner(1, 1, shift)});
+    found.flats.push_back({flat.Corner(-1, -1, shift), flat.Corner(1, 1, shift), flat.Corner(-1, 1, shift)});
+    found.outward.push_back({-inward[0], -inward[1], -inward[2]});
+    if (std::max({beam.sky[0], beam.sky[1], beam.sky[2]}) > 0)
+    {
+        scene.glows.push_back(SkyThrough(flat, beam.sky, shift, inward));
+    }
+    spdlog::debug("relight: an opening at {:.1f} {:.1f} {:.1f}, {:.1f} by {:.1f} m, rays landing {} to {}, "
+                  "a face {:.2f} m before it",
+                  middle[0], middle[1], middle[2], flat.Wide(), flat.High(), std::max(sides.ahead, sides.behind),
+                  std::min(sides.ahead, sides.behind), face ? face->hit.distance : -1.0F);
+}
+
+// The openings of a light from far off, the whole world's together. A
+// window as the level has it is a model of its tracery alone, gilded bars
+// before a dark pane that is the wall's own: with the bars themselves
+// taken for the opening, the moon lit slivers of sill and arch beside
+// them and nothing else (the user, 2026-10-11: "where's this random blue
+// from?"). So a window's opening is the flat of its model, as wide and as
+// high as the model is, a little in from its edges; and the bars are
+// what stands in it, and shade what is behind them.
+Openings OpeningsOf(Level &level, Scene &scene, const Beam &beam, const std::vector<std::wstring> &ids,
+                    const core::Point &levelMiddle)
+{
+    Openings found;
+    for (std::size_t index = 0; index < ids.size(); ++index)
+    {
+        const std::wstring &id = ids[index];
+        const level::Room *room = level.RoomOf(id);
+        for (const level::Placed &placed : room != nullptr ? room->models : std::vector<level::Placed>{})
+        {
+            std::vector<core::Triangle> own;
+            for (const Level::Drawn &drawn : level.TrianglesOf(id, placed))
+            {
+                if (drawn.material->find(Lower(beam.named)) != std::wstring::npos)
+                {
+                    own.push_back(drawn.corners);
+                }
+            }
+            if (own.empty())
+            {
+                continue;
+            }
+            AddOpening(scene, beam, static_cast<std::uint32_t>(index), FlatOf(*room, placed, own), levelMiddle, found);
+            found.bars.insert(found.bars.end(), own.begin(), own.end());
+        }
+    }
+    return found;
+}
+
+// The lights from far off into the scene, each with its openings.
+// @param name the level's, for the log
+void AddBeams(Level &level, Scene &scene, const Options &options, const std::vector<std::wstring> &ids,
+              const std::string &name)
+{
+    const core::Point levelMiddle = MiddleOf(scene);
+    for (const Beam &beam : options.beams)
+    {
+        Openings found = OpeningsOf(level, scene, beam, ids, levelMiddle);
         Beaming beaming;
         beaming.toSource = Unit({-beam.travels[0], -beam.travels[1], -beam.travels[2]});
         beaming.colour = beam.colour;
-        spdlog::info("relight: {}: a light from far off through {} openings of {}, {} of them behind a face of the wall",
-                     levelRim.stem().string(), openings.size() / 2, Text(beam.named), faced);
-        if (!openings.empty())
+        spdlog::info(
+            "relight: {}: a light from far off through {} openings of {}, {} of them behind a face of the wall", name,
+            found.flats.size() / 2, Text(beam.named), found.faced);
+        if (!found.flats.empty())
         {
-            beaming.openings.emplace(openings);
-            beaming.bars.emplace(bars);
-            beaming.outward = std::move(outward);
+            beaming.openings.emplace(found.flats);
+            beaming.bars.emplace(found.bars);
+            beaming.outward = std::move(found.outward);
             scene.beams.push_back(std::move(beaming));
         }
     }
-    // Where the level's makers put a light, whether or not it is taken as one:
-    // it says where a fitting's flame is.
+}
+
+// Where the level's makers put a light, whether or not it is taken as one:
+// it says where a fitting's flame is.
+std::vector<core::Point> FlameHints(Level &level, const std::vector<std::wstring> &sources)
+{
     std::vector<core::Point> hints;
     for (const std::wstring &id : sources)
     {
-        for (const std::wstring &layout : {id, level.Terrain() && id.ends_with(L"_0") ? id.substr(0, id.size() - 1) + L"1" : id})
+        for (const std::wstring &layout :
+             {id, level.Terrain() && id.ends_with(L"_0") ? id.substr(0, id.size() - 1) + L"1" : id})
         {
             for (const Lamp &lamp : level.LampsOf(layout))
             {
@@ -1628,42 +1873,71 @@ std::size_t LightRooms(Level &level, const std::filesystem::path &levelRim, cons
             }
         }
     }
-    // The flames, after every lamp of the level's own is known.
-    const std::size_t levelsOwn = scene.lamps.size();
+    return hints;
+}
+
+// Where a light that lands is put: at the height of the first surface
+// straight under its place, or at its place where there is none.
+// @param room the number of the room the look down is from
+core::Point LandedUnder(const Scene &scene, std::uint32_t room, core::Point at)
+{
+    constexpr float kFrom = 0.5F;   // metres over the place the look down starts from
+    constexpr float kDeep = 200.0F; // and how far down it looks
+    const core::Point from{at[0], at[1], at[2] + kFrom};
+    if (const std::optional<Landing> floor = Cast(scene, room, from, {0, 0, -1}, kDeep))
+    {
+        at[2] = from[2] - floor->hit.distance;
+    }
+    return at;
+}
+
+// Where the flames of one kind are: every model the rooms `sources` place
+// whose name the rule has, each where it burns.
+std::vector<core::Point> FlamesOf(Level &level, const Scene &scene, const Flame &flame,
+                                  const std::vector<std::wstring> &ids, const std::vector<std::wstring> &sources,
+                                  std::span<const core::Point> hints)
+{
+    std::vector<core::Point> flames;
+    for (const std::wstring &id : sources)
+    {
+        const level::Room *room = level.RoomOf(id);
+        for (const level::Placed &placed : room != nullptr ? room->models : std::vector<level::Placed>{})
+        {
+            if (Lower(placed.file).find(Lower(flame.named)) == std::wstring::npos)
+            {
+                continue;
+            }
+            core::Point at = WhereItBurns(level, id, *room, placed, hints);
+            if (flame.lands > 0)
+            {
+                const auto index = static_cast<std::uint32_t>(
+                    std::ranges::find(ids, id) != ids.end() ? std::ranges::find(ids, id) - ids.begin() : 0);
+                at = LandedUnder(scene, index, at);
+            }
+            flames.push_back(at);
+        }
+    }
+    return flames;
+}
+
+// The level's flames into the scene as lamps, a kind at a time.
+void PlaceFlames(Level &level, Scene &scene, const Options &options, const std::vector<std::wstring> &ids,
+                 const std::vector<std::wstring> &sources)
+{
+    const std::vector<core::Point> hints = FlameHints(level, sources);
     for (const Flame &flame : options.flames)
     {
-        std::vector<core::Point> flames;
-        for (const std::wstring &id : sources)
-        {
-            const level::Room *room = level.RoomOf(id);
-            for (const level::Placed &placed : room != nullptr ? room->models : std::vector<level::Placed>{})
-            {
-                if (Lower(placed.file).find(Lower(flame.named)) != std::wstring::npos)
-                {
-                    core::Point at = WhereItBurns(level, id, *room, placed, hints);
-                    if (flame.lands > 0)
-                    {
-                        constexpr float kFrom = 0.5F;   // metres over the place the look down starts from
-                        constexpr float kDeep = 200.0F; // and how far down it looks
-                        const auto index = static_cast<std::uint32_t>(
-                            std::ranges::find(ids, id) != ids.end() ? std::ranges::find(ids, id) - ids.begin() : 0);
-                        const core::Point from{at[0], at[1], at[2] + kFrom};
-                        if (const std::optional<Landing> floor = Cast(scene, index, from, {0, 0, -1}, kDeep))
-                        {
-                            at[2] = from[2] - floor->hit.distance;
-                        }
-                    }
-                    flames.push_back(at);
-                }
-            }
-        }
+        const std::vector<core::Point> flames = FlamesOf(level, scene, flame, ids, sources, hints);
         // What an earlier rule lit is this rule's "already lit": a lantern's
         // rule before the candles' keeps the candle inside it from counting twice.
         AddFlames(scene, flames, flame, scene.lamps.size());
     }
-    spdlog::info("relight: {}: {} lamps of the level's own, {} more of its flames", levelRim.stem().string(), levelsOwn,
-                 scene.lamps.size() - levelsOwn);
-    // The lightmaps, each at its own shape, no larger a side than asked.
+}
+
+// The lightmaps, each at its own shape, no larger a side than asked, with
+// the game's own picture brought to that size.
+void MakeMaps(Level &level, Scene &scene, const Options &options)
+{
     for (std::uint32_t atlas = 0; atlas < level.Atlases(); ++atlas)
     {
         const std::optional<std::vector<std::byte>> file = level.Find(level.AtlasName(atlas));
@@ -1684,8 +1958,17 @@ std::size_t LightRooms(Level &level, const std::filesystem::path &levelRim, cons
         Shrink(*image, map);
         scene.maps.emplace(atlas, std::move(map));
     }
-    std::size_t covered = 0;
-    for (std::size_t i = 0; i < ids.size(); ++i)
+}
+
+// Every covered texel of the scene's lightmaps, for the threads to share out.
+using Order = std::vector<std::pair<Map *, std::uint32_t>>;
+
+// Lays every room into the lightmaps and makes the tables the light is
+// reckoned into.
+// @return the texels to light
+Order LayRooms(Scene &scene)
+{
+    for (std::size_t i = 0; i < scene.rooms.size(); ++i)
     {
         Lay(scene, static_cast<std::uint32_t>(i), *scene.rooms[i].geometry);
     }
@@ -1697,7 +1980,7 @@ std::size_t LightRooms(Level &level, const std::filesystem::path &levelRim, cons
     std::erase_if(scene.maps, [](const auto &entry) {
         return std::ranges::none_of(entry.second.texels, [](const Texel &texel) { return texel.covered; });
     });
-    std::vector<std::pair<Map *, std::uint32_t>> order; // every covered texel, for the threads to share out
+    Order order;
     for (auto &[atlas, map] : scene.maps)
     {
         map.straight.assign(map.texels.size(), {});
@@ -1709,15 +1992,19 @@ std::size_t LightRooms(Level &level, const std::filesystem::path &levelRim, cons
                 order.emplace_back(&map, i);
             }
         }
-        covered += static_cast<std::size_t>(std::ranges::count_if(map.texels, [](const Texel &texel) { return texel.covered; }));
     }
-    spdlog::info("relight: {}: {} rooms, {} lamps, {} glowing things, {} lightmaps, {} texels to light; rays by {}",
-                 levelRim.stem().string(), ids.size(), scene.lamps.size(), scene.glows.size(), scene.maps.size(), covered,
-                 caster);
+    return order;
+}
+
+// The light that comes straight to every texel, a lamp's and a glow's, the
+// glows' smoothed first; and spread out past the triangles' edges, it is the
+// whole of the light so far and what the first bounce reads.
+void LightStraight(Scene &scene, const Order &order, const Options &options)
+{
     ForEach(order.size(), [&](std::size_t i) {
         Map &map = *order[i].first;
-        map.straight[order[i].second] = Straight(scene, map.texels[order[i].second], static_cast<std::uint32_t>(i), options,
-                                                 map.glowed[order[i].second]);
+        map.straight[order[i].second] = Straight(scene, map.texels[order[i].second], static_cast<std::uint32_t>(i),
+                                                 options, map.glowed[order[i].second]);
     });
     Smooth(order, &Map::glowed, 2);
     for (const auto &[map, at] : order)
@@ -1733,34 +2020,48 @@ std::size_t LightRooms(Level &level, const std::filesystem::path &levelRim, cons
         map.whole = map.straight;
         map.came = map.straight;
     }
-    for (int bounce = 0; bounce < options.bounces; ++bounce)
+}
+
+// Follows the light off the surfaces once: what comes back to every texel
+// of the light that came the time before, smoothed, spread out past the
+// triangles' edges and added to the whole.
+// @param bounce which time this is, from 0: each has chances of its own
+void Bounce(Scene &scene, const Order &order, const Options &options, int bounce)
+{
+    std::vector<Colour> back(order.size());
+    ForEach(order.size(), [&](std::size_t i) {
+        back[i] = Back(scene, order[i].first->texels[order[i].second],
+                       static_cast<std::uint32_t>(i) + (static_cast<std::uint32_t>(bounce) * 0x51ED27U), options);
+    });
+    for (auto &[atlas, map] : scene.maps)
     {
-        std::vector<Colour> back(order.size());
-        ForEach(order.size(), [&](std::size_t i) {
-            back[i] = Back(scene, order[i].first->texels[order[i].second],
-                           static_cast<std::uint32_t>(i) + (static_cast<std::uint32_t>(bounce) * 0x51ED27U), options);
-        });
-        for (auto &[atlas, map] : scene.maps)
+        map.came.assign(map.texels.size(), {});
+    }
+    for (std::size_t i = 0; i < order.size(); ++i)
+    {
+        order[i].first->came[order[i].second] = back[i];
+    }
+    Smooth(order, &Map::came, 3);
+    for (auto &[atlas, map] : scene.maps)
+    {
+        Fill(map, map.came);
+        for (std::size_t i = 0; i < map.whole.size(); ++i)
         {
-            map.came.assign(map.texels.size(), {});
-        }
-        for (std::size_t i = 0; i < order.size(); ++i)
-        {
-            order[i].first->came[order[i].second] = back[i];
-        }
-        Smooth(order, &Map::came, 3);
-        for (auto &[atlas, map] : scene.maps)
-        {
-            Fill(map, map.came);
-            for (std::size_t i = 0; i < map.whole.size(); ++i)
+            for (std::size_t channel = 0; channel < 3; ++channel)
             {
-                for (std::size_t channel = 0; channel < 3; ++channel)
-                {
-                    map.whole[i].at(channel) += map.came[i].at(channel);
-                }
+                map.whole[i].at(channel) += map.came[i].at(channel);
             }
         }
     }
+}
+
+// Writes the scene's lightmaps into a folder, each a DDS of its atlas's own
+// name.
+// @param done the lightmaps written so far, by name: none is written twice
+// @return how many were written
+std::size_t WriteMaps(const Level &level, const Scene &scene, const std::filesystem::path &out, const Options &options,
+                      std::set<std::wstring> &done)
+{
     std::error_code error;
     std::filesystem::create_directories(out, error);
     std::size_t written = 0;
@@ -1776,25 +2077,72 @@ std::size_t LightRooms(Level &level, const std::filesystem::path &levelRim, cons
         stream.write(reinterpret_cast<const char *>(file.data()), static_cast<std::streamsize>(file.size()));
         ++written;
     }
-    // And the figures' probes, of the same lights, beside the lightmaps: the
-    // plugin takes them as they are in place of baking its own.
+    return written;
+}
+
+// Writes the figures' probes, of the same lights, beside the lightmaps
+// (<level>.elgp): the plugin takes them as they are in place of baking its
+// own.
+void WriteProbes(Level &level, const Scene &scene, const std::filesystem::path &levelRim,
+                 const std::filesystem::path &out, const Options &options, const std::vector<std::wstring> &ids)
+{
+    const std::vector<probebaker::Room> lit =
+        level.Terrain() ? ProbesOfTerrain(level, scene, ids, options) : Probes(level, scene, ids, options);
+    std::size_t count = 0;
+    for (const probebaker::Room &room : lit)
+    {
+        count += room.probes.size();
+    }
+    const std::vector<std::byte> file = probebaker::Write(lit, 1);
+    std::ofstream stream(out / (levelRim.stem().wstring() + L".elgp"), std::ios::binary);
+    stream.write(reinterpret_cast<const char *>(file.data()), static_cast<std::streamsize>(file.size()));
+    spdlog::info("relight: {}: {} probes in {} rooms", levelRim.stem().string(), count, lit.size());
+}
+
+// Lights one world of a level's rooms and writes its lightmaps: the rooms
+// `ids` are the world, each lit and each in the way of the others' light.
+// @param sources the rooms whose definitions place the level's fittings
+// @param withProbes whether the figures' probes are made of this world
+// @param done the lightmaps written so far, by name: none is written twice
+// @return how many lightmaps were written
+std::size_t LightRooms(Level &level, const std::filesystem::path &levelRim, const std::filesystem::path &out,
+                       const Options &options, const std::vector<std::wstring> &ids,
+                       const std::vector<std::wstring> &sources, bool withProbes, std::set<std::wstring> &done)
+{
+    const auto began = std::chrono::steady_clock::now();
+    const std::string name = levelRim.stem().string();
+    Scene scene;
+    GatherRooms(level, scene, options, ids);
+    const char *caster = "DAOLib's tree, a room at a time";
+#ifdef ELGARA_EMBREE
+    Embree embree;
+    if (options.caster != 0 && CastByEmbree(embree, scene, name))
+    {
+        caster = "Embree, the world as one scene";
+    }
+#endif
+    AddBeams(level, scene, options, ids, name);
+    // The flames, after every lamp of the level's own is known.
+    const std::size_t levelsOwn = scene.lamps.size();
+    PlaceFlames(level, scene, options, ids, sources);
+    spdlog::info("relight: {}: {} lamps of the level's own, {} more of its flames", name, levelsOwn,
+                 scene.lamps.size() - levelsOwn);
+    MakeMaps(level, scene, options);
+    const Order order = LayRooms(scene);
+    spdlog::info("relight: {}: {} rooms, {} lamps, {} glowing things, {} lightmaps, {} texels to light; rays by {}",
+                 name, ids.size(), scene.lamps.size(), scene.glows.size(), scene.maps.size(), order.size(), caster);
+    LightStraight(scene, order, options);
+    for (int bounce = 0; bounce < options.bounces; ++bounce)
+    {
+        Bounce(scene, order, options, bounce);
+    }
+    const std::size_t written = WriteMaps(level, scene, out, options, done);
     if (withProbes)
     {
-        const std::vector<probebaker::Room> lit =
-            level.Terrain() ? ProbesOfTerrain(level, scene, ids, options) : Probes(level, scene, ids, options);
-        std::size_t count = 0;
-        for (const probebaker::Room &room : lit)
-        {
-            count += room.probes.size();
-        }
-        const std::vector<std::byte> file = probebaker::Write(lit, 1);
-        std::ofstream stream(out / (levelRim.stem().wstring() + L".elgp"), std::ios::binary);
-        stream.write(reinterpret_cast<const char *>(file.data()), static_cast<std::streamsize>(file.size()));
-        spdlog::info("relight: {}: {} probes in {} rooms", levelRim.stem().string(), count, lit.size());
+        WriteProbes(level, scene, levelRim, out, options, ids);
     }
     const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began);
-    spdlog::info("relight: {}: {} lightmaps written to {}, {} ms", levelRim.stem().string(), written, out.string(),
-                 took.count());
+    spdlog::info("relight: {}: {} lightmaps written to {}, {} ms", name, written, out.string(), took.count());
     return written;
 }
 
@@ -1842,8 +2190,8 @@ std::size_t Relight(const std::filesystem::path &levelRim, const std::filesystem
         const auto count = static_cast<std::uint32_t>(places.size() / 3);
         stream.write(magic.data(), magic.size());
         stream.write(reinterpret_cast<const char *>(&count), sizeof count);
-        stream.write(reinterpret_cast<const char *>(places.data()),
-                     static_cast<std::streamsize>(places.size() * sizeof(float)));
+        const std::span<const std::byte> bytes = std::as_bytes(std::span(places));
+        stream.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
         spdlog::info("relight: {}: {} lamps of the level's own, said in its .lamps", levelRim.stem().string(), count);
     }
     std::set<std::wstring> done;
@@ -1864,6 +2212,7 @@ std::size_t Relight(const std::filesystem::path &levelRim, const std::filesystem
     std::vector<std::wstring> first = near;
     first.emplace_back();
     std::vector<std::wstring> far;
+    far.reserve(near.size() + 1);
     for (const std::wstring &id : near)
     {
         far.push_back(id.substr(0, id.size() - 1) + L"1");
