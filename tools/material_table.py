@@ -1039,6 +1039,13 @@ def write_objects(game, classes, folder, log):
         bumped = measured.get(normal_map)
         if cls not in ("metal", "mixed") and not bumped:
             continue
+        # A material the archives have in two copies that differ is the game's in one and
+        # Awakening's in the other (pf_arm_lgte, pn_boo_lgte, pn_glv_lgte, pn_hlf_s01b and
+        # mat_0, with their levels of detail: 15 of the solid kinds). Which the game reads
+        # goes by the campaign loaded: asked of the game in the main campaign
+        # (tools/dump_addins.py's way, 2026-10-12), every one of the 15 was the game's own
+        # and not core_ep1's, which names other textures. One file in our folder is read
+        # in both campaigns and would be wrong in one, so none is written.
         if name in game.differing:
             counts["with copies that differ: left as they are"] += 1
             continue
