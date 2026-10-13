@@ -330,7 +330,7 @@ MATERIAL_PARAMETERS = (
     '<Parameter Type = "Vector4f" Name = "mml_vDaoBumps" Default = "0 0 0 0"/>'
     '<Parameter Type = "Vector4f" Name = "mml_vDaoBumpsFar" Default = "0 0 0 0"/>'
 )
-MATERIAL_SHADERS = r"^(ch[12](?!\w*_vl)\w*|weapon1|cloth1|prop1(_punch)?|static1\w*)\.psh$"
+MATERIAL_SHADERS = r"^(ch[12](?!\w*_vl)\w*|weapon1|cloth1|prop1(_punch)?|propalpha1|static1\w*)\.psh$"
 
 
 # What a pass's render state does with the alpha its shader writes, which is
@@ -829,8 +829,14 @@ FIGURE_NORMAL = r"^mad (r\d+)\.xyz, \1\.z, (v\d+), \1\.xyww$"
 
 
 # The shaders of the things a level is furnished with, which have a normal
-# map and no lightmap: their ambient light comes as a figure's does.
-PROPS = ("prop1", "prop1_punch")
+# map and no lightmap: their ambient light comes as a figure's does. The
+# third is what a prop drawn blended is drawn by (Prop.mat's `Blend`: a
+# scarecrow, a straw dummy, shackles, a gong, a rack, spiders' webs, 29
+# materials). It was left as the game has it until 2026-10-12, so such a
+# prop was lit by the engine's lamps at their full strength and by the
+# game's formula for a highlight beside props lit by the look's and the
+# materials' model. It reads no shadow map, in the game or here.
+PROPS = ("prop1", "prop1_punch", "propalpha1")
 
 
 def with_ambient_relief(shader):
