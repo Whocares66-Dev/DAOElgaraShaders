@@ -376,6 +376,27 @@ class ObjectsTest(unittest.TestCase):
         )
         self.assertIn('<DefaultSemantic Name="AlphaNoTint">', mt.object_text(helm, True, None, None))
 
+    def test_the_add_ins_are_read_from_a_folder_of_their_files(self):
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as folder:
+            with open(os.path.join(folder, "pn_arm_bdaa.mao"), "w", encoding="latin-1") as f:
+                f.write(
+                    '<MaterialObject Name="PN_ARM_BDAa">\n\t<Material Name="Character.mat"></Material>\n'
+                    '\t<Texture Name="mml_tDiffuse" ResName="pn_arm_bdaa_0d.dds"></Texture>\n</MaterialObject>'
+                )
+            with open(os.path.join(folder, "fx_glow.mao"), "w", encoding="latin-1") as f:
+                f.write('<MaterialObject Name="fx_glow">\n\t<Material Name="VFX.mat"></Material>\n</MaterialObject>')
+            with open(os.path.join(folder, "pn_arm_bdaa_0d.dds"), "wb") as f:
+                f.write(b"DDS ")
+            game = mt.Game(root, addins=folder)
+            self.assertEqual(list(game.materials), ["pn_arm_bdaa"])
+            self.assertEqual(game.materials["pn_arm_bdaa"].archive, mt.READ_OUT)
+            self.assertEqual(game.read_out, 1)
+            self.assertEqual(game.textures["pn_arm_bdaa_0d.dds"][1:], (os.path.join(folder, "pn_arm_bdaa_0d.dds"), 0, 4))
+            self.assertEqual(mt.Game(root, addins=None).materials, {})
+        # and an add-in's plate is asked of its textures, as the game's own is
+        verdict = mt.by_name("pn_arm_bdaa", "character.mat", "pn_arm_bdaa_0d.dds", "ARM_BDA.matproj")
+        self.assertEqual(verdict.cls, mt.PAINT)
+
     def test_the_table_is_read_as_written(self):
         with tempfile.TemporaryDirectory() as folder:
             path = os.path.join(folder, "materials.ini")

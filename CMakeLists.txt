@@ -65,7 +65,7 @@ include("${ELGARA_DAOLIB}/cmake/Quality.cmake")
 # ---------------------------------------------------------------------------
 add_daolib_plugin(
     elgarashaders
-    SOURCES src/Graphics.cpp src/ProbeBaker.cpp
+    SOURCES src/Graphics.cpp src/ProbeBaker.cpp src/ResourceDump.cpp
     FILES data/graphics.ini data/graphics.tuned
 )
 dao_apply_warnings(elgarashaders)

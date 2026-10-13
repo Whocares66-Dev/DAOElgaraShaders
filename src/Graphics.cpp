@@ -34,6 +34,7 @@
 //
 // What it does goes to elgarashaders.log.
 #include "ProbeBaker.h"
+#include "ResourceDump.h"
 
 #include "dao/Addresses.h"
 #include "dao/Atmosphere.h"
@@ -3214,5 +3215,6 @@ extern "C" __declspec(dllexport) bool __cdecl DAOLib_Load(const dao::LoaderInfo 
     dao::OnFrame(&ApplyLook);
     dao::OnFrame(&KeepAreasScene);
     dao::OnFrame(&DimBakedLamps);
+    dao::OnFrame(&resourcedump::Poll);
     return true;
 }

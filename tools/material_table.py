@@ -343,6 +343,7 @@ def map_name(specular):
 # (light: leather, some of it studded), ARM_NUD (the bare body), CTH_ (clothes), ROB_ (robes).
 WORN = (
     (PAINT, "other", r"(?<![a-z])(arm|boo|glv)_(mas|hvy|dwp|med)"),  # plate and mail: the textures say where
+    (PAINT, "other", r"(?<![a-z])arm_bda"),  # an add-in's plate (the Blood Dragon armour: its project is ARM_BDA)
     (PAINT, "leather", r"(?<![a-z])(arm|boo|glv)_lgt"),  # leather: studs and buckles, if it has them
     ("skin", None, r"(?<![a-z])arm_nud"),
     ("cloth", None, r"(?<![a-z])(cth|rob|chd)_"),  # clothes, robes, the children
@@ -586,12 +587,21 @@ class Material:
         return self.textures.get("mml_tSpecularMask", "")
 
 
+# Where the add-ins' material objects and textures are, read out of the running game
+# (tools\dump_addins.py): their archives are enciphered, each with a key of its own, and
+# cannot be read from disk as the game's are (`unread`).
+ADDINS = os.path.join(REPO, "build", "addins")
+READ_OUT = "read out of the game"
+
+
 class Game:
     """The installed game's material objects and where its textures are. With levels, the
     level archives (packages\\core\\env and the add-ins') are read too, which takes a
-    minute and has only ever found terrain, water and vistas there (2026-10-12)."""
+    minute and has only ever found terrain, water and vistas there (2026-10-12). With a
+    folder of the add-ins' files read out of the game, those too, after everything the
+    archives have in the clear."""
 
-    def __init__(self, root=GAME, levels=False):
+    def __init__(self, root=GAME, levels=False, addins=ADDINS):
         self.root = root
         self.materials = {}
         self.textures = {}
@@ -638,6 +648,22 @@ class Game:
                     said[material.name] = what
                     if material.definition in SOLID:
                         self.materials[material.name] = material
+                    else:
+                        self.skipped[material.definition] += 1
+        self.read_out = 0
+        if addins and os.path.isdir(addins):
+            for file in sorted(os.listdir(addins)):
+                path = os.path.join(addins, file)
+                name = file.lower()
+                if name.endswith(".dds") and name not in self.textures:
+                    self.textures[name] = (1, path, 0, os.path.getsize(path))
+                elif name.endswith(".mao") and name[:-4] not in seen:
+                    with open(path, encoding="latin-1", newline="") as f:
+                        material = Material(name[:-4], f.read(), READ_OUT)
+                    seen[material.name] = material.definition
+                    if material.definition in SOLID:
+                        self.materials[material.name] = material
+                        self.read_out += 1
                     else:
                         self.skipped[material.definition] += 1
 
@@ -1062,6 +1088,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--game", default=GAME)
     parser.add_argument("--ini", default=os.path.join(REPO, "data", "materials.ini"))
+    parser.add_argument("--addins", default=ADDINS, help="the add-ins' files read out of the game (tools\\dump_addins.py)")
     parser.add_argument("--out", default=os.path.join(REPO, "build", "materials"))
     parser.add_argument("--no-maps", action="store_true", help="write no maps")
     parser.add_argument("--no-review", action="store_true", help="draw no review sheets")
@@ -1079,7 +1106,7 @@ def main(argv=None):
         print(text, flush=True)
 
     log(f"reading {args.game}")
-    game = Game(args.game, levels=not (args.no_levels or args.why or args.names or args.objects))
+    game = Game(args.game, levels=not (args.no_levels or args.why or args.names or args.objects), addins=args.addins)
     if args.objects:
         write_objects(game, table_classes(args.ini), args.objects, log)
         return 0
