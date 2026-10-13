@@ -135,7 +135,7 @@ std::array<std::atomic<float>, kLookRegisters * 4> g_look{};
 // The last of them is not a look's: whether the device's first target is the
 // frame's own picture (look.hlsl's DAO_SHARE_ASKED), which is the drawing
 // thread's to know and to say as the target changes (SetRenderTarget).
-constexpr std::size_t kShareAsked = kLookRegisters * 4 - 1;
+constexpr std::size_t kShareAsked = (kLookRegisters * 4) - 1;
 bool g_drawsPicture = true;
 
 using CreateFn = IDirect3D9 *(__stdcall *)(UINT);

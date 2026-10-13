@@ -204,7 +204,7 @@ def shadow_parameters(stem):
         + "".join(f"sampler2D {name};\n" for name in handed)
         + "".join(
             f"#define {ours_} {theirs}\n"
-            for ours_, theirs in zip(CHARACTER_SHADOW_MAPS, handed)
+            for ours_, theirs in zip(CHARACTER_SHADOW_MAPS, handed, strict=True)
             if ours_ != theirs
         )
     )
@@ -219,7 +219,7 @@ def with_shadow_parameters(material):
         lines = ""
         if shadow_maps_in(handed) is None:
             for number, (sampler, usage) in enumerate(
-                zip(SHADOW_MAPS.get(name, CHARACTER_SHADOW_MAPS), ("Primary", "Secondary")), 1
+                zip(SHADOW_MAPS.get(name, CHARACTER_SHADOW_MAPS), ("Primary", "Secondary"), strict=True), 1
             ):
                 lines += (
                     f'\n            <InternalParameter Type="Texture" Name="mml_tShadowPartition{number}"'
