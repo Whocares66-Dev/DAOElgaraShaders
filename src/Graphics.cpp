@@ -236,6 +236,7 @@ constexpr int kTraceFirst = 300;
 constexpr std::size_t kPresentSlot = 17;         // IDirect3DDevice9::Present
 constexpr std::size_t kStretchRectSlot = 34;     // IDirect3DDevice9::StretchRect
 constexpr std::size_t kSetRenderTargetSlot = 37; // IDirect3DDevice9::SetRenderTarget
+constexpr std::size_t kSetRenderStateSlot = 57;  // IDirect3DDevice9::SetRenderState
 constexpr std::size_t kClearSlot = 43;           // IDirect3DDevice9::Clear
 constexpr std::size_t kDrawSlot = 81;            // IDirect3DDevice9::DrawPrimitive
 constexpr std::size_t kDrawIndexedSlot = 82;     // IDirect3DDevice9::DrawIndexedPrimitive
@@ -243,12 +244,14 @@ using PresentFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, const RECT *, const R
 using StretchRectFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, IDirect3DSurface9 *, const RECT *, IDirect3DSurface9 *,
                                            const RECT *, D3DTEXTUREFILTERTYPE);
 using SetRenderTargetFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, DWORD, IDirect3DSurface9 *);
+using SetRenderStateFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, D3DRENDERSTATETYPE, DWORD);
 using ClearFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, DWORD, const D3DRECT *, DWORD, D3DCOLOR, float, DWORD);
 using DrawFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, D3DPRIMITIVETYPE, UINT, UINT);
 using DrawIndexedFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, D3DPRIMITIVETYPE, INT, UINT, UINT, UINT, UINT);
 dao::Detour<PresentFn> g_present;
 dao::Detour<StretchRectFn> g_stretchRect;
 dao::Detour<SetRenderTargetFn> g_setRenderTarget;
+dao::Detour<SetRenderStateFn> g_setRenderState;
 dao::Detour<ClearFn> g_clear;
 dao::Detour<DrawFn> g_draw;
 dao::Detour<DrawIndexedFn> g_drawIndexed;
@@ -1752,6 +1755,30 @@ HRESULT __stdcall StretchRect(IDirect3DDevice9 *device, IDirect3DSurface9 *from,
     return g_stretchRect.Original()(device, from, part, to, place, filter);
 }
 
+// The alpha's own blend, as the game last asked for it. Only our states ask:
+// a pass that blends is given one that leaves in the picture's alpha what
+// share of the surface under it still shows (build_shaders.py's
+// with_share_kept: nothing of the drawn thing's alpha, and the alpha there
+// by what the thing leaves clear). That is for the frame's own picture. In a
+// target the interface lays on the screen by its alpha it rubs a blended
+// thing out: Cailan's helm, blended whole for its plume, was not in the
+// inventory's figure, and the head under it hidden as it is under any helm
+// (the user, 2026-10-12: "alistair's head is missing in char page"; seen
+// with the helm put on and taken off, twice). So it is in force only while
+// the picture is drawn into, and anywhere else the alpha blends as the
+// colour does, which is the game's way.
+DWORD g_separateAlphaAsked = FALSE;
+
+HRESULT __stdcall SetRenderState(IDirect3DDevice9 *device, D3DRENDERSTATETYPE state, DWORD value)
+{
+    if (state == D3DRS_SEPARATEALPHABLENDENABLE)
+    {
+        g_separateAlphaAsked = value;
+        value = g_drawsPicture ? value : FALSE;
+    }
+    return g_setRenderState.Original()(device, state, value);
+}
+
 // Whether a surface is the frame's own picture: our target, or the back
 // buffer where none of ours was made.
 bool IsPicture(IDirect3DDevice9 *device, IDirect3DSurface9 *surface)
@@ -1792,6 +1819,11 @@ HRESULT __stdcall SetRenderTarget(IDirect3DDevice9 *device, DWORD index, IDirect
         {
             g_drawsPicture = picture;
             HandShareAsked(device);
+            if (g_setRenderState.IsAttached())
+            {
+                g_setRenderState.Original()(device, D3DRS_SEPARATEALPHABLENDENABLE,
+                                            picture ? g_separateAlphaAsked : FALSE);
+            }
         }
     }
     if (g_tracing)
@@ -1861,6 +1893,7 @@ void WatchFramesOf(IDirect3DDevice9 *device)
     }
     g_stretchRect.AttachTo(Method<StretchRectFn>(device, kStretchRectSlot), &StretchRect);
     g_setRenderTarget.AttachTo(Method<SetRenderTargetFn>(device, kSetRenderTargetSlot), &SetRenderTarget);
+    g_setRenderState.AttachTo(Method<SetRenderStateFn>(device, kSetRenderStateSlot), &SetRenderState);
     g_clear.AttachTo(Method<ClearFn>(device, kClearSlot), &Clear);
     g_draw.AttachTo(Method<DrawFn>(device, kDrawSlot), &Draw);
     g_drawIndexed.AttachTo(Method<DrawIndexedFn>(device, kDrawIndexedSlot), &DrawIndexed);
