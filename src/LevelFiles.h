@@ -81,7 +81,8 @@ inline std::wstring Lower(std::wstring text)
 // and none twice. What a std::map would be, but for this: the library's map
 // cannot be moved without memory asked for, which may not be had, and so
 // nothing that holds one can be moved without the chance of an exception
-// (clang-tidy's bugprone-exception-escape, of Archive and ModelParts). These
+// (clang-tidy's bugprone-exception-escape, of ModelParts and of the archive this
+// file once had). These
 // tables are made once and read from then on, which a sorted list does as
 // well.
 template <class Value> using ByName = std::vector<std::pair<std::wstring, Value>>;
@@ -93,93 +94,31 @@ template <class Value> const Value *Found(const ByName<Value> &table, const std:
     return found != table.end() && found->first == name ? &found->second : nullptr;
 }
 
-// One of the game's archives: its directory, and any file of it by name.
-// An archive read all through a bake is held open, the models' two and a
-// level's rooms': opened for each reading, on a thread whose reading gives
-// way to everything, a room of the Circle took seven seconds where it had
-// taken half of one (2026-10-11). The rest are opened for each reading and
-// not held: a terrain level has an archive or two to a tile, five hundred
-// in Denerim's largest, and a process may hold 512 files open.
-class Archive
+// One of the game's archives: its directory, and any file of it by name, held
+// open or not. DAOLib's (dao/core/Erf.h), which was this file's own until it
+// moved there for every reader of the game's files (DAOLib #106, this repo's
+// #22): an archive read all through a bake is held open (the models' two and
+// a level's rooms'), as a room of the Circle took seven seconds opened for
+// each reading where it took half of one held (2026-10-11); the rest are
+// opened for each reading, as a terrain level has an archive or two to a tile,
+// five hundred in Denerim's largest, and a process may hold 512 files open.
+using Archive = core::erf::Archive;
+
+// An archive's files' names, each once, in lower case and in their order, as
+// a level lists its rooms.
+inline std::vector<std::wstring> NamesOf(const Archive &archive)
 {
-  public:
-    static std::optional<Archive> Open(const std::filesystem::path &path, bool held = false)
+    std::vector<std::wstring> names;
+    names.reserve(archive.Entries().size());
+    for (const core::erf::Entry &entry : archive.Entries())
     {
-        Archive archive;
-        archive.path_ = path;
-        archive.held_ = held;
-        std::ifstream file(path, std::ios::binary);
-        std::vector<std::byte> header(core::erf::kHeaderSize);
-        if (!file.read(reinterpret_cast<char *>(header.data()), static_cast<std::streamsize>(header.size())))
-        {
-            return std::nullopt;
-        }
-        const std::optional<std::uint32_t> count = core::erf::EntryCount(header);
-        if (!count)
-        {
-            return std::nullopt;
-        }
-        header.resize(core::erf::kHeaderSize + (std::size_t{*count} * core::erf::kEntrySize));
-        file.read(reinterpret_cast<char *>(header.data() + core::erf::kHeaderSize),
-                  static_cast<std::streamsize>(header.size() - core::erf::kHeaderSize));
-        for (core::erf::Entry &entry : core::erf::Entries(std::span(header).first(
-                 core::erf::kHeaderSize + static_cast<std::size_t>(std::max<std::streamsize>(file.gcount(), 0)))))
-        {
-            archive.entries_.emplace_back(Lower(entry.name), entry);
-        }
-        // In the names' order, and of two files of one name the first.
-        std::ranges::stable_sort(archive.entries_, {}, &std::pair<std::wstring, core::erf::Entry>::first);
-        const auto twice = std::ranges::unique(archive.entries_, {}, &std::pair<std::wstring, core::erf::Entry>::first);
-        archive.entries_.erase(twice.begin(), twice.end());
-        return archive;
+        names.push_back(Lower(entry.name));
     }
-
-    bool Has(const std::wstring &name) const
-    {
-        return Found(entries_, Lower(name)) != nullptr;
-    }
-
-    std::optional<std::vector<std::byte>> Read(const std::wstring &name) const
-    {
-        const core::erf::Entry *found = Found(entries_, Lower(name));
-        if (found == nullptr)
-        {
-            return std::nullopt;
-        }
-        std::vector<std::byte> bytes(found->size);
-        std::ifstream opened;
-        if (held_ && file_ == nullptr)
-        {
-            file_ = std::make_unique<std::ifstream>();
-        }
-        std::ifstream &file = held_ ? *file_ : opened;
-        if (!file.is_open())
-        {
-            file.open(path_, std::ios::binary);
-        }
-        file.clear();
-        file.seekg(found->offset);
-        if (!file.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size())))
-        {
-            return std::nullopt;
-        }
-        return bytes;
-    }
-
-    const ByName<core::erf::Entry> &Entries() const
-    {
-        return entries_;
-    }
-
-  private:
-    std::filesystem::path path_;
-    bool held_ = false;
-    // Open from the first reading on, if held. Behind a pointer, as a stream
-    // is another thing the library cannot move without the chance of an
-    // exception.
-    mutable std::unique_ptr<std::ifstream> file_;
-    ByName<core::erf::Entry> entries_;
-};
+    std::ranges::sort(names);
+    const auto twice = std::ranges::unique(names);
+    names.erase(twice.begin(), twice.end());
+    return names;
+}
 
 // A lightmap as three or four bytes a pixel: its colour, and for a terrain
 // level its alpha after, where the sun reaches.
@@ -434,9 +373,9 @@ class Level
             {
                 if (std::optional<Archive> archive = Archive::Open(entry.path()))
                 {
-                    for (const auto &[file, unused] : archive->Entries())
+                    for (const core::erf::Entry &file : archive->Entries())
                     {
-                        where_.emplace(file, others_.size());
+                        where_.emplace(Lower(file.name), others_.size());
                     }
                     others_.push_back(std::move(*archive));
                 }
@@ -444,7 +383,7 @@ class Level
         }
         const std::wstring stem = name_ + L"_";
         std::vector<std::pair<Tile, std::wstring>> tiles;
-        for (const auto &[file, entry] : rooms_.Entries())
+        for (const std::wstring &file : NamesOf(rooms_))
         {
             if (!file.starts_with(stem) || !file.ends_with(L".rml"))
             {
@@ -519,7 +458,7 @@ class Level
                 for (int y = tile->y - kTilesAbout; y <= tile->y + kTilesAbout; ++y)
                 {
                     std::wstring other = std::to_wstring(x) + L"_" + std::to_wstring(y) + L"_0";
-                    if (other != id && rooms_.Has(Stem(other) + L".rml"))
+                    if (other != id && rooms_.Find(Stem(other) + L".rml") != nullptr)
                     {
                         seen.push_back(std::move(other));
                     }
