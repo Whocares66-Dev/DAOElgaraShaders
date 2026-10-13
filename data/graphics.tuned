@@ -8,6 +8,7 @@
 ; sliders in hand, set it back (2026-10-12: "for mage tower everything 0 looks good to me").
 Tune.lak303d = 0, 0, 0, 0
 ;
-; Orzammar's Commons and Aeducan Thaig: the half stop their bakes were looked at with and
-; approved or rejected by, before a relit level's exposure was nothing (2026-10-11).
-Tune.orz100d = 2, 0, 0, 0
+; Orzammar's Commons: nothing. It is lit as vanilla lights it again since 2026-10-12 (the user:
+; "go back to vanilla lighting. i think what we have is too dark, too extreme. we can then
+; slowly tweak it from there"), and the half stop was for its relit bake.
+Tune.orz100d = 0, 0, 0, 0
