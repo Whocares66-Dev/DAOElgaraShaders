@@ -367,35 +367,14 @@ class ObjectsTest(unittest.TestCase):
         self.assertNotIn("mml_fDaoMetal", plain)
         self.assertIn("mml_vDaoBumps", plain)
 
-    def test_a_solid_thing_drawn_blended_is_cut_out(self):
+    def test_a_material_drawn_blended_is_left_blended(self):
         helm = mt.Material(
             "helm",
             '<MaterialObject Name="helm">\n\t<Material Name="Character.mat"></Material>\n'
             '\t<DefaultSemantic Name="AlphaNoTint"></DefaultSemantic>\n</MaterialObject>',
             "a.erf",
         )
-        self.assertIn('<DefaultSemantic Name="PunchthroughNoTint">', mt.object_text(helm, True, None, None, True))
         self.assertIn('<DefaultSemantic Name="AlphaNoTint">', mt.object_text(helm, True, None, None))
-        # a plume: solid but for its tips. A wing's skin: seen through all over.
-        plume = mt.np.ones((32, 32, 4), dtype=mt.np.float32)
-        plume[:8, :, 3] = 0.0
-        plume[8, :, 3] = 0.5
-        skin = mt.np.ones((32, 32, 4), dtype=mt.np.float32)
-        skin[..., 3] = 0.7
-        self.assertAlmostEqual(mt.part_clear(plume), 1 / 24)
-        self.assertAlmostEqual(mt.part_clear(skin), 1.0)
-        for cls in ("mixed", "leather", "cloth", "skin"):
-            self.assertTrue(mt.is_cut_out(cls, helm.text, plume))
-            self.assertFalse(mt.is_cut_out(cls, helm.text, skin))
-        self.assertFalse(mt.is_cut_out("other", helm.text, plume))  # what it is, is not known
-        self.assertFalse(mt.is_cut_out("mixed", helm.text.replace("AlphaNoTint", "NoTint"), plume))
-        for theirs, ours in (
-            ("AlphaLerpedTint", "PunchthroughLerpedTint"),
-            ("AlphaEmissiveNoTint", "PunchthroughEmissiveNoTint"),
-            ("NoTint", "NoTint"),
-            ("Alphabet", "Alphabet"),
-        ):
-            self.assertEqual(mt.cut_out(f'<DefaultSemantic Name="{theirs}">'), f'<DefaultSemantic Name="{ours}">')
 
     def test_the_table_is_read_as_written(self):
         with tempfile.TemporaryDirectory() as folder:

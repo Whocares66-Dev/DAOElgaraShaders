@@ -950,63 +950,26 @@ def bumps(normal_map):
     return (width, height), spreads
 
 
-BLENDED = re.compile(r'(<DefaultSemantic\s+Name\s*=\s*")Alpha(?=[A-Z])')
+# A material the game draws blended is left blended, whatever it is made of. For half a
+# day (2026-10-12) a solid one whose texture is clear only at its edges was written as a
+# cut-out (`Alpha<tint>` to `Punchthrough<tint>`), for a plumed helm whose plume showed
+# through its crown, as it does in the unmodified game. But where the game anti-aliases
+# it draws a figure's depth before the scene by a pass that reads no texture
+# (Character.mat's depth passes: Skin_Depth.psh), and a cut-out is in it whole: the
+# strings across the chest of Morrigan's robe, a clear card with five lines on it, hid
+# the skin under them in the depth, and where the card was then cut away nothing was
+# drawn: a black band (the user: "her chest is blacked out"; seen beside the game with
+# no plugin, with the robe's own material, and with the game's anti-aliasing off, in
+# which three it is right). A cut-out wants the depth pass cut by the texture too, as
+# the level's and a prop's are (build_shaders.py's DEPTH_VERTICES): until a figure's is,
+# its materials are drawn as the game draws them.
 
 
-def cut_out(text):
-    """A material object's text with its way of being drawn changed from blended to cut
-    out: `Alpha<tint>` to `Punchthrough<tint>`, which the game has for every tint
-    (Character.mat's semantics, read 2026-10-12) and uses itself for the same material's
-    second level of detail, a few metres off.
-
-    For a material that is a solid thing (is_cut_out). A thing drawn blended is drawn
-    after all that is solid, its own parts over one another in the order of its triangles
-    and not by which is nearer: a plumed helm, blended whole for the sake of its feathers'
-    tips (4 texels in 100 of its texture are part clear), showed its plume through its
-    crown and, with the camera close, the shoulders through its bevor, in the unmodified
-    game too (the user, 2026-10-12, four times: "helmet looks transparent"). Cut out, each
-    texel is there or not, at half clear, and what is there hides what is behind it."""
-    return BLENDED.sub(r"\1Punchthrough", text)
-
-
-SOLID_CLASSES = ("metal", "mixed", "stone", "wood", "cloth", "leather", "skin", "foliage")
-PART_CLEAR = (0.02, 0.98)  # an alpha between these is part clear: neither not there nor solid
-SEEN_THROUGH = 0.10  # this share of what is there part clear, and the thing is see-through
-
-
-def part_clear(diffuse):
-    """Of a texture's texels that are there at all, the share that is part clear."""
-    alpha = diffuse[..., 3]
-    there = alpha >= PART_CLEAR[0]
-    if not there.any():
-        return 0.0
-    return float(((alpha < PART_CLEAR[1]) & there).sum() / there.sum())
-
-
-def is_cut_out(cls, text, diffuse):
-    """Whether a material the game draws blended is to be drawn cut out (cut_out).
-
-    Metal, stone, wood, cloth, leather, skin and leaves are not see-through; glass is,
-    and what is like it (the user, 2026-10-12: "most materials (leather, wood, etc.)
-    shouldn't be see-through. only glass etc. should be"). So: what the table knows for
-    one of the solids, unless its own texture says it is seen through over an area and
-    not at an edge, more than a tenth of what is there part clear. Counted over the 31
-    materials the game draws blended (all Character.mat's): helms, robes, fur, feathers
-    and a body's torn edges are 0 to 6 in 100 part clear; a dragon's and the archdemon's
-    wings, one dragon's whole body and the Lady of the Forest's hair are 14 to 75, and
-    nothing is between. `other`, which is what the table does not know, is left as the
-    game draws it: a wraith and a skeleton are among them."""
-    if cls not in SOLID_CLASSES or not BLENDED.search(text):
-        return False
-    return diffuse is None or part_clear(diffuse) <= SEEN_THROUGH
-
-
-def object_text(material, metal, map_file, bumped, cut=False):
+def object_text(material, metal, map_file, bumped):
     """A material object's file with what the shaders' model reads of it added
     (shaders\\materials.hlsl): that it is metal, and, where only part of it is, the map
     that says which part; and its normal map's side and spreads (`bumped`, as bumps
-    gives them). With `cut`, it is drawn cut out where the game draws it blended
-    (cut_out, is_cut_out)."""
+    gives them)."""
     said = ""
     if metal:
         said += '\t<Float Name="mml_fDaoMetal" value="1.00"></Float>\n'
@@ -1018,7 +981,7 @@ def object_text(material, metal, map_file, bumped, cut=False):
         far = " ".join(f"{v:.5f}" for v in spreads[2:6])
         said += f'\t<Vector4f Name="mml_vDaoBumps" value="{width:.2f} {height:.2f} {near}"></Vector4f>\n'
         said += f'\t<Vector4f Name="mml_vDaoBumpsFar" value="{far}"></Vector4f>\n'
-    text = cut_out(material.text) if cut else material.text
+    text = material.text
     end = text.rfind("</MaterialObject>")
     if end < 0:
         return None
@@ -1048,17 +1011,13 @@ def write_objects(game, classes, folder, log):
             picture = game.image(normal_map)
             measured[normal_map] = bumps(picture) if picture is not None else None
         bumped = measured.get(normal_map)
-        cut = False
-        if BLENDED.search(material.text):
-            cut = is_cut_out(cls, material.text, game.image(material.diffuse) if material.diffuse else None)
-            counts["drawn cut out, not blended" if cut else "left blended"] += 0 if name in game.differing else 1
-        if cls not in ("metal", "mixed") and not bumped and not cut:
+        if cls not in ("metal", "mixed") and not bumped:
             continue
         if name in game.differing:
             counts["with copies that differ: left as they are"] += 1
             continue
         if cls not in ("metal", "mixed"):
-            text = object_text(material, False, None, bumped, cut)
+            text = object_text(material, False, None, bumped)
             if text is not None:
                 with open(os.path.join(folder, name + ".mao"), "w", encoding="latin-1", newline="") as f:
                     f.write(text)
@@ -1078,7 +1037,7 @@ def write_objects(game, classes, folder, log):
                 with open(os.path.join(folder, map_file), "wb") as f:
                     f.write(dds_dxt1(grey))
                 wanted.add(map_file)
-        text = object_text(material, True, map_file, bumped, cut)
+        text = object_text(material, True, map_file, bumped)
         if text is None:
             counts["not a material object's file"] += 1
             continue
