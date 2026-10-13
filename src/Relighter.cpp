@@ -2768,6 +2768,39 @@ struct Cube
     Colour falls{1, 1, 1};
 };
 
+// The light of the lamps a cube's place sees straight, as it falls
+// on a surface there in the mean of every way it may face: the mean of
+// their discs all round (a disc shows a lamp's colour over the square of
+// its radius, so that it lights a surface facing it as the lamp does;
+// LampSeen). A surface's light where it mirrors the cube has its lamps
+// in it (DaoLocal: a lightmap, a probe), and the cube's measure left
+// them out: under a lamp the cube sees, every reflection was the lamp
+// over the dim walls times a light that already had the lamp in it.
+// Figor's floor, rough stone (a gloss of 0.05), mirrored the shaft's
+// light and the torches as white patches (the user, 2026-10-12: "ground
+// is too reflective").
+// @param lampsSeen what of each texel of the cube is a lamp's disc
+std::array<double, 3> LampsAllRound(std::span<const Colour> lampsSeen, std::uint32_t side)
+{
+    std::array<double, 3> light{};
+    double all = 0;
+    for (std::size_t i = 0; i < lampsSeen.size(); ++i)
+    {
+        const double out = TexelOf(i, side).out;
+        const double share = 1 / (out * std::sqrt(out));
+        for (std::size_t channel = 0; channel < 3; ++channel)
+        {
+            light.at(channel) += share * double{lampsSeen[i].at(channel)};
+        }
+        all += share;
+    }
+    for (double &channel : light)
+    {
+        channel = all > 0 ? channel / all : 0.0;
+    }
+    return light;
+}
+
 // The picture of the level all round a place: each texel the light seen
 // along the way out through its middle, with the lamps in sight drawn over
 // it, counted in the light that falls on what the picture sees (Cube::falls):
@@ -2790,6 +2823,7 @@ Cube CubeFrom(const Scene &scene, std::uint32_t room, const core::Point &from, s
 {
     std::vector<Colour> cube(std::size_t{side} * side * 6);
     std::vector<Colour> fell(cube.size());
+    std::vector<Colour> lampsSeen(cube.size()); // what of a texel is a lamp's disc, over what is behind it
     std::vector<char> landed(cube.size(), 0);
     ForEach(cube.size(), [&](std::size_t i) {
         const auto [way, out] = TexelOf(i, side);
@@ -2811,6 +2845,10 @@ Cube CubeFrom(const Scene &scene, std::uint32_t room, const core::Point &from, s
             }
         }
         cube[i] = seen;
+        for (std::size_t channel = 0; channel < 3; ++channel)
+        {
+            lampsSeen[i].at(channel) = std::max(seen.at(channel) - sight.seen.at(channel), 0.0F);
+        }
     });
     // The mean, each texel by how much of all round it is (CubeTexel::out).
     std::array<double, 3> light{};
@@ -2828,13 +2866,16 @@ Cube CubeFrom(const Scene &scene, std::uint32_t room, const core::Point &from, s
             round += share;
         }
     }
+    // And of the lamps it sees straight, which a surface it mirrors is lit by.
+    const std::array<double, 3> lampLight = LampsAllRound(lampsSeen, side);
     constexpr double kNoLight = 1e-4;
     Colour falls{1, 1, 1};
     for (std::size_t channel = 0; channel < 3; ++channel)
     {
-        if (round > 0 && light.at(channel) / round > kNoLight)
+        const double mean = (round > 0 ? light.at(channel) / round : 0.0) + lampLight.at(channel);
+        if (mean > kNoLight)
         {
-            falls.at(channel) = static_cast<float>(light.at(channel) / round);
+            falls.at(channel) = static_cast<float>(mean);
         }
     }
     for (Colour &texel : cube)
