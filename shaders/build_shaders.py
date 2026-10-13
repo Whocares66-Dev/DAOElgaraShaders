@@ -647,7 +647,9 @@ def with_materials(shader):
         None,
     )
     if mask:
-        changes.append((power, "after", f"daoMetal = DaoMetal({mask.group(1)});"))
+        changes.append(
+            (power, "after", f"daoMetal = DaoMetal({mask.group(1)}, mml_fSpecularReflectionMult);")
+        )
     # A shield's or a banner's arms are paint laid over it as it is drawn
     # (smpHeraldry; no material's own textures have them): where they lie the
     # surface is no metal. The heraldry's alpha is how much of the surface
@@ -770,7 +772,7 @@ def with_materials(shader):
             tint,
             "set",
             f"{into} = DaoMirror(daoLights, daoEnv * DaoLocal(daoLocal), {colour}.xyz, {own}, daoMetal, {faced}, {mirrored_by}, "
-            "daoEdged / max(daoLobes, 1e-6));",
+            "daoEdged / max(daoLobes, 1e-6), mml_fSpecularReflectionMult);",
         )
     )
     changes.append((power, "after", f"const float daoPower = {held}.w;"))

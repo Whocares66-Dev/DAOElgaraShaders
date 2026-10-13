@@ -104,10 +104,20 @@ float4 mml_vDaoBumpsFar;
 // What a surface that is no metal mirrors face on, of its mask's colour.
 static const float kDaoMirrorOfMask = 0.04 / 0.12;
 
-// How much of the surface at `uv` is metal, 0 to 1.
-float DaoMetal(float2 uv)
+// How much of the surface at `uv` mirrors as a metal does, 0 to 1: what of
+// it is metal (the material's word and its map), times what the material
+// says its reflection is of a whole one (`said`, mml_fSpecularReflectionMult,
+// which the game multiplies the surroundings' reflection by and nothing
+// else). The rest of a metal so dulled scatters its colour, as paint or
+// tarnish does. Until 2026-10-12 a metal scattered nothing whatever the
+// material said, so one the game's artists had dulled to a fifth (a kite
+// shield's face, the axes and bows with iron on them: 4 in 100 of the
+// part-metal materials say under a half) kept a fifth of a mirror and lost
+// the rest of its light: the shield was a dark glass where the game has a
+// matte bronze (issue 17; the user: "shield is a little too reflective").
+float DaoMetal(float2 uv, float said)
 {
-    return saturate(mml_fDaoMetal * tex2D(smpDaoMetal, uv).g) * saturate(DAO_MATERIALS);
+    return saturate(mml_fDaoMetal * tex2D(smpDaoMetal, uv).g) * saturate(said) * saturate(DAO_MATERIALS);
 }
 
 // What the normal map at `uv` adds to the square of a lobe's width: the
@@ -282,16 +292,25 @@ float2 DaoSurround(float rough, float facing)
 // towards the edge, DaoEdge's, the mean of it over the lights by their
 // lobes (the lights are summed before this is reached; with one light, or
 // lights the same way off, the mean is the thing itself).
+// `metal` is DaoMetal's, what mirrors as metal, and `said` the material's
+// word that went into it. `env` comes already times that word, as the game
+// has it: so of the surroundings the metal's part is weighed by the metal
+// there before the word (said once, not twice), and the rest's by what is
+// left when the mirroring metal is taken away.
 float3 DaoMirror(float3 lights, float3 env, float3 mirror, float3 own, float metal, float facing, float power,
-                 float edge)
+                 float edge, float said)
 {
     const float3 theirs = (lights + env) * mirror;
     const float3 both = own + mirror;
     const float3 asMetal = both / max(1.0, max(both.r, max(both.g, both.b)));
-    const float3 faceOn = lerp(kDaoMirrorOfMask * mirror, asMetal, saturate(metal));
+    const float mirrors = saturate(metal);
+    const float whole = saturate(mirrors / max(saturate(said), 1e-3));
+    const float3 unmetal = kDaoMirrorOfMask * mirror;
+    const float3 faceOn = lerp(unmetal, asMetal, mirrors);
+    const float3 faceOnEnv = (1 - mirrors) * unmetal + whole * asMetal;
     const float edgeOn = saturate(50 * faceOn.g);
     const float2 share = DaoSurround(sqrt(sqrt(2 / (power + 2))), saturate(facing));
-    const float3 sent = env * (faceOn * share.x + edgeOn * share.y);
+    const float3 sent = env * (faceOnEnv * share.x + edgeOn * (1 - mirrors + whole) * share.y);
     gDaoEnvSent = lerp(env * mirror, sent, saturate(DAO_MATERIALS));
     return lerp(theirs, lights * (faceOn + (edgeOn - faceOn) * saturate(edge)) + sent, saturate(DAO_MATERIALS));
 }
