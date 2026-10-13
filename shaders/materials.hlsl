@@ -100,6 +100,19 @@ sampler2D smpDaoMetal;
 // to the square of a lobe's width.
 float4 mml_vDaoBumps;
 float4 mml_vDaoBumpsFar;
+// And for a clear solid, crystal, ice, a cut stone, glass: what it mirrors
+// face on, by its substance, and the power it shines by; nothing for anything
+// else. Their masks cannot say it: a crystal's has no gloss at all, being
+// painted to glow (tools/material_table.py's CLEAR has the numbers and where
+// they are from).
+float4 mml_vDaoClear;
+
+// The power a surface's highlights and reflection are made by: its mask's,
+// or a clear solid's own.
+float DaoPower(float masks)
+{
+    return lerp(masks, mml_vDaoClear.y, step(1e-6, mml_vDaoClear.y) * saturate(DAO_MATERIALS));
+}
 
 // What a surface that is no metal mirrors face on, of its mask's colour.
 static const float kDaoMirrorOfMask = 0.04 / 0.12;
@@ -305,7 +318,7 @@ float3 DaoMirror(float3 lights, float3 env, float3 mirror, float3 own, float met
     const float3 asMetal = both / max(1.0, max(both.r, max(both.g, both.b)));
     const float mirrors = saturate(metal);
     const float whole = saturate(mirrors / max(saturate(said), 1e-3));
-    const float3 unmetal = kDaoMirrorOfMask * mirror;
+    const float3 unmetal = lerp(kDaoMirrorOfMask * mirror, mml_vDaoClear.x, step(1e-6, mml_vDaoClear.x));
     const float3 faceOn = lerp(unmetal, asMetal, mirrors);
     const float3 faceOnEnv = (1 - mirrors) * unmetal + whole * asMetal;
     const float edgeOn = saturate(50 * faceOn.g);

@@ -87,7 +87,24 @@ REPO = os.path.dirname(HERE)
 GAME = os.environ.get("DAO_GAME_DIR", r"C:\Program Files (x86)\GOG Galaxy\Games\Dragon Age Origins")
 
 SOLID = ("static.mat", "prop.mat", "character.mat", "weapon.mat", "cloth.mat", "canopy.mat")
-CLASSES = ("metal", "mixed", "stone", "wood", "cloth", "leather", "skin", "foliage", "other")
+CLASSES = ("metal", "mixed", "stone", "wood", "cloth", "leather", "skin", "foliage", "glass", "crystal", "gem", "ice", "other")
+
+# The clear solids, and how much light goes more slowly in each than in air (its index of
+# refraction: window glass 1.5, quartz 1.55, corundum, a ruby or a sapphire, 1.77, ice 1.31;
+# any handbook of optics). What such a thing mirrors face on is ((n - 1) / (n + 1)) squared,
+# and it is smooth. The game's textures cannot say either: a crystal's and an ice wall's
+# masks have no gloss at all (0.00 to 0.05, a power of 1 to 13: read 2026-10-12), being
+# painted to glow and not to shine, and by them the model drew a crystal as matte as chalk.
+# So for these the table says what they are and the shader takes the substance's mirror
+# and the top of the game's own scale of gloss (CLEAR_POWER) in place of the mask's.
+CLEAR = {"glass": 1.5, "crystal": 1.55, "gem": 1.77, "ice": 1.31}
+CLEAR_POWER = 256  # the game's shaders make a mask's gloss a power of 1 to 256
+
+
+def clear_mirror(cls):
+    """What a clear solid of this class mirrors face on, or None for any other class."""
+    n = CLEAR.get(cls)
+    return None if n is None else ((n - 1) / (n + 1)) ** 2
 # What a name can say besides a class: "the textures say how much of this is metal".
 PAINT = "paint"
 
@@ -393,9 +410,15 @@ WEAPONS = (
 THINGS = (
     # not things at all: defaults, placeholders, the toolset's own, effects' meshes
     ("other", None, r"default_ placeholder grey_dif gray50 (?<![a-z])tools_ test_sphere gizmo ^mesh(?![a-z]) ^fx_ zz_ textureatlas ^palette ^cs_ ^darkspawn"),
-    ("other", None, r"black0 blacksquare dwi_black dci_black prp_black (?<![a-z])water waterpool poolwater pool_water liquid lprop blood slime ice(wall|_mesh) snow mousnow"),
-    # glass, crystal, and things that glow
-    ("other", None, r"lyrium cryst gem\d ruby mirror(?!bronze) window skybeam glass vial bottle decanter phylact apparatus spirtapp spiritapp"),
+    ("ice", None, r"ice(wall|_mesh)"),
+    ("other", None, r"black0 blacksquare dwi_black dci_black prp_black (?<![a-z])water waterpool poolwater pool_water liquid lprop blood slime snow mousnow"),
+    # the clear solids (CLEAR): crystal and raw lyrium, cut stones, and glassware. A dish
+    # or a pot of lyrium, its dust and a lamp of it are not crystal; a window is as often
+    # a wall with one painted in it, and a mirror wants its own look: all left unknown.
+    ("crystal", None, r"cryst lyrium01 lyriumball"),
+    ("gem", None, r"gem\d ruby"),
+    ("glass", None, r"glass vial bottle decanter phylact"),
+    ("other", None, r"lyrium mirror(?!bronze) window skybeam apparatus spirtapp spiritapp"),
     # the dead, and what grows in the Deep Roads
     ("other", None, r"corps deadbody dead(ox|halla) hang(ing)?(fe)?male hurlockhead bonepile bnepile bneple bones skull eaten fleshpod fleshtile tileflash cocoon eggsac msac msask eggs_ tentical dragonegg nugplatter rstnug hngingnug hanging_nug spider sipder web totem drkspstuf barrdrksp dstools tooltorture torture_tools bonfire fire0 curio reliquary sextant sexant turk cage_?human tub(?![a-z]) p_tub wash_?basin"),
     # food, wax, ash, earth, paper and paint
@@ -991,12 +1014,15 @@ def bumps(normal_map):
 # its materials are drawn as the game draws them.
 
 
-def object_text(material, metal, map_file, bumped):
+def object_text(material, metal, map_file, bumped, clear=None):
     """A material object's file with what the shaders' model reads of it added
     (shaders\\materials.hlsl): that it is metal, and, where only part of it is, the map
-    that says which part; and its normal map's side and spreads (`bumped`, as bumps
-    gives them)."""
+    that says which part; its normal map's side and spreads (`bumped`, as bumps gives
+    them); and for a clear solid what it mirrors face on (`clear`, clear_mirror's) with
+    the power it shines by."""
     said = ""
+    if clear:
+        said += f'\t<Vector4f Name="mml_vDaoClear" value="{clear:.4f} {CLEAR_POWER:.2f} 0.00 0.00"></Vector4f>\n'
     if metal:
         said += '\t<Float Name="mml_fDaoMetal" value="1.00"></Float>\n'
     if map_file:
@@ -1037,7 +1063,8 @@ def write_objects(game, classes, folder, log):
             picture = game.image(normal_map)
             measured[normal_map] = bumps(picture) if picture is not None else None
         bumped = measured.get(normal_map)
-        if cls not in ("metal", "mixed") and not bumped:
+        clear = clear_mirror(cls)
+        if cls not in ("metal", "mixed") and not bumped and not clear:
             continue
         # A material the archives have in two copies that differ is the game's in one and
         # Awakening's in the other (pf_arm_lgte, pn_boo_lgte, pn_glv_lgte, pn_hlf_s01b and
@@ -1050,7 +1077,7 @@ def write_objects(game, classes, folder, log):
             counts["with copies that differ: left as they are"] += 1
             continue
         if cls not in ("metal", "mixed"):
-            text = object_text(material, False, None, bumped)
+            text = object_text(material, False, None, bumped, clear)
             if text is not None:
                 with open(os.path.join(folder, name + ".mao"), "w", encoding="latin-1", newline="") as f:
                     f.write(text)

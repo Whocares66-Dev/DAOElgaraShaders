@@ -329,6 +329,7 @@ MATERIAL_PARAMETERS = (
     '<Parameter Type = "Texture" Name = "mml_tDaoMetal" SamplerName = "smpDaoMetal" Default = "Default_White"/>'
     '<Parameter Type = "Vector4f" Name = "mml_vDaoBumps" Default = "0 0 0 0"/>'
     '<Parameter Type = "Vector4f" Name = "mml_vDaoBumpsFar" Default = "0 0 0 0"/>'
+    '<Parameter Type = "Vector4f" Name = "mml_vDaoClear" Default = "0 0 0 0"/>'
 )
 MATERIAL_SHADERS = r"^(ch[12](?!\w*_vl)\w*|weapon1|cloth1|prop1(_punch)?|propalpha1|static1\w*)\.psh$"
 
@@ -775,7 +776,7 @@ def with_materials(shader):
             "daoEdged / max(daoLobes, 1e-6), mml_fSpecularReflectionMult);",
         )
     )
-    changes.append((power, "after", f"const float daoPower = {held}.w;"))
+    changes.append((power, "after", f"const float daoPower = DaoPower({held}.w);"))
     # What the ambient share is made of (with_ambient_share): the surface's
     # colour and all it sends to the eye, as they stand after the last of the
     # three; and its ambient light, a figure's or a prop's first colour input.
