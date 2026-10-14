@@ -74,8 +74,8 @@
 //   middle fell on (the tower's, seen 2026-10-12, and gone with every pixel
 //   given the same width).
 //
-// DAO_MATERIALS (look.hlsl) is the look's switch: at 0, the Vanilla look,
-// every function here is the game's own arithmetic. It wants the scene drawn
+// DAO_MATERIALS (look.hlsl) is the switch, the options screen's Improved
+// shaders: at 0 every function here is the game's own arithmetic. It wants the scene drawn
 // into a 16-bit target with its highlights rolled off (Graphics.cpp,
 // grade.hlsl), and the plugin holds it at 0 without one.
 
@@ -225,11 +225,6 @@ float3 DaoCubeMean(samplerCUBE cube)
 // A cube of the area's as light, counted so that a surface mirroring it is
 // to multiply it by the light where the surface is (DaoLocal).
 //
-// In a level lit again the cube is one of ours, in real light, counted in
-// the light that falls on what it sees and kept as the lightmaps are: the
-// square root of its share of kDaoCubeMost (Relighter.cpp's CubeFrom and
-// WriteCubes; LevelFiles.h's kCubeMost).
-//
 // The game's own is a picture of eight bits taken at one spot, by what light
 // nobody knows: dim beside a sunlit village, and the same for a figure in
 // the sun and one in a cellar. Taken as it was, a metal out of doors, which
@@ -244,11 +239,10 @@ float3 DaoCubeMean(samplerCUBE cube)
 // It is what is done with a reflection taken at one spot in a level whose
 // light is baked (Lagarde and de Rousiers 2014; Call of Duty's "normalised"
 // cubes, Lazarov 2013).
-static const float kDaoCubeMost = 64.0;
 float3 DaoCubeLight(samplerCUBE cube, float3 stored)
 {
     const float3 counted = stored / max(DaoCubeMean(cube), 1.0 / 255);
-    return lerp(lerp(stored, counted, saturate(DAO_MATERIALS)), stored * stored * kDaoCubeMost, saturate(DAO_RELIT));
+    return lerp(stored, counted, saturate(DAO_MATERIALS));
 }
 
 // What a cube is multiplied by where a surface mirrors it: the light that
@@ -258,7 +252,7 @@ float3 DaoCubeLight(samplerCUBE cube, float3 stored)
 // (DaoCubeLight). The game's own arithmetic takes its cube as it is.
 float3 DaoLocal(float3 local)
 {
-    return lerp(1.0, max(local, 0), saturate(max(DAO_MATERIALS, DAO_RELIT)));
+    return lerp(1.0, max(local, 0), saturate(DAO_MATERIALS));
 }
 
 // The surroundings a surface mirrors, from the area's cube: `way` is where
@@ -266,11 +260,11 @@ float3 DaoLocal(float3 local)
 // mip a surface of that roughness blurs the cube to: the cube's last mip
 // times r (2 - r), r the square root of the lobe's width alpha (Lagarde and
 // de Rousiers 2014). The game's cubes are 256 pixels a face, their last mip
-// the eighth; ours are 128, a mip fewer.
+// the eighth.
 float4 DaoReflected(samplerCUBE cube, float4 way, float power)
 {
     const float rough = sqrt(sqrt(2 / (power + 2)));
-    const float last = 8 - saturate(DAO_RELIT);
+    const float last = 8;
     float4 seen = texCUBElod(cube, float4(way.xyz, lerp(way.w, last * rough * (2 - rough), saturate(DAO_MATERIALS))));
     seen.rgb = DaoCubeLight(cube, seen.rgb);
     return seen;

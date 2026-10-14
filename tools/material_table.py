@@ -84,10 +84,33 @@ except ImportError:  # pragma: no cover
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
-GAME = os.environ.get("DAO_GAME_DIR", r"C:\Program Files (x86)\GOG Galaxy\Games\Dragon Age Origins")
+GAME = os.environ.get(
+    "DAO_GAME_DIR", r"C:\Program Files (x86)\GOG Galaxy\Games\Dragon Age Origins"
+)
 
-SOLID = ("static.mat", "prop.mat", "character.mat", "weapon.mat", "cloth.mat", "canopy.mat")
-CLASSES = ("metal", "mixed", "stone", "wood", "cloth", "leather", "skin", "foliage", "glass", "crystal", "gem", "ice", "other")
+SOLID = (
+    "static.mat",
+    "prop.mat",
+    "character.mat",
+    "weapon.mat",
+    "cloth.mat",
+    "canopy.mat",
+)
+CLASSES = (
+    "metal",
+    "mixed",
+    "stone",
+    "wood",
+    "cloth",
+    "leather",
+    "skin",
+    "foliage",
+    "glass",
+    "crystal",
+    "gem",
+    "ice",
+    "other",
+)
 
 # The clear solids, and how much light goes more slowly in each than in air (its index of
 # refraction: window glass 1.5, quartz 1.55, corundum, a ruby or a sapphire, 1.77, ice 1.31;
@@ -105,6 +128,8 @@ def clear_mirror(cls):
     """What a clear solid of this class mirrors face on, or None for any other class."""
     n = CLEAR.get(cls)
     return None if n is None else ((n - 1) / (n + 1)) ** 2
+
+
 # What a name can say besides a class: "the textures say how much of this is metal".
 PAINT = "paint"
 
@@ -126,12 +151,18 @@ PAINT = "paint"
 MIRROR_MIN = 0.16  # a metal mirrors brightly
 GLOSS_MIN = 0.10  # and is glossy (a power of 26 and up, of the game's 1 to 256)
 MIRROR_OF_OWN = 0.35  # its mirror is no dimmer than this share of its own colour
-COLOURED = 0.30  # a saturation from which a surface's own colour is a colour, not a grey
+COLOURED = (
+    0.30  # a saturation from which a surface's own colour is a colour, not a grey
+)
 TINTED = 0.12  # a mirror's saturation from which it has a tint
 SHEEN = 0.30  # and from which it is a colour of its own
-GLOSS_STEEL = 0.16  # the gloss and the mirror from which a mirror tinted cool is cold steel's,
+GLOSS_STEEL = (
+    0.16  # the gloss and the mirror from which a mirror tinted cool is cold steel's,
+)
 MIRROR_STEEL = 0.30  # not a sheen
-HUE_APART = 45.0  # degrees between a surface's hue and its mirror's that make them two colours
+HUE_APART = (
+    45.0  # degrees between a surface's hue and its mirror's that make them two colours
+)
 WARM = (15.0, 65.0)  # the hues, in degrees, of copper, bronze, brass and gold
 SEEN = 0.12  # a colour darker than this has no hue to speak of
 USED = 0.04  # a texel black in both textures is the atlas's unused space
@@ -147,7 +178,11 @@ def hue_saturation(rgb):
     low = rgb.min(axis=2)
     spread = np.maximum(top - low, 1e-6)
     red, green, blue = rgb[..., 0], rgb[..., 1], rgb[..., 2]
-    hue = np.where(top == red, ((green - blue) / spread) % 6, np.where(top == green, (blue - red) / spread + 2, (red - green) / spread + 4))
+    hue = np.where(
+        top == red,
+        ((green - blue) / spread) % 6,
+        np.where(top == green, (blue - red) / spread + 2, (red - green) / spread + 4),
+    )
     return hue * 60, (top - low) / np.maximum(top, 1e-4), top
 
 
@@ -191,12 +226,24 @@ def metal_texels(diffuse, mirror, gloss, surely=False, shaded=False):
     apart = np.abs((surface_hue - mirror_hue + 180) % 360 - 180)
     same_hue = (mirror_saturation >= TINTED) & (apart <= HUE_APART)
     cool = (mirror_saturation >= TINTED) & (mirror_hue > 65) & (mirror_hue < 345)
-    sheen = cool & ((mirror_saturation >= SHEEN) | (gloss < GLOSS_STEEL) | (bright < MIRROR_STEEL))
+    sheen = cool & (
+        (mirror_saturation >= SHEEN) | (gloss < GLOSS_STEEL) | (bright < MIRROR_STEEL)
+    )
     twice = (bright >= SURE * MIRROR_MIN) & (gloss >= SURE * GLOSS_MIN)
-    gilt = (surface_hue >= WARM[0]) & (surface_hue <= WARM[1]) & (mirror_saturation < TINTED) & twice
+    gilt = (
+        (surface_hue >= WARM[0])
+        & (surface_hue <= WARM[1])
+        & (mirror_saturation < TINTED)
+        & twice
+    )
     own_colour = np.where(coloured, same_hue | gilt, ~(cool if surely else sheen))
     least = SURE if surely else 1.0 / SURE if shaded else 1.0
-    return (bright >= least * MIRROR_MIN) & (gloss >= least * GLOSS_MIN) & (bright >= MIRROR_OF_OWN * own) & own_colour
+    return (
+        (bright >= least * MIRROR_MIN)
+        & (gloss >= least * GLOSS_MIN)
+        & (bright >= MIRROR_OF_OWN * own)
+        & own_colour
+    )
 
 
 def box(a, side=3):
@@ -213,7 +260,14 @@ def resized(a, width, height):
     if a.shape[1] == width and a.shape[0] == height:
         return a
     planes = a.reshape(a.shape[0], a.shape[1], -1)
-    out = [np.asarray(Image.fromarray(planes[..., i].astype(np.float32), "F").resize((width, height), Image.BOX)) for i in range(planes.shape[2])]
+    out = [
+        np.asarray(
+            Image.fromarray(planes[..., i].astype(np.float32), "F").resize(
+                (width, height), Image.BOX
+            )
+        )
+        for i in range(planes.shape[2])
+    ]
     return np.stack(out, axis=2).reshape((height, width) + a.shape[2:])
 
 
@@ -242,7 +296,9 @@ def joined(seeds, may):
         grown = wider
 
 
-PLATE = re.compile(r"ARM_(MAS|HVY|DWP)", re.I)  # the projects of massive, heavy and dwarven plate
+PLATE = re.compile(
+    r"ARM_(MAS|HVY|DWP)", re.I
+)  # the projects of massive, heavy and dwarven plate
 
 
 def is_plate(material):
@@ -281,13 +337,21 @@ def metal_map(diffuse, specular, plate=False):
     the rule without it, so no material's class moves by it.
     """
     height, width = specular.shape[:2]
-    if max(width, height) > 1024:  # a level's atlas: the rule at a quarter is the same answer
+    if (
+        max(width, height) > 1024
+    ):  # a level's atlas: the rule at a quarter is the same answer
         width, height = width // 4, height // 4
         specular = resized(specular, width, height)
     diffuse = resized(diffuse[..., :3], width, height)
     used = (diffuse.max(axis=2) > USED) | (specular[..., :3].max(axis=2) > USED)
     colours = box(diffuse), box(specular[..., :3]), box(specular[..., 3])
-    metal = box(metal_texels(*colours).astype(np.float32), max(3, -(-max(width, height) // 128) | 1)) > 0.5
+    metal = (
+        box(
+            metal_texels(*colours).astype(np.float32),
+            max(3, -(-max(width, height) // 128) | 1),
+        )
+        > 0.5
+    )
     metal |= metal_texels(*colours, surely=True)
     share = float(metal[used].mean()) if used.any() else 0.0
     if plate:
@@ -314,7 +378,9 @@ def dxt1_blocks(grey):
     g1 = ((low << 2) | (low >> 4)).astype(np.float32)[:, None] / 255
     palette = np.stack([g0, g1, (2 * g0 + g1) / 3, (g0 + 2 * g1) / 3], axis=2)
     choice = np.abs(blocks[:, :, None] - palette).argmin(axis=2).astype(np.uint32)
-    choice[c0 <= c1] = 0  # one colour: with c0 not over c1 the choices mean other things
+    choice[c0 <= c1] = (
+        0  # one colour: with c0 not over c1 the choices mean other things
+    )
     bits = (choice << (2 * np.arange(16, dtype=np.uint32))).sum(axis=1, dtype=np.uint32)
     out = np.empty(len(blocks), dtype=[("c0", "<u2"), ("c1", "<u2"), ("bits", "<u4")])
     out["c0"], out["c1"], out["bits"] = c0, c1, bits
@@ -335,9 +401,13 @@ def dds_dxt1(grey):
         level = resized(level, max(1, w // 2), max(1, h // 2))
     linear = max(1, (width + 3) // 4) * max(1, (height + 3) // 4) * 8
     # DDSD_CAPS | HEIGHT | WIDTH | PIXELFORMAT | MIPMAPCOUNT | LINEARSIZE
-    header = struct.pack("<4s7I44x", b"DDS ", 124, 0x000A1007, height, width, linear, 0, len(levels))
+    header = struct.pack(
+        "<4s7I44x", b"DDS ", 124, 0x000A1007, height, width, linear, 0, len(levels)
+    )
     header += struct.pack("<2I4s5I", 32, 0x4, b"DXT1", 0, 0, 0, 0, 0)  # DDPF_FOURCC
-    header += struct.pack("<5I", 0x00401008, 0, 0, 0, 0)  # DDSCAPS_COMPLEX | TEXTURE | MIPMAP
+    header += struct.pack(
+        "<5I", 0x00401008, 0, 0, 0, 0
+    )  # DDSCAPS_COMPLEX | TEXTURE | MIPMAP
     return header + b"".join(levels)
 
 
@@ -359,25 +429,53 @@ def map_name(specular):
 # ARM_DWP (dwarven plate), ARM_MED (medium: mail, splint and scale over leather), ARM_LGT
 # (light: leather, some of it studded), ARM_NUD (the bare body), CTH_ (clothes), ROB_ (robes).
 WORN = (
-    (PAINT, "other", r"(?<![a-z])(arm|boo|glv)_(mas|hvy|dwp|med)"),  # plate and mail: the textures say where
-    (PAINT, "other", r"(?<![a-z])arm_bda"),  # an add-in's plate (the Blood Dragon armour: its project is ARM_BDA)
-    (PAINT, "leather", r"(?<![a-z])(arm|boo|glv)_lgt"),  # leather: studs and buckles, if it has them
+    (
+        PAINT,
+        "other",
+        r"(?<![a-z])(arm|boo|glv)_(mas|hvy|dwp|med)",
+    ),  # plate and mail: the textures say where
+    (
+        PAINT,
+        "other",
+        r"(?<![a-z])arm_bda",
+    ),  # an add-in's plate (the Blood Dragon armour: its project is ARM_BDA)
+    (
+        PAINT,
+        "leather",
+        r"(?<![a-z])(arm|boo|glv)_lgt",
+    ),  # leather: studs and buckles, if it has them
     ("skin", None, r"(?<![a-z])arm_nud"),
     ("cloth", None, r"(?<![a-z])(cth|rob|chd)_"),  # clothes, robes, the children
     (PAINT, "cloth", r"(?<![a-z])hlh_g\d"),  # the mages' cowls (the project is ROB_ENC)
     (PAINT, "leather", r"(?<![a-z])hlh_l\d"),  # the light helmets: leather caps
-    ("metal", None, r"(?<![a-z])hlh_crn|crown"),  # the crown: gold, painted with a grey mirror, which the rule takes for paint
+    (
+        "metal",
+        None,
+        r"(?<![a-z])hlh_crn|crown",
+    ),  # the crown: gold, painted with a grey mirror, which the rule takes for paint
     (PAINT, "other", r"(?<![a-z])hl[fh]_|(?<![a-z])hmf_"),  # helmets
 )
 
 # The creatures (c_, cn_, cb_, ch_ on Character.mat). Bare bodies but for these.
 CREATURES = (
-    ("other", None, r"default|^mat_\d|baked|_bak_|mediumred"),  # and a whole figure baked into one sheet for a crowd
+    (
+        "other",
+        None,
+        r"default|^mat_\d|baked|_bak_|mediumred",
+    ),  # and a whole figure baked into one sheet for a crowd
     ("wood", None, r"grandoak|_(bdy|bra)_(gra|wsv)"),  # the sylvans' trunks
     ("stone", None, r"cn_golem(?![a-z])|_stga|_sng|sng_"),  # the stone golem, Shale
     ("other", None, r"ashwr"),  # a wraith of ash
-    ("other", None, r"_skl"),  # the skeleton: bone, and the rule found metal on its skull
-    ("cloth", None, r"_arc(?![a-z])|_arh(?![a-z])"),  # the arcane horror: a skeleton in a robe
+    (
+        "other",
+        None,
+        r"_skl",
+    ),  # the skeleton: bone, and the rule found metal on its skull
+    (
+        "cloth",
+        None,
+        r"_arc(?![a-z])|_arh(?![a-z])",
+    ),  # the arcane horror: a skeleton in a robe
     # A head is never asked of the paint. Seen 2026-10-12: the rule marked the armoured
     # ogre's horns, a hurlock's teeth, a genlock's wet face and the revenant's hood, and
     # left the revenant's mail; only one genlock's crest came out right.
@@ -409,45 +507,97 @@ WEAPONS = (
 # longer one. What was seen in the review sheets and changed a line is said beside it.
 THINGS = (
     # not things at all: defaults, placeholders, the toolset's own, effects' meshes
-    ("other", None, r"default_ placeholder grey_dif gray50 (?<![a-z])tools_ test_sphere gizmo ^mesh(?![a-z]) ^fx_ zz_ textureatlas ^palette ^cs_ ^darkspawn"),
+    (
+        "other",
+        None,
+        r"default_ placeholder grey_dif gray50 (?<![a-z])tools_ test_sphere gizmo ^mesh(?![a-z]) ^fx_ zz_ textureatlas ^palette ^cs_ ^darkspawn",
+    ),
     ("ice", None, r"ice(wall|_mesh)"),
-    ("other", None, r"black0 blacksquare dwi_black dci_black prp_black (?<![a-z])water waterpool poolwater pool_water liquid lprop blood slime snow mousnow"),
+    (
+        "other",
+        None,
+        r"black0 blacksquare dwi_black dci_black prp_black (?<![a-z])water waterpool poolwater pool_water liquid lprop blood slime snow mousnow",
+    ),
     # the clear solids (CLEAR): crystal and raw lyrium, cut stones, and glassware. A dish
     # or a pot of lyrium, its dust and a lamp of it are not crystal; a window is as often
     # a wall with one painted in it, and a mirror wants its own look: all left unknown.
     ("crystal", None, r"cryst lyrium01 lyriumball"),
     ("gem", None, r"gem\d ruby"),
     ("glass", None, r"glass vial bottle decanter phylact"),
-    ("other", None, r"lyrium mirror(?!bronze) window skybeam apparatus spirtapp spiritapp"),
+    (
+        "other",
+        None,
+        r"lyrium mirror(?!bronze) window skybeam apparatus spirtapp spiritapp",
+    ),
     # the dead, and what grows in the Deep Roads
-    ("other", None, r"corps deadbody dead(ox|halla) hang(ing)?(fe)?male hurlockhead bonepile bnepile bneple bones skull eaten fleshpod fleshtile tileflash cocoon eggsac msac msask eggs_ tentical dragonegg nugplatter rstnug hngingnug hanging_nug spider sipder web totem drkspstuf barrdrksp dstools tooltorture torture_tools bonfire fire0 curio reliquary sextant sexant turk cage_?human tub(?![a-z]) p_tub wash_?basin"),
+    (
+        "other",
+        None,
+        r"corps deadbody dead(ox|halla) hang(ing)?(fe)?male hurlockhead bonepile bnepile bneple bones skull eaten fleshpod fleshtile tileflash cocoon eggsac msac msask eggs_ tentical dragonegg nugplatter rstnug hngingnug hanging_nug spider sipder web totem drkspstuf barrdrksp dstools tooltorture torture_tools bonfire fire0 curio reliquary sextant sexant turk cage_?human tub(?![a-z]) p_tub wash_?basin",
+    ),
     # food, wax, ash, earth, paper and paint
-    ("other", None, r"food bread cheese fish(?!ing|net|_net|_carv|carv) meat fruit (?<![a-z])pie(?![a-z]) pumpkin cabbage garlic pepper veggie vegetable candled?(?![a-z_]) ash(es|e)(?![a-z]) bonfireash dirt sand(?![a-z]) filth trash footpri paint poster map(01|_01)?(?![a-z]) lake_map scidraw science_drawing recipe book scrol prt_ portrait"),
+    (
+        "other",
+        None,
+        r"food bread cheese fish(?!ing|net|_net|_carv|carv) meat fruit (?<![a-z])pie(?![a-z]) pumpkin cabbage garlic pepper veggie vegetable candled?(?![a-z_]) ash(es|e)(?![a-z]) bonfireash dirt sand(?![a-z]) filth trash footpri paint poster map(01|_01)?(?![a-z]) lake_map scidraw science_drawing recipe book scrol prt_ portrait",
+    ),
     # iron and steel, bronze, brass, pewter, gold: things that are metal through
     # (an armour stand is not here: it is a stand of planks, seen 2026-10-12)
-    ("metal", None, r"(?<!hro_)anvil(?!_?lyr|_floor|_wall|_?base) chain shackle grate goldmetal blackiron ironblack dwmetal dwmet(?![a-z]) fci_metal prp_metal metal_0?1 metallatch wallarch(iron|bar) cabinet_?steel chest_?iron"),
-    ("metal", None, r"cauldron couldron pewter brasstorch mirrorbronze goblet gobwyrm coal_?pan incen(t|se) trpblade bladetrap trptciblade trpbladetci bird_?cage tongs cog[co]?\d canldeholdermetal candlemetal crown"),
+    (
+        "metal",
+        None,
+        r"(?<!hro_)anvil(?!_?lyr|_floor|_wall|_?base) chain shackle grate goldmetal blackiron ironblack dwmetal dwmet(?![a-z]) fci_metal prp_metal metal_0?1 metallatch wallarch(iron|bar) cabinet_?steel chest_?iron",
+    ),
+    (
+        "metal",
+        None,
+        r"cauldron couldron pewter brasstorch mirrorbronze goblet gobwyrm coal_?pan incen(t|se) trpblade bladetrap trptciblade trpbladetci bird_?cage tongs cog[co]?\d canldeholdermetal candlemetal crown",
+    ),
     # a suit of armour, weapons in a rack, a blade with a wooden grip: painted as the worn
     # and the wielded are, so the textures say where the metal is
     (PAINT, "other", r"armorsuit medarm medboo hmf_ coin"),
     # (a rack of bows is wood; the smith's tools are drawn on a white ground that the rule
     # took for the metal, and are left)
     ("other", None, r"wpnpage blacksmith"),
-    (PAINT, "wood", r"wpn(axe|d?sword|barrel) sword swrd butcher_knife hammer tree_?saw gong chand\d chand_ portcullis"),
+    (
+        PAINT,
+        "wood",
+        r"wpn(axe|d?sword|barrel) sword swrd butcher_knife hammer tree_?saw gong chand\d chand_ portcullis",
+    ),
     # wood that a word for cloth would otherwise take
     ("wood", None, r"wood_?(and)?_?rope tci_wood tent_?pole"),
     # cloth, rope and stuffing
-    ("cloth", None, r"cloth clth rug(?![a-z]) rug(blue|red|green|end) dwfrug carp(et)?(?![a-z]) bluecarp redcarp tapestr curt banner flag falg tent(?!ical) canvas tarp sack bedding bed_?roll pillow matress rags bandage rope net(01|_01)(?![a-z]) fish_?net couch straw_?mat"),
+    (
+        "cloth",
+        None,
+        r"cloth clth rug(?![a-z]) rug(blue|red|green|end) dwfrug carp(et)?(?![a-z]) bluecarp redcarp tapestr curt banner flag falg tent(?!ical) canvas tarp sack bedding bed_?roll pillow matress rags bandage rope net(01|_01)(?![a-z]) fish_?net couch straw_?mat",
+    ),
     ("leather", None, r"leather fur(?!n) hide bridal whip saddle dryingrack"),
     # things that grow
-    ("foliage", None, r"leaf leaves lv(?![a-z]) brdl shrb frond ivy plant flower shrub(?!bark) moss(?!tile) grass herb(?!o) tomato pine_?ne ter_pine needle hay(?![a-z]) haystack heystack hay_bale haybale straw scarecrow small_?tree treeline branch"),
+    (
+        "foliage",
+        None,
+        r"leaf leaves lv(?![a-z]) brdl shrb frond ivy plant flower shrub(?!bark) moss(?!tile) grass herb(?!o) tomato pine_?ne ter_pine needle hay(?![a-z]) haystack heystack hay_bale haybale straw scarecrow small_?tree treeline branch",
+    ),
     # stone that a wooden word would otherwise take: the dwarves' doors and furniture, the
     # Tevinter benches and tables of the mages' tower, marble and stone tables
-    ("stone", None, r"door\w*dwa?r?f dwarf_door dwfsecretdoor doorcitydwf orz_ent prp_dni_ dw_torch demon_torch tev(bench|table|desk|chair|wartable|pot|statu) dw_?(bench|table|chair|bed|box|couch|chest|slab|vat|amph|oven|sarco|floorart|rubble|rock|carving) table_?stone bench_?marble stone_well stnwell bath_?stone rock_topiary rcktopiary d[cw]i_throne dwi_beam doorwy tvetower rubptc"),
+    (
+        "stone",
+        None,
+        r"door\w*dwa?r?f dwarf_door dwfsecretdoor doorcitydwf orz_ent prp_dni_ dw_torch demon_torch tev(bench|table|desk|chair|wartable|pot|statu) dw_?(bench|table|chair|bed|box|couch|chest|slab|vat|amph|oven|sarco|floorart|rubble|rock|carving) table_?stone bench_?marble stone_well stnwell bath_?stone rock_topiary rcktopiary d[cw]i_throne dwi_beam doorwy tvetower rubptc",
+    ),
     # wood
-    ("wood", None, r"wood log(?!hain) bark tree stump root plank beam barrel barr(?![a-z]) crate cask keg table chair chra desk shelf shlve shelve slf\d bkslf bkshlf shlfs cabinet armoire dresser vanity bed(?!ding|_?roll|room) bunk door _dr(?![a-z]) gate gt_ cart wagon waggon carriage boat buoy float ladder lader fence fnc stool bucket bowl cup plate_?wood throne pulpit pew(?![a-z]) loom scaf stage stg(ladder|stair) sign sighn bridge(?!cobble|rocks|stone|trims|wall) pole plough wheel trough saw_?horse hitching (?<!c)rack coff chest chst easel stall stand stn?d watchtower hermithut aravel instrument musinst toy basket washboard chopping chopblock butcher_?board lever panel platform trapdoor coop dummy stretcher feeder spit invention woodendragon carving(?!\d) pinewall eci_wall cage torch scale ballista market_ wpn(bow|quiver) chantry_?altar ferldnaltar ferelden_altar germaltar german_altar head_?base statuferel ferelden_statue wall_?carv chamber_?pot iroof interiorroof"),
+    (
+        "wood",
+        None,
+        r"wood log(?!hain) bark tree stump root plank beam barrel barr(?![a-z]) crate cask keg table chair chra desk shelf shlve shelve slf\d bkslf bkshlf shlfs cabinet armoire dresser vanity bed(?!ding|_?roll|room) bunk door _dr(?![a-z]) gate gt_ cart wagon waggon carriage boat buoy float ladder lader fence fnc stool bucket bowl cup plate_?wood throne pulpit pew(?![a-z]) loom scaf stage stg(ladder|stair) sign sighn bridge(?!cobble|rocks|stone|trims|wall) pole plough wheel trough saw_?horse hitching (?<!c)rack coff chest chst easel stall stand stn?d watchtower hermithut aravel instrument musinst toy basket washboard chopping chopblock butcher_?board lever panel platform trapdoor coop dummy stretcher feeder spit invention woodendragon carving(?!\d) pinewall eci_wall cage torch scale ballista market_ wpn(bow|quiver) chantry_?altar ferldnaltar ferelden_altar germaltar german_altar head_?base statuferel ferelden_statue wall_?carv chamber_?pot iroof interiorroof",
+    ),
     # stone, and what a wall or a floor is where its name says no more
-    ("stone", None, r"stone stn rock rck marble brick cobble statu stat(mnstr|paragn|andraste) paragon pillar grave tomb sarco altar wall floor stair trim plaster stucco concrete cave boulder rubble slab carv fountain fnt\d well(?![a-z]) wellint bath pedestal head_?base idol sundial grindstone oven forge fire_?pit fire0 cliff mountain mount(?![a-z]) vista vis_mt ruin arch ceiling igrnd egrnd ground roof eagle demonhead tci_dh plug support lavark lavapan amph vat(?![a-z]) urn vase pot(?![a-z])|pot\d|pot_|potcook jar jug dish doll pkr circle drak fort castle city bldng blding pal_ estate estwall doorwy ter_ terfade fade_?rock face_rock fie_ fei_ fadportal sulf steamvent magicrock mage(stat|c) goldmage dwhead dbone silver sconce sonce brazier registry mage01"),
+    (
+        "stone",
+        None,
+        r"stone stn rock rck marble brick cobble statu stat(mnstr|paragn|andraste) paragon pillar grave tomb sarco altar wall floor stair trim plaster stucco concrete cave boulder rubble slab carv fountain fnt\d well(?![a-z]) wellint bath pedestal head_?base idol sundial grindstone oven forge fire_?pit fire0 cliff mountain mount(?![a-z]) vista vis_mt ruin arch ceiling igrnd egrnd ground roof eagle demonhead tci_dh plug support lavark lavapan amph vat(?![a-z]) urn vase pot(?![a-z])|pot\d|pot_|potcook jar jug dish doll pkr circle drak fort castle city bldng blding pal_ estate estwall doorwy ter_ terfade fade_?rock face_rock fie_ fei_ fadportal sulf steamvent magicrock mage(stat|c) goldmage dwhead dbone silver sconce sonce brazier registry mage01",
+    ),
 )
 
 # A tileset's one sheet, <code>_master: walls, floors, beams and fittings in one texture.
@@ -458,11 +608,32 @@ TILESETS = {
 }
 # The footstep sound a level material carries (mml_iSoundMaterialType), where it is one
 # that names a class. Most are 0, and a 5 is on wood as often as a builder forgot it.
-SOUNDS = {1: "wood", 2: "cloth", 3: "foliage", 4: "foliage", 5: "stone", 13: "metal", 15: "cloth"}
+SOUNDS = {
+    1: "wood",
+    2: "cloth",
+    3: "foliage",
+    4: "foliage",
+    5: "stone",
+    13: "metal",
+    15: "cloth",
+}
 
-TABLES = {name: tuple((cls, fallback, re.compile("|".join(words.split()))) for cls, fallback, words in table) for name, table in (("worn", WORN), ("creatures", CREATURES), ("weapons", WEAPONS), ("things", THINGS))}
+TABLES = {
+    name: tuple(
+        (cls, fallback, re.compile("|".join(words.split())))
+        for cls, fallback, words in table
+    )
+    for name, table in (
+        ("worn", WORN),
+        ("creatures", CREATURES),
+        ("weapons", WEAPONS),
+        ("things", THINGS),
+    )
+}
 # A prop that wears a weapon's texture, or a suit's or a helmet's, is classed as it.
-WIELDED = re.compile(r"w_(lsw|gsw|dgr|axe|gax|mal|mce|shd|sbw|lbw|cbw|stf|wnd|qui|arr)_")
+WIELDED = re.compile(
+    r"w_(lsw|gsw|dgr|axe|gax|mal|mce|shd|sbw|lbw|cbw|stf|wnd|qui|arr)_"
+)
 WORN_TEXTURE = re.compile(r"(p[nmf]|prp)_(arm|boo|glv|hlf|hlh)_")
 LOD = re.compile(r"_l[23]$")
 
@@ -498,27 +669,57 @@ def by_name(name, definition, diffuse="", project="", sound=None):
         return Verdict("cloth", "Cloth.mat: what the cloth simulation moves")
     if definition == "weapon.mat":
         cls, fallback, word = look_up("weapons", text) or ("other", None, "")
-        return Verdict(cls, f"a weapon ({word})" if word else "Weapon.mat, no name known", 0.1 if word else 0.6, fallback)
+        return Verdict(
+            cls,
+            f"a weapon ({word})" if word else "Weapon.mat, no name known",
+            0.1 if word else 0.6,
+            fallback,
+        )
     if definition == "character.mat":
         found = look_up("worn", text)
         if found:
             return Verdict(found[0], f"worn ({found[2]})", 0.1, found[1])
         found = look_up("creatures", text)
         if found:
-            return Verdict(found[0], f"a creature ({found[2]})", 0.15 if found[0] != PAINT else 0.3, found[1])
+            return Verdict(
+                found[0],
+                f"a creature ({found[2]})",
+                0.15 if found[0] != PAINT else 0.3,
+                found[1],
+            )
         return Verdict("other", "Character.mat, no name known", 0.6)
     # a level's or a prop's
     if not diffuse:
-        return Verdict("other", "no diffuse texture" + (": heraldry, drawn over a shield" if "heraldry" in project else ""), 0.0)
+        return Verdict(
+            "other",
+            "no diffuse texture"
+            + (": heraldry, drawn over a shield" if "heraldry" in project else ""),
+            0.0,
+        )
     master = re.match(r"([a-z]{3})_(test)?master|([a-z]{3})_mastersheet", name)
     if master:
         code = master.group(1) or master.group(3)
         for cls, codes in TILESETS.items():
             if code in codes.split():
-                return Verdict(cls, f"the {code} tileset's sheet: mostly {cls}, its fittings with it", 0.3)
-    found = look_up("weapons", stem) if WIELDED.match(stem) else look_up("worn", stem) if WORN_TEXTURE.match(stem) else None
+                return Verdict(
+                    cls,
+                    f"the {code} tileset's sheet: mostly {cls}, its fittings with it",
+                    0.3,
+                )
+    found = (
+        look_up("weapons", stem)
+        if WIELDED.match(stem)
+        else look_up("worn", stem)
+        if WORN_TEXTURE.match(stem)
+        else None
+    )
     if found:
-        return Verdict(found[0], f"wears {stem}, a {'weapon' if stem.startswith('w_') else 'worn thing'}'s texture", 0.2, found[1])
+        return Verdict(
+            found[0],
+            f"wears {stem}, a {'weapon' if stem.startswith('w_') else 'worn thing'}'s texture",
+            0.2,
+            found[1],
+        )
     found = look_up("things", text)
     if found:
         cls, fallback, word = found
@@ -526,15 +727,38 @@ def by_name(name, definition, diffuse="", project="", sound=None):
         if heard and heard not in ("metal", "stone") and cls in ("metal", PAINT):
             # its makers gave it a wooden footstep, or a cloth's: too much against a name (a stone's is
             # what a tileset's pieces were given whatever they are: fci_metallatch has it)
-            return Verdict(heard, f"named {word}, which could be metal, but sounds of {heard} underfoot", 0.5)
+            return Verdict(
+                heard,
+                f"named {word}, which could be metal, but sounds of {heard} underfoot",
+                0.5,
+            )
         disagree = heard and cls not in (PAINT, "other", heard)
-        return Verdict(cls, f"named {word}" + (f"; but sounds of {heard} underfoot" if disagree else ""), 0.35 if disagree else 0.1, fallback)
+        return Verdict(
+            cls,
+            f"named {word}"
+            + (f"; but sounds of {heard} underfoot" if disagree else ""),
+            0.35 if disagree else 0.1,
+            fallback,
+        )
     for cls, codes in TILESETS.items():
         if name[:3] in codes.split() and name[3:4] == "_":
             return Verdict(cls, f"of the {name[:3]} tileset", 0.4)
     if sound in SOUNDS and SOUNDS[sound] != "metal":
-        return Verdict(SOUNDS[sound], f"sounds of {SOUNDS[sound]} underfoot, and no name known", 0.5)
-    return Verdict("other", "no name known" + ("; sounds of metal underfoot, which is too little to call it one" if sound == 13 else ""), 0.6)
+        return Verdict(
+            SOUNDS[sound],
+            f"sounds of {SOUNDS[sound]} underfoot, and no name known",
+            0.5,
+        )
+    return Verdict(
+        "other",
+        "no name known"
+        + (
+            "; sounds of metal underfoot, which is too little to call it one"
+            if sound == 13
+            else ""
+        ),
+        0.6,
+    )
 
 
 def settle(verdict, share, ragged=False):
@@ -545,17 +769,31 @@ def settle(verdict, share, ragged=False):
     if verdict.cls != PAINT:
         return verdict.cls, verdict.why, verdict.doubt
     if share is None:
-        return verdict.fallback, f"{verdict.why}; no specular mask to ask, so {verdict.fallback}", 0.5
+        return (
+            verdict.fallback,
+            f"{verdict.why}; no specular mask to ask, so {verdict.fallback}",
+            0.5,
+        )
     said = f"{verdict.why}; {share:.0%} of it painted as metal"
     if share >= SHARE_METAL:
-        return "metal", said, verdict.doubt + (0.3 if share < SHARE_METAL + 0.05 else 0.0)
+        return (
+            "metal",
+            said,
+            verdict.doubt + (0.3 if share < SHARE_METAL + 0.05 else 0.0),
+        )
     if ragged and verdict.fallback == "skin" and share < SHARE_METAL:
         return "skin", f"{said}, but in specks, so skin", verdict.doubt + 0.3
     if share >= SHARE_MIXED:
         near = share < 2 * SHARE_MIXED or share > SHARE_METAL - 0.05
         return "mixed", said, verdict.doubt + (0.3 if near else 0.0)
-    expected = verdict.fallback == "other"  # plate, a blade: metal was expected and not found
-    return verdict.fallback, f"{said}, so {verdict.fallback}", verdict.doubt + (0.6 if expected else 0.3 if share > SHARE_MIXED / 2 else 0.1)
+    expected = (
+        verdict.fallback == "other"
+    )  # plate, a blade: metal was expected and not found
+    return (
+        verdict.fallback,
+        f"{said}, so {verdict.fallback}",
+        verdict.doubt + (0.6 if expected else 0.3 if share > SHARE_MIXED / 2 else 0.1),
+    )
 
 
 # --------------------------------------------------------------------------------------
@@ -580,8 +818,15 @@ def read_toc(path):
         table = f.read(size * count)
     out = {}
     for i in range(count):
-        name = table[i * size : i * size + 64].decode("utf-16le", errors="replace").split("\0")[0].lower()
-        out[name] = struct.unpack_from("<II", table, i * size + 64) if size == 72 else None
+        name = (
+            table[i * size : i * size + 64]
+            .decode("utf-16le", errors="replace")
+            .split("\0")[0]
+            .lower()
+        )
+        out[name] = (
+            struct.unpack_from("<II", table, i * size + 64) if size == 72 else None
+        )
     return out
 
 
@@ -597,7 +842,12 @@ class Material:
         self.definition = found.group(1).lower() if found else "?"
         found = re.search(r"dc:source=file:///(\S+?) ?-->", text)
         self.project = found.group(1).rsplit("/", 1)[-1] if found else ""
-        self.textures = {slot: res.lower() for slot, res in re.findall(r'<Texture Name="([^"]+)" ResName="([^"]*)"', text)}
+        self.textures = {
+            slot: res.lower()
+            for slot, res in re.findall(
+                r'<Texture Name="([^"]+)" ResName="([^"]*)"', text
+            )
+        }
         found = re.search(r'Name="mml_iSoundMaterialType"\s+value="(\d+)"', text)
         self.sound = int(found.group(1)) if found else None
 
@@ -637,7 +887,11 @@ class Game:
             for folder, folders, files in os.walk(os.path.join(root, top)):
                 if not levels:
                     folders[:] = [f for f in folders if f.lower() != "env"]
-                archives += [os.path.join(folder, f) for f in files if f.lower().endswith((".erf", ".rim"))]
+                archives += [
+                    os.path.join(folder, f)
+                    for f in files
+                    if f.lower().endswith((".erf", ".rim"))
+                ]
         seen = {}
         said = {}
         for path in sorted(archives, key=self._rank):
@@ -651,9 +905,19 @@ class Game:
                 continue
             level = os.sep + "env" + os.sep in rel.lower()
             if not level:
-                rank = 0 if os.sep + "high" + os.sep in rel.lower() else 2 if os.sep + "medium" + os.sep in rel.lower() else 1
+                rank = (
+                    0
+                    if os.sep + "high" + os.sep in rel.lower()
+                    else 2
+                    if os.sep + "medium" + os.sep in rel.lower()
+                    else 1
+                )
                 for name, at in toc.items():
-                    if name.endswith(".dds") and at and (name not in self.textures or rank < self.textures[name][0]):
+                    if (
+                        name.endswith(".dds")
+                        and at
+                        and (name not in self.textures or rank < self.textures[name][0])
+                    ):
                         self.textures[name] = (rank, path) + at
             if not maos:
                 continue
@@ -698,7 +962,17 @@ class Game:
         pf_arm_lgte, pn_boo_lgte and pn_glv_lgte are orange sheets of dots that Awakening's
         pack has as a leather suit (seen 2026-10-12, when the rule made the dots metal)."""
         rel = os.path.relpath(path, self.root).lower()
-        tier = 0 if os.sep + "patch" + os.sep in rel else 4 if rel.startswith("addins") else 1 if "core_ep1" in rel else 2 if rel.endswith("materialobjects.erf") else 3
+        tier = (
+            0
+            if os.sep + "patch" + os.sep in rel
+            else 4
+            if rel.startswith("addins")
+            else 1
+            if "core_ep1" in rel
+            else 2
+            if rel.endswith("materialobjects.erf")
+            else 3
+        )
         return tier, [-ord(c) for c in rel] if tier == 0 else [ord(c) for c in rel]
 
     def image(self, resource):
@@ -714,7 +988,12 @@ class Game:
                 f.seek(offset)
                 body = f.read(length)
             try:
-                picture = np.asarray(Image.open(io.BytesIO(body)).convert("RGBA"), dtype=np.float32) / 255
+                picture = (
+                    np.asarray(
+                        Image.open(io.BytesIO(body)).convert("RGBA"), dtype=np.float32
+                    )
+                    / 255
+                )
             except (OSError, ValueError, NotImplementedError):
                 picture = None
         self._images[resource] = picture
@@ -743,7 +1022,13 @@ class Row:
 def classify(game, material, want_map=True):
     """A material's Row, from its names and, where they say PAINT, its textures."""
     row = Row(material)
-    verdict = by_name(material.name, material.definition, material.diffuse, material.project, material.sound)
+    verdict = by_name(
+        material.name,
+        material.definition,
+        material.diffuse,
+        material.project,
+        material.sound,
+    )
     if verdict.cls == PAINT:
         specular = game.image(material.specular) if material.specular else None
         diffuse = game.image(material.diffuse) if material.diffuse else None
@@ -781,7 +1066,10 @@ def hand_edits(path):
             for line in f:
                 found = HAND.match(line)
                 if found:
-                    out[found.group(1).lower()] = (found.group(2).lower(), line.rstrip("\r\n"))
+                    out[found.group(1).lower()] = (
+                        found.group(2).lower(),
+                        line.rstrip("\r\n"),
+                    )
     return out
 
 
@@ -798,7 +1086,11 @@ def build_table(game, hands=None, progress=None):
         base = rows.get(LOD.sub("", name))
         if base is not None and base is not row and row.cls != base.cls:
             had = row.cls
-            row.cls, row.why, row.doubt = base.cls, f"as {base.material.name} ({base.why}); alone it was {had}", base.doubt
+            row.cls, row.why, row.doubt = (
+                base.cls,
+                f"as {base.material.name} ({base.why}); alone it was {had}",
+                base.doubt,
+            )
         if name in hands:
             row.cls, row.hand = hands[name][0], hands[name][1]
             row.why, row.doubt = "by hand", 0.0
@@ -870,7 +1162,9 @@ def thumb(a, size=THUMB):
     if a.ndim == 2:
         a = np.repeat(a[..., None], 3, axis=2)
     small = resized(a, size, size) if max(a.shape[:2]) > size else a
-    return Image.fromarray((small * 255).astype(np.uint8), "RGB").resize((size, size), Image.NEAREST)
+    return Image.fromarray((small * 255).astype(np.uint8), "RGB").resize(
+        (size, size), Image.NEAREST
+    )
 
 
 def review_sheets(game, rows, folder, log):
@@ -883,28 +1177,56 @@ def review_sheets(game, rows, folder, log):
             os.remove(os.path.join(folder, old))
     written = collections.Counter()
     for cls in CLASSES:
-        names = sorted((n for n, r in rows.items() if r.cls == cls and (LOD.sub("", n) == n or LOD.sub("", n) not in rows)), key=lambda n: (rows[n].material.definition, n))
+        names = sorted(
+            (
+                n
+                for n, r in rows.items()
+                if r.cls == cls and (LOD.sub("", n) == n or LOD.sub("", n) not in rows)
+            ),
+            key=lambda n: (rows[n].material.definition, n),
+        )
         cells = 4 if cls == "mixed" else 3
         columns = 4 if cls == "mixed" else 5
         per = columns * 4
         for start in range(0, len(names), per):
-            sheet = Image.new("RGB", (columns * (cells * THUMB + 8), 4 * (THUMB + 30)), (24, 24, 24))
+            sheet = Image.new(
+                "RGB", (columns * (cells * THUMB + 8), 4 * (THUMB + 30)), (24, 24, 24)
+            )
             draw = ImageDraw.Draw(sheet)
             for i, name in enumerate(names[start : start + per]):
                 row = rows[name]
                 material = row.material
-                x, y = (i % columns) * (cells * THUMB + 8), (i // columns) * (THUMB + 30)
+                x, y = (
+                    (i % columns) * (cells * THUMB + 8),
+                    (i // columns) * (THUMB + 30),
+                )
                 diffuse = game.image(material.diffuse) if material.diffuse else None
                 specular = game.image(material.specular) if material.specular else None
-                sheet.paste(thumb(None if diffuse is None else diffuse[..., :3]), (x, y))
-                sheet.paste(thumb(None if specular is None else specular[..., :3]), (x + THUMB, y))
-                sheet.paste(thumb(None if specular is None else specular[..., 3]), (x + 2 * THUMB, y))
+                sheet.paste(
+                    thumb(None if diffuse is None else diffuse[..., :3]), (x, y)
+                )
+                sheet.paste(
+                    thumb(None if specular is None else specular[..., :3]),
+                    (x + THUMB, y),
+                )
+                sheet.paste(
+                    thumb(None if specular is None else specular[..., 3]),
+                    (x + 2 * THUMB, y),
+                )
                 if cls == "mixed":
                     sheet.paste(thumb(row.map), (x + 3 * THUMB, y))
                 copies = sum(1 for n in rows if n != name and LOD.sub("", n) == name)
                 share = f"  {row.share:.0%} metal" if row.share is not None else ""
-                draw.text((x + 2, y + THUMB + 1), f"{name}{' (+%d lod)' % copies if copies else ''}", fill=(255, 255, 255))
-                draw.text((x + 2, y + THUMB + 13), f"{cls}  {material.definition[:-4]}{share}{'  BY HAND' if row.hand else ''}", fill=(170, 200, 255))
+                draw.text(
+                    (x + 2, y + THUMB + 1),
+                    f"{name}{' (+%d lod)' % copies if copies else ''}",
+                    fill=(255, 255, 255),
+                )
+                draw.text(
+                    (x + 2, y + THUMB + 13),
+                    f"{cls}  {material.definition[:-4]}{share}{'  BY HAND' if row.hand else ''}",
+                    fill=(170, 200, 255),
+                )
             written[cls] += 1
             sheet.save(os.path.join(folder, f"{cls}_{written[cls]:02}.jpg"), quality=85)
         log(f"  {cls}: {len(names)} drawn on {written[cls]} sheets")
@@ -912,43 +1234,114 @@ def review_sheets(game, rows, folder, log):
 
 
 def summary_text(game, rows, sheets, clashes):
-    definitions = [d for d in SOLID if any(r.material.definition == d for r in rows.values())]
+    definitions = [
+        d for d in SOLID if any(r.material.definition == d for r in rows.values())
+    ]
     counts = collections.Counter((r.cls, r.material.definition) for r in rows.values())
     out = ["# The material table, as made", ""]
-    out.append(f"{len(rows)} material objects of the solid, lit definitions; {sum(1 for r in rows.values() if r.hand)} of their lines are by hand.")
-    out += ["", "| class | " + " | ".join(d[:-4] for d in definitions) + " | all | sheets |", "|---|" + "---:|" * (len(definitions) + 2)]
+    out.append(
+        f"{len(rows)} material objects of the solid, lit definitions; {sum(1 for r in rows.values() if r.hand)} of their lines are by hand."
+    )
+    out += [
+        "",
+        "| class | " + " | ".join(d[:-4] for d in definitions) + " | all | sheets |",
+        "|---|" + "---:|" * (len(definitions) + 2),
+    ]
     for cls in CLASSES:
         each = [counts[cls, d] for d in definitions]
-        out.append(f"| {cls} | " + " | ".join(str(n) for n in each) + f" | {sum(each)} | {sheets.get(cls, 0)} |")
-    out.append("| all | " + " | ".join(str(sum(counts[c, d] for c in CLASSES)) for d in definitions) + f" | {len(rows)} | {sum(sheets.values())} |")
+        out.append(
+            f"| {cls} | "
+            + " | ".join(str(n) for n in each)
+            + f" | {sum(each)} | {sheets.get(cls, 0)} |"
+        )
+    out.append(
+        "| all | "
+        + " | ".join(str(sum(counts[c, d] for c in CLASSES)) for d in definitions)
+        + f" | {len(rows)} | {sum(sheets.values())} |"
+    )
     out += ["", "## Left out", ""]
-    out.append("Counted and not classed, by definition: " + ", ".join(f"{d} {n}" for d, n in game.skipped.most_common()) + ".")
+    out.append(
+        "Counted and not classed, by definition: "
+        + ", ".join(f"{d} {n}" for d, n in game.skipped.most_common())
+        + "."
+    )
     if game.unread:
         out.append("")
-        out.append(f"Not read: {sum(len(v) for v in game.unread.values())} material objects in {len(game.unread)} enciphered add-in archives (ERF V2.2), whatever their definitions: " + "; ".join(f"{a} ({len(n)})" for a, n in sorted(game.unread.items())) + ".")
+        out.append(
+            f"Not read: {sum(len(v) for v in game.unread.values())} material objects in {len(game.unread)} enciphered add-in archives (ERF V2.2), whatever their definitions: "
+            + "; ".join(f"{a} ({len(n)})" for a, n in sorted(game.unread.items()))
+            + "."
+        )
     mixed = [r for r in rows.values() if r.cls == "mixed"]
     out += ["", "## The maps", ""]
-    out.append(f"{len(mixed)} mixed materials, {len({map_name(r.material.specular) for r in mixed if r.map is not None})} maps (materials that share a specular mask share a map).")
+    out.append(
+        f"{len(mixed)} mixed materials, {len({map_name(r.material.specular) for r in mixed if r.map is not None})} maps (materials that share a specular mask share a map)."
+    )
     no_map = sorted(r.material.name for r in mixed if r.map is None)
     if no_map:
         out.append("")
-        out.append("Mixed with NO map, their textures missing or unreadable: " + ", ".join(no_map) + ".")
+        out.append(
+            "Mixed with NO map, their textures missing or unreadable: "
+            + ", ".join(no_map)
+            + "."
+        )
     if clashes:
         out.append("")
-        out.append("One specular mask under two diffuse textures (the map is the first's): " + "; ".join(clashes) + ".")
-    long = sorted({map_name(r.material.specular) for r in mixed if r.map is not None and len(map_name(r.material.specular)) > 32})
+        out.append(
+            "One specular mask under two diffuse textures (the map is the first's): "
+            + "; ".join(clashes)
+            + "."
+        )
+    long = sorted(
+        {
+            map_name(r.material.specular)
+            for r in mixed
+            if r.map is not None and len(map_name(r.material.specular)) > 32
+        }
+    )
     if long:
         out.append("")
-        out.append("Map names over the 32 characters an archive's entry has: " + ", ".join(long) + ".")
-    out += ["", "## Least sure", "", "| material | class | why | doubt |", "|---|---|---|---:|"]
-    bases = [r for n, r in rows.items() if LOD.sub("", n) == n and not r.hand and not (r.cls == "other" and r.doubt >= 0.6)]
-    out += [f"| {r.material.name} | {r.cls} | {r.why} | {r.doubt:.2f} |" for r in sorted(bases, key=lambda r: (-r.doubt, r.material.name))[:40]]
-    others = sorted((r for n, r in rows.items() if r.cls == "other" and LOD.sub("", n) == n), key=lambda r: (r.why.split(";")[0].split("(")[0], r.material.name))
-    out += ["", "## Other", "", f"{len(others)} (level-of-detail copies not listed), by why:", ""]
+        out.append(
+            "Map names over the 32 characters an archive's entry has: "
+            + ", ".join(long)
+            + "."
+        )
+    out += [
+        "",
+        "## Least sure",
+        "",
+        "| material | class | why | doubt |",
+        "|---|---|---|---:|",
+    ]
+    bases = [
+        r
+        for n, r in rows.items()
+        if LOD.sub("", n) == n
+        and not r.hand
+        and not (r.cls == "other" and r.doubt >= 0.6)
+    ]
+    out += [
+        f"| {r.material.name} | {r.cls} | {r.why} | {r.doubt:.2f} |"
+        for r in sorted(bases, key=lambda r: (-r.doubt, r.material.name))[:40]
+    ]
+    others = sorted(
+        (r for n, r in rows.items() if r.cls == "other" and LOD.sub("", n) == n),
+        key=lambda r: (r.why.split(";")[0].split("(")[0], r.material.name),
+    )
+    out += [
+        "",
+        "## Other",
+        "",
+        f"{len(others)} (level-of-detail copies not listed), by why:",
+        "",
+    ]
     groups = collections.defaultdict(list)
     for r in others:
         groups[r.why].append(r.material.name)
-    out += [f"- {why}: {', '.join(names)}" for why, names in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))]
+    out += [
+        f"- {why}: {', '.join(names)}"
+        for why, names in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    ]
     return "\n".join(out) + "\n"
 
 
@@ -990,7 +1383,11 @@ def bumps(normal_map):
             continue
 
         def mean(a, down=down, across=across, side=side):
-            return a[: down * side, : across * side].reshape(down, side, across, side).mean(axis=(1, 3))
+            return (
+                a[: down * side, : across * side]
+                .reshape(down, side, across, side)
+                .mean(axis=(1, 3))
+            )
 
         mx, my = mean(x), mean(y)
         xx, yy, xy = mean(x * x) - mx * mx, mean(y * y) - my * my, mean(x * y) - mx * my
@@ -1079,7 +1476,12 @@ def write_objects(game, classes, folder, log):
         if cls not in ("metal", "mixed"):
             text = object_text(material, False, None, bumped, clear)
             if text is not None:
-                with open(os.path.join(folder, name + ".mao"), "w", encoding="latin-1", newline="") as f:
+                with open(
+                    os.path.join(folder, name + ".mao"),
+                    "w",
+                    encoding="latin-1",
+                    newline="",
+                ) as f:
                     f.write(text)
                 wanted.add(name + ".mao")
                 counts["no metal"] += 1
@@ -1101,7 +1503,9 @@ def write_objects(game, classes, folder, log):
         if text is None:
             counts["not a material object's file"] += 1
             continue
-        with open(os.path.join(folder, name + ".mao"), "w", encoding="latin-1", newline="") as f:
+        with open(
+            os.path.join(folder, name + ".mao"), "w", encoding="latin-1", newline=""
+        ) as f:
             f.write(text)
         wanted.add(name + ".mao")
         counts[cls] += 1
@@ -1115,21 +1519,47 @@ def write_objects(game, classes, folder, log):
             os.remove(os.path.join(folder, old))
     with open(listed, "w", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(sorted(wanted)) + "\n")
-    log("materials: " + ", ".join(f"{count} {what}" for what, count in sorted(counts.items())) + f"; into {folder}")
+    log(
+        "materials: "
+        + ", ".join(f"{count} {what}" for what, count in sorted(counts.items()))
+        + f"; into {folder}"
+    )
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--game", default=GAME)
     parser.add_argument("--ini", default=os.path.join(REPO, "data", "materials.ini"))
-    parser.add_argument("--addins", default=ADDINS, help="the add-ins' files read out of the game (tools\\dump_addins.py)")
+    parser.add_argument(
+        "--addins",
+        default=ADDINS,
+        help="the add-ins' files read out of the game (tools\\dump_addins.py)",
+    )
     parser.add_argument("--out", default=os.path.join(REPO, "build", "materials"))
     parser.add_argument("--no-maps", action="store_true", help="write no maps")
-    parser.add_argument("--no-review", action="store_true", help="draw no review sheets")
-    parser.add_argument("--no-levels", action="store_true", help="do not read the level archives (they have had none of the solid kinds)")
-    parser.add_argument("--why", metavar="REGEX", help="print the class and reason of each material whose name matches, and write nothing")
-    parser.add_argument("--names", action="store_true", help="print the level's and the props' materials by the word that classed them, and write nothing")
-    parser.add_argument("--objects", metavar="FOLDER", help="write the table AS IT STANDS as the game reads it, material objects and maps, into a plugin's override folder; the table itself is not made again")
+    parser.add_argument(
+        "--no-review", action="store_true", help="draw no review sheets"
+    )
+    parser.add_argument(
+        "--no-levels",
+        action="store_true",
+        help="do not read the level archives (they have had none of the solid kinds)",
+    )
+    parser.add_argument(
+        "--why",
+        metavar="REGEX",
+        help="print the class and reason of each material whose name matches, and write nothing",
+    )
+    parser.add_argument(
+        "--names",
+        action="store_true",
+        help="print the level's and the props' materials by the word that classed them, and write nothing",
+    )
+    parser.add_argument(
+        "--objects",
+        metavar="FOLDER",
+        help="write the table AS IT STANDS as the game reads it, material objects and maps, into a plugin's override folder; the table itself is not made again",
+    )
     args = parser.parse_args(argv)
     if np is None:
         sys.exit("material_table.py needs numpy and Pillow")
@@ -1140,7 +1570,11 @@ def main(argv=None):
         print(text, flush=True)
 
     log(f"reading {args.game}")
-    game = Game(args.game, levels=not (args.no_levels or args.why or args.names or args.objects), addins=args.addins)
+    game = Game(
+        args.game,
+        levels=not (args.no_levels or args.why or args.names or args.objects),
+        addins=args.addins,
+    )
     if args.objects:
         write_objects(game, table_classes(args.ini), args.objects, log)
         return 0
@@ -1156,13 +1590,21 @@ def main(argv=None):
         groups = collections.defaultdict(list)
         for name, material in sorted(game.materials.items()):
             if material.definition in ("static.mat", "prop.mat"):
-                verdict = by_name(name, material.definition, material.diffuse, material.project, material.sound)
+                verdict = by_name(
+                    name,
+                    material.definition,
+                    material.diffuse,
+                    material.project,
+                    material.sound,
+                )
                 groups[verdict.cls, verdict.why].append(name)
         for (cls, why), names in sorted(groups.items()):
             log(f"{cls:8} {why}: {' '.join(names)}")
         return 0
     hands = hand_edits(args.ini)
-    log(f"{len(game.materials)} solid materials, {sum(game.skipped.values())} of other kinds, {len(hands)} lines by hand")
+    log(
+        f"{len(game.materials)} solid materials, {sum(game.skipped.values())} of other kinds, {len(hands)} lines by hand"
+    )
     rows = build_table(game, hands, log)
     os.makedirs(os.path.dirname(args.ini), exist_ok=True)
     with open(args.ini, "w", encoding="utf-8", newline="\n") as f:
@@ -1194,7 +1636,9 @@ def main(argv=None):
     if not args.no_review:
         sheets = review_sheets(game, rows, review, log)
     os.makedirs(review, exist_ok=True)
-    with open(os.path.join(review, "summary.md"), "w", encoding="utf-8", newline="\n") as f:
+    with open(
+        os.path.join(review, "summary.md"), "w", encoding="utf-8", newline="\n"
+    ) as f:
         f.write(summary_text(game, rows, sheets, clashes))
     counts = collections.Counter(r.cls for r in rows.values())
     log("  ".join(f"{c} {counts[c]}" for c in CLASSES))

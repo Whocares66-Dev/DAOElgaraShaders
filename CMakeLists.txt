@@ -58,23 +58,18 @@ include("${ELGARA_DAOLIB}/cmake/Quality.cmake")
 
 # ---------------------------------------------------------------------------
 # elgarashaders.dll -- the plugin, a folder of its own:
-# build\<preset>\daolib\plugins\elgarashaders\ has the dll, its pdb, the
-# looks' file and, in override\, the game's shaders rebuilt, which the game
-# reads as it reads its own override folder. tools/deploy.ps1 copies the
+# build\<preset>\daolib\plugins\elgarashaders\ has the dll, its pdb and,
+# in override\, the game's shaders rebuilt, which the game reads as it reads
+# its own override folder. tools/deploy.ps1 copies the
 # folder as it is.
 # ---------------------------------------------------------------------------
-add_daolib_plugin(
-    elgarashaders
-    SOURCES src/Graphics.cpp src/ProbeBaker.cpp src/ResourceDump.cpp
-    FILES data/graphics.ini data/graphics.tuned
-)
+add_daolib_plugin(elgarashaders SOURCES src/Graphics.cpp src/ResourceDump.cpp)
 dao_apply_warnings(elgarashaders)
 
 # The shaders, a chain and a material are the game's own, changed: made on
 # every build from the install's shaders.erf into the plugin's override
 # folder (shaders/build_shaders.py, which writes nothing and says why where
-# the game or the Windows SDK's fxc.exe is not found). The map size is
-# Graphics.cpp's kMapSize.
+# the game or the Windows SDK's fxc.exe is not found).
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
     add_custom_target(
@@ -84,7 +79,7 @@ if(Python3_Interpreter_FOUND)
             "${CMAKE_COMMAND}" -E env "DAOLIB_TOOLS=${ELGARA_DAOLIB}/tools"
             "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/build_shaders.py"
-            "${CMAKE_BINARY_DIR}/daolib/plugins/elgarashaders/override" 2048
+            "${CMAKE_BINARY_DIR}/daolib/plugins/elgarashaders/override"
         COMMENT "elgarashaders: the game's shaders, rebuilt"
         VERBATIM
     )
@@ -101,27 +96,20 @@ if(Python3_Interpreter_FOUND)
             "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/material_table.py" --objects
             "${CMAKE_BINARY_DIR}/daolib/plugins/elgarashaders/override"
-        COMMAND "${CMAKE_COMMAND}" -E touch "${CMAKE_BINARY_DIR}/materials.stamp"
+        COMMAND
+            "${CMAKE_COMMAND}" -E touch "${CMAKE_BINARY_DIR}/materials.stamp"
         DEPENDS
             "${CMAKE_CURRENT_SOURCE_DIR}/data/materials.ini"
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/material_table.py"
         COMMENT "elgarashaders: the materials' table, as the game reads it"
         VERBATIM
     )
-    add_custom_target(elgarashaders_materials ALL DEPENDS "${CMAKE_BINARY_DIR}/materials.stamp")
+    add_custom_target(
+        elgarashaders_materials
+        ALL
+        DEPENDS "${CMAKE_BINARY_DIR}/materials.stamp"
+    )
 endif()
-
-# The plugin's baker of light probes as a command of its own: a level baked
-# with no game running, to look at what it makes and how long it takes.
-add_executable(elgarashaders_bake src/BakeTool.cpp src/ProbeBaker.cpp)
-target_link_libraries(elgarashaders_bake PRIVATE DAOLib::daolib)
-dao_apply_warnings(elgarashaders_bake)
-
-# The relighter as a command: a level's lightmaps made again from its own lamps
-# and what glows in it, written as files for the override folder.
-add_executable(elgarashaders_relight src/RelightTool.cpp src/Relighter.cpp src/ProbeBaker.cpp)
-target_link_libraries(elgarashaders_relight PRIVATE DAOLib::daolib)
-dao_apply_warnings(elgarashaders_relight)
 
 # The Python tools' own tests (tools/test_*.py), where there is a Python.
 enable_testing()

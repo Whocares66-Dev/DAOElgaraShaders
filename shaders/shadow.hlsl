@@ -18,10 +18,6 @@
 // first three and [7].xyz its fourth with a w of 1, [7].w the far map's
 // reach, and [8] the plane that divides the two.
 
-#ifndef DAO_SHADOW_MAP_SIZE
-#define DAO_SHADOW_MAP_SIZE 1024.0
-#endif
-
 // The penumbra's radius in the world, in metres, and the least it may be in
 // texels of the map, under which the map's own steps show.
 static const float kDaoPenumbra = 0.035;

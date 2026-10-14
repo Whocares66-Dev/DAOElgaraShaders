@@ -1,8 +1,16 @@
 # Elgara Shaders
 
-Better lighting, shadows, colours and materials for Dragon Age: Origins, through the game's own Direct3D 9 pipeline. A plugin for [DAOLib](https://github.com/Whocares66-Dev/DAOLib). Unreleased and in development.
+Better shaders, shadows and anti-aliasing for Dragon Age: Origins, through the game's own Direct3D 9 pipeline. A plugin for [DAOLib](https://github.com/Whocares66-Dev/DAOLib).
 
-It rebuilds the game's shaders from the installed game at build time, bakes light probes for each level in the background as you play, and offers named looks on a slider in the options screen; the Vanilla look is the game without it. [dev/NOTES.md](dev/NOTES.md) says how the game's lighting works and what the plugin does to it; the history until 2026-10-11 is [issue 1](https://github.com/Whocares66-Dev/DAOElgaraShaders/issues/1).
+Five options on the Video tab of the game's options screen, each one on by default:
+
+- **Improved materials**: metal, gilt and polished stone mirror and scatter light as what they are made of, normal maps shape the light in shade and indoors, and bright highlights are rolled off rather than clipped.
+- **Improved shadows**: soft-edged, finer shadows (sixteen filtered taps on maps twice the game's size), and the sun's shadows fall on characters too.
+- **SMAA**: smooths the edges the game's own anti-aliasing misses; it works with that or without it.
+- **Ambient occlusion** (Off, Low, Medium, High): shade in corners, creases and under things.
+- **Anisotropic filtering** (Off to 16x): textures stay sharp where they are seen at a slant.
+
+It rebuilds the game's shaders from the installed game at build time. [dev/NOTES.md](dev/NOTES.md) says how the game's lighting works; the history until 2026-10-11 is [issue 1](https://github.com/Whocares66-Dev/DAOElgaraShaders/issues/1). The lighting overhaul is on the `dev` branch.
 
 ## Building
 
@@ -19,5 +27,3 @@ git submodule update --init --recursive
 ## Licence
 
 GPLv3 ([LICENSE](LICENSE)). `shaders/smaa/` is SMAA, under its own MIT licence.
-
-The bake tool (`elgarashaders_relight`, built for 64 bits by `tools/build-bake.ps1`) casts its rays with [Intel Embree](https://www.embree.org/), which runs its threads on [oneTBB](https://github.com/uxlfoundation/oneTBB); both are © Intel Corporation, under the Apache License 2.0. Neither is part of the plugin or is loaded into the game: they are used only to make a level's lightmaps and light probes, which are what the plugin ships. Their source is not in this repository (vcpkg fetches it at build time); a release that carried the bake tool itself would carry their licences and notices with it.

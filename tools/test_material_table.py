@@ -15,7 +15,9 @@ import unittest
 import material_table as mt
 
 HAVE_NUMPY = mt.np is not None
-HAVE_GAME = HAVE_NUMPY and os.path.isdir(os.path.join(mt.GAME, "packages", "core", "data"))
+HAVE_GAME = HAVE_NUMPY and os.path.isdir(
+    os.path.join(mt.GAME, "packages", "core", "data")
+)
 
 
 class NamesTest(unittest.TestCase):
@@ -25,67 +27,255 @@ class NamesTest(unittest.TestCase):
         return mt.by_name(name, definition, diffuse, project, sound).cls
 
     def test_worn(self):
-        self.assertEqual(self.verdict("pn_arm_masa", "character.mat", "pn_arm_masa_0d.dds", "ARM_MAS.matproj"), mt.PAINT)
-        self.assertEqual(self.verdict("pm_arm_lgtd_l2", "character.mat", "pm_arm_lgtd_0dl2.dds", "ARM_LGT.matproj"), mt.PAINT)
-        self.assertEqual(self.verdict("hm_arm_nuda", "character.mat", "hm_arm_nuda_0d.dds", "ARM_NUD.matproj"), "skin")
-        self.assertEqual(self.verdict("pf_rob_appa", "character.mat", "pf_rob_appa_0d.dds", "ROB_APP.matproj"), "cloth")
-        self.assertEqual(self.verdict("pm_cth_coma", "character.mat", "pm_cth_coma_0d.dds", "CTH_COM.matproj"), "cloth")
-        self.assertEqual(self.verdict("pn_hlh_crn", "character.mat", "pn_hlh_crn_0d.dds"), "metal")
+        self.assertEqual(
+            self.verdict(
+                "pn_arm_masa", "character.mat", "pn_arm_masa_0d.dds", "ARM_MAS.matproj"
+            ),
+            mt.PAINT,
+        )
+        self.assertEqual(
+            self.verdict(
+                "pm_arm_lgtd_l2",
+                "character.mat",
+                "pm_arm_lgtd_0dl2.dds",
+                "ARM_LGT.matproj",
+            ),
+            mt.PAINT,
+        )
+        self.assertEqual(
+            self.verdict(
+                "hm_arm_nuda", "character.mat", "hm_arm_nuda_0d.dds", "ARM_NUD.matproj"
+            ),
+            "skin",
+        )
+        self.assertEqual(
+            self.verdict(
+                "pf_rob_appa", "character.mat", "pf_rob_appa_0d.dds", "ROB_APP.matproj"
+            ),
+            "cloth",
+        )
+        self.assertEqual(
+            self.verdict(
+                "pm_cth_coma", "character.mat", "pm_cth_coma_0d.dds", "CTH_COM.matproj"
+            ),
+            "cloth",
+        )
+        self.assertEqual(
+            self.verdict("pn_hlh_crn", "character.mat", "pn_hlh_crn_0d.dds"), "metal"
+        )
 
     def test_a_fallback_is_what_else_the_family_is_made_of(self):
-        self.assertEqual(mt.by_name("pm_arm_lgtb", "character.mat", "pm_arm_lgtb_0d.dds").fallback, "leather")
-        self.assertEqual(mt.by_name("w_shd_kita", "weapon.mat", "w_shd_kita_0d.dds").fallback, "wood")
-        self.assertEqual(mt.by_name("w_lsw_ls01a_0", "weapon.mat", "w_lsw_ls01a_0d.dds").fallback, "other")
+        self.assertEqual(
+            mt.by_name("pm_arm_lgtb", "character.mat", "pm_arm_lgtb_0d.dds").fallback,
+            "leather",
+        )
+        self.assertEqual(
+            mt.by_name("w_shd_kita", "weapon.mat", "w_shd_kita_0d.dds").fallback, "wood"
+        )
+        self.assertEqual(
+            mt.by_name("w_lsw_ls01a_0", "weapon.mat", "w_lsw_ls01a_0d.dds").fallback,
+            "other",
+        )
 
     def test_creatures(self):
-        self.assertEqual(self.verdict("c_wolfa", "character.mat", "c_wolfa_0d.dds", "C_WOLF.matproj"), "skin")
-        self.assertEqual(self.verdict("cn_golem", "character.mat", "cn_bdy_stga_0d.dds"), "stone")
-        self.assertEqual(self.verdict("cn_bdy_glka", "character.mat", "cn_bdy_glka_0d.dds"), mt.PAINT)
+        self.assertEqual(
+            self.verdict(
+                "c_wolfa", "character.mat", "c_wolfa_0d.dds", "C_WOLF.matproj"
+            ),
+            "skin",
+        )
+        self.assertEqual(
+            self.verdict("cn_golem", "character.mat", "cn_bdy_stga_0d.dds"), "stone"
+        )
+        self.assertEqual(
+            self.verdict("cn_bdy_glka", "character.mat", "cn_bdy_glka_0d.dds"), mt.PAINT
+        )
         # a head is never asked of the paint: the rule marked horns, teeth and a wet face
-        self.assertEqual(self.verdict("cn_hed_glka", "character.mat", "cn_hed_glka_0d.dds"), "skin")
-        self.assertEqual(self.verdict("cn_hed_aoga", "character.mat", "cn_hed_aoga_0d.dds"), "skin")
+        self.assertEqual(
+            self.verdict("cn_hed_glka", "character.mat", "cn_hed_glka_0d.dds"), "skin"
+        )
+        self.assertEqual(
+            self.verdict("cn_hed_aoga", "character.mat", "cn_hed_aoga_0d.dds"), "skin"
+        )
 
     def test_weapons(self):
-        self.assertEqual(self.verdict("w_lsw_ls01a_0", "weapon.mat", "w_lsw_ls01a_0d.dds"), mt.PAINT)
-        self.assertEqual(self.verdict("w_shd_srda", "weapon.mat", "w_shd_srda_0d.dds"), mt.PAINT)
-        self.assertEqual(self.verdict("w_stf_st01a_0", "weapon.mat", "w_stf_st01a_0d.dds"), "wood")
-        self.assertEqual(self.verdict("w_qui_qu01", "weapon.mat", "w_qui_qu01a_0d.dds"), "leather")
+        self.assertEqual(
+            self.verdict("w_lsw_ls01a_0", "weapon.mat", "w_lsw_ls01a_0d.dds"), mt.PAINT
+        )
+        self.assertEqual(
+            self.verdict("w_shd_srda", "weapon.mat", "w_shd_srda_0d.dds"), mt.PAINT
+        )
+        self.assertEqual(
+            self.verdict("w_stf_st01a_0", "weapon.mat", "w_stf_st01a_0d.dds"), "wood"
+        )
+        self.assertEqual(
+            self.verdict("w_qui_qu01", "weapon.mat", "w_qui_qu01a_0d.dds"), "leather"
+        )
 
     def test_other_definitions(self):
-        self.assertEqual(self.verdict("cn_lea_gra", "canopy.mat", "cn_lea_graa_0d.dds"), "foliage")
-        self.assertEqual(self.verdict("flagking", "cloth.mat", "king_tent_flag.dds"), "cloth")
+        self.assertEqual(
+            self.verdict("cn_lea_gra", "canopy.mat", "cn_lea_graa_0d.dds"), "foliage"
+        )
+        self.assertEqual(
+            self.verdict("flagking", "cloth.mat", "king_tent_flag.dds"), "cloth"
+        )
 
     def test_things(self):
         static = "static.mat"
-        self.assertEqual(self.verdict("tti_master", static, "tti_master_d.dds", "TTI_Master.matproj", 0), "stone")
-        self.assertEqual(self.verdict("prp_tevbench1", static, "p_tevbench1_01d.dds", "Prop_Tevinter.matproj", 0), "stone")
-        self.assertEqual(self.verdict("prp_tevtable1", static, "p_tevtable1_01d.dds", "Prop_Tevinter.matproj", 0), "stone")
-        self.assertEqual(self.verdict("plc_benchmarble01", "prop.mat", "p_bench_marble_01d.dds"), "stone")
-        self.assertEqual(self.verdict("fci_exteriorwall01", static, "fci_ewall1.dds", "FereldenCastleInterior.matproj", 5), "stone")
-        self.assertEqual(self.verdict("fci_endwoodbeam", static, "fci_endwoodbm.dds", "FereldenCastleInterior.matproj", 1), "wood")
-        self.assertEqual(self.verdict("benchlog_01", static, "p_bench_log_01d.dds", "Prop_Kitchen.matproj", 0), "wood")
-        self.assertEqual(self.verdict("redrug", static, "prp_rugred.dds", "Prop_Bedroom.matproj", 15), "cloth")
-        self.assertEqual(self.verdict("anvil_01", static, "p_anvil_01d.dds", "Prop_Other.matproj", 0), "metal")
-        self.assertEqual(self.verdict("plc_chainshackles01", "prop.mat", "p_chain_shackles_01d.dds"), "metal")
-        self.assertEqual(self.verdict("prp_ivywall01", static, "prp_ivywall01_d.dds", "TerrainMaster.matproj", 0), "foliage")
+        self.assertEqual(
+            self.verdict(
+                "tti_master", static, "tti_master_d.dds", "TTI_Master.matproj", 0
+            ),
+            "stone",
+        )
+        self.assertEqual(
+            self.verdict(
+                "prp_tevbench1",
+                static,
+                "p_tevbench1_01d.dds",
+                "Prop_Tevinter.matproj",
+                0,
+            ),
+            "stone",
+        )
+        self.assertEqual(
+            self.verdict(
+                "prp_tevtable1",
+                static,
+                "p_tevtable1_01d.dds",
+                "Prop_Tevinter.matproj",
+                0,
+            ),
+            "stone",
+        )
+        self.assertEqual(
+            self.verdict("plc_benchmarble01", "prop.mat", "p_bench_marble_01d.dds"),
+            "stone",
+        )
+        self.assertEqual(
+            self.verdict(
+                "fci_exteriorwall01",
+                static,
+                "fci_ewall1.dds",
+                "FereldenCastleInterior.matproj",
+                5,
+            ),
+            "stone",
+        )
+        self.assertEqual(
+            self.verdict(
+                "fci_endwoodbeam",
+                static,
+                "fci_endwoodbm.dds",
+                "FereldenCastleInterior.matproj",
+                1,
+            ),
+            "wood",
+        )
+        self.assertEqual(
+            self.verdict(
+                "benchlog_01", static, "p_bench_log_01d.dds", "Prop_Kitchen.matproj", 0
+            ),
+            "wood",
+        )
+        self.assertEqual(
+            self.verdict(
+                "redrug", static, "prp_rugred.dds", "Prop_Bedroom.matproj", 15
+            ),
+            "cloth",
+        )
+        self.assertEqual(
+            self.verdict(
+                "anvil_01", static, "p_anvil_01d.dds", "Prop_Other.matproj", 0
+            ),
+            "metal",
+        )
+        self.assertEqual(
+            self.verdict("plc_chainshackles01", "prop.mat", "p_chain_shackles_01d.dds"),
+            "metal",
+        )
+        self.assertEqual(
+            self.verdict(
+                "prp_ivywall01",
+                static,
+                "prp_ivywall01_d.dds",
+                "TerrainMaster.matproj",
+                0,
+            ),
+            "foliage",
+        )
 
     def test_words_inside_words(self):
         static = "static.mat"
         # the Anvil of the Void is a level, not an anvil; a butcher's board is not a herb; cracked is not a rack
-        self.assertEqual(self.verdict("hro_anvil_wall", static, "hro_anvil_wall01d.dds", "hro_anvil.matproj", 0), "stone")
-        self.assertEqual(self.verdict("prp_butcherboard01", static, "p_butcher_boardd.dds", "OutsourcedProps01.matproj", 0), "wood")
-        self.assertEqual(self.verdict("fci_crackedstuccowall05", static, "fci_iwall4.dds", "FereldenCastleInterior.matproj", 5), "stone")
+        self.assertEqual(
+            self.verdict(
+                "hro_anvil_wall",
+                static,
+                "hro_anvil_wall01d.dds",
+                "hro_anvil.matproj",
+                0,
+            ),
+            "stone",
+        )
+        self.assertEqual(
+            self.verdict(
+                "prp_butcherboard01",
+                static,
+                "p_butcher_boardd.dds",
+                "OutsourcedProps01.matproj",
+                0,
+            ),
+            "wood",
+        )
+        self.assertEqual(
+            self.verdict(
+                "fci_crackedstuccowall05",
+                static,
+                "fci_iwall4.dds",
+                "FereldenCastleInterior.matproj",
+                5,
+            ),
+            "stone",
+        )
         # an armour stand is a stand of planks (its texture seen 2026-10-12), not armour
-        self.assertEqual(self.verdict("plc_armorstand", "prop.mat", "p_armor_stand_01d.dds", "Prop_Armory.matproj"), "wood")
+        self.assertEqual(
+            self.verdict(
+                "plc_armorstand",
+                "prop.mat",
+                "p_armor_stand_01d.dds",
+                "Prop_Armory.matproj",
+            ),
+            "wood",
+        )
 
     def test_a_prop_in_a_weapons_texture_is_asked_as_the_weapon(self):
-        self.assertEqual(self.verdict("plc_lsw_ls01a_0", "prop.mat", "w_lsw_ls01a_0d.dds", "Prop_Armory.matproj"), mt.PAINT)
+        self.assertEqual(
+            self.verdict(
+                "plc_lsw_ls01a_0",
+                "prop.mat",
+                "w_lsw_ls01a_0d.dds",
+                "Prop_Armory.matproj",
+            ),
+            mt.PAINT,
+        )
 
     def test_no_name_is_other(self):
-        self.assertEqual(self.verdict("prp_cline", "static.mat", "prp_cline0.dds", "Prop_Other.matproj", 0), "other")
-        self.assertEqual(self.verdict("h_aoredclifa", "static.mat", "", "HERALDRY.matproj", 0), "other")
+        self.assertEqual(
+            self.verdict(
+                "prp_cline", "static.mat", "prp_cline0.dds", "Prop_Other.matproj", 0
+            ),
+            "other",
+        )
+        self.assertEqual(
+            self.verdict("h_aoredclifa", "static.mat", "", "HERALDRY.matproj", 0),
+            "other",
+        )
         # a metal footstep alone does not make a metal
-        self.assertEqual(self.verdict("prp_whatsit", "static.mat", "p_whatsit_01d.dds", "", 13), "other")
+        self.assertEqual(
+            self.verdict("prp_whatsit", "static.mat", "p_whatsit_01d.dds", "", 13),
+            "other",
+        )
 
     def test_settle(self):
         plate = mt.by_name("pn_arm_masa", "character.mat", "pn_arm_masa_0d.dds")
@@ -109,16 +299,28 @@ class NamesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = os.path.join(folder, "materials.ini")
             with open(path, "w", encoding="utf-8") as f:
-                f.write("; a header\nanvil_01 = metal\nprp_tevbench1 = wood ; by hand: it is oak in my mod\nredrug=stone;By Hand\n")
+                f.write(
+                    "; a header\nanvil_01 = metal\nprp_tevbench1 = wood ; by hand: it is oak in my mod\nredrug=stone;By Hand\n"
+                )
             hands = mt.hand_edits(path)
         self.assertEqual(sorted(hands), ["prp_tevbench1", "redrug"])
-        self.assertEqual(hands["prp_tevbench1"], ("wood", "prp_tevbench1 = wood ; by hand: it is oak in my mod"))
+        self.assertEqual(
+            hands["prp_tevbench1"],
+            ("wood", "prp_tevbench1 = wood ; by hand: it is oak in my mod"),
+        )
 
         class Stub:
             def __init__(self, cls):
                 self.cls, self.share, self.material = cls, None, None
 
-        text = mt.table_text({"anvil_01": Stub("metal"), "prp_tevbench1": Stub("stone"), "redrug": Stub("cloth")}, hands)
+        text = mt.table_text(
+            {
+                "anvil_01": Stub("metal"),
+                "prp_tevbench1": Stub("stone"),
+                "redrug": Stub("cloth"),
+            },
+            hands,
+        )
         self.assertIn("\nprp_tevbench1 = wood ; by hand: it is oak in my mod\n", text)
         self.assertIn("\nredrug=stone;By Hand\n", text)
         self.assertRegex(text, r"\nanvil_01 += metal\n")
@@ -130,28 +332,60 @@ class TexelsTest(unittest.TestCase):
 
     def metal(self, diffuse, mirror, gloss, surely=False):
         np = mt.np
-        one = np.array([[diffuse]], dtype=np.float32), np.array([[mirror]], dtype=np.float32), np.array([[gloss]], dtype=np.float32)
+        one = (
+            np.array([[diffuse]], dtype=np.float32),
+            np.array([[mirror]], dtype=np.float32),
+            np.array([[gloss]], dtype=np.float32),
+        )
         return bool(mt.metal_texels(*one, surely=surely)[0, 0])
 
     def test_metals(self):
-        self.assertTrue(self.metal((0.31, 0.31, 0.30), (0.25, 0.25, 0.25), 0.25))  # massive plate's median
-        self.assertTrue(self.metal((0.02, 0.02, 0.02), (0.40, 0.40, 0.40), 0.30))  # dark, with a bright mirror
-        self.assertTrue(self.metal((0.50, 0.38, 0.15), (0.30, 0.22, 0.12), 0.15))  # gold that mirrors gold
-        self.assertTrue(self.metal((0.60, 0.48, 0.15), (0.90, 0.90, 0.90), 0.90))  # a brass stud under a white mirror
-        self.assertTrue(self.metal((0.22, 0.24, 0.23), (0.36, 0.40, 0.44), 0.21))  # a cold iron rim
+        self.assertTrue(
+            self.metal((0.31, 0.31, 0.30), (0.25, 0.25, 0.25), 0.25)
+        )  # massive plate's median
+        self.assertTrue(
+            self.metal((0.02, 0.02, 0.02), (0.40, 0.40, 0.40), 0.30)
+        )  # dark, with a bright mirror
+        self.assertTrue(
+            self.metal((0.50, 0.38, 0.15), (0.30, 0.22, 0.12), 0.15)
+        )  # gold that mirrors gold
+        self.assertTrue(
+            self.metal((0.60, 0.48, 0.15), (0.90, 0.90, 0.90), 0.90)
+        )  # a brass stud under a white mirror
+        self.assertTrue(
+            self.metal((0.22, 0.24, 0.23), (0.36, 0.40, 0.44), 0.21)
+        )  # a cold iron rim
 
     def test_not_metals(self):
-        self.assertFalse(self.metal((0.24, 0.16, 0.10), (0.06, 0.06, 0.06), 0.05))  # leather
-        self.assertFalse(self.metal((0.60, 0.10, 0.10), (0.50, 0.50, 0.50), 0.50))  # red paint with a white highlight
-        self.assertFalse(self.metal((0.20, 0.14, 0.09), (0.16, 0.19, 0.25), 0.15))  # brown leather with a blue sheen
-        self.assertFalse(self.metal((0.20, 0.20, 0.21), (0.22, 0.24, 0.27), 0.12))  # grey leather with one
-        self.assertFalse(self.metal((0.90, 0.88, 0.85), (0.20, 0.20, 0.20), 0.30))  # bone, white cloth: a dim mirror under a bright colour
-        self.assertFalse(self.metal((0.30, 0.30, 0.30), (0.30, 0.30, 0.30), 0.04))  # bright but matte
-        self.assertFalse(self.metal((0.40, 0.26, 0.14), (0.25, 0.25, 0.25), 0.15))  # wood with a grey mirror that only just passes
+        self.assertFalse(
+            self.metal((0.24, 0.16, 0.10), (0.06, 0.06, 0.06), 0.05)
+        )  # leather
+        self.assertFalse(
+            self.metal((0.60, 0.10, 0.10), (0.50, 0.50, 0.50), 0.50)
+        )  # red paint with a white highlight
+        self.assertFalse(
+            self.metal((0.20, 0.14, 0.09), (0.16, 0.19, 0.25), 0.15)
+        )  # brown leather with a blue sheen
+        self.assertFalse(
+            self.metal((0.20, 0.20, 0.21), (0.22, 0.24, 0.27), 0.12)
+        )  # grey leather with one
+        self.assertFalse(
+            self.metal((0.90, 0.88, 0.85), (0.20, 0.20, 0.20), 0.30)
+        )  # bone, white cloth: a dim mirror under a bright colour
+        self.assertFalse(
+            self.metal((0.30, 0.30, 0.30), (0.30, 0.30, 0.30), 0.04)
+        )  # bright but matte
+        self.assertFalse(
+            self.metal((0.40, 0.26, 0.14), (0.25, 0.25, 0.25), 0.15)
+        )  # wood with a grey mirror that only just passes
 
     def test_surely(self):
-        self.assertTrue(self.metal((0.30, 0.30, 0.30), (0.90, 0.90, 0.90), 0.90, surely=True))
-        self.assertFalse(self.metal((0.31, 0.31, 0.30), (0.25, 0.25, 0.25), 0.25, surely=True))
+        self.assertTrue(
+            self.metal((0.30, 0.30, 0.30), (0.90, 0.90, 0.90), 0.90, surely=True)
+        )
+        self.assertFalse(
+            self.metal((0.31, 0.31, 0.30), (0.25, 0.25, 0.25), 0.25, surely=True)
+        )
 
     def test_a_stud_outlives_the_majority_and_a_speck_does_not(self):
         np = mt.np
@@ -186,7 +420,12 @@ class TexelsTest(unittest.TestCase):
         self.assertEqual(body[84:88], b"DXT1")
         self.assertEqual(int.from_bytes(body[28:32], "little"), 6)  # 32x16 down to 1x1
         self.assertEqual(len(body), 128 + 8 * (8 * 4 + 4 * 2 + 2 + 1 + 1 + 1))
-        back = np.asarray(Image.open(io.BytesIO(body)).convert("RGB"), dtype=np.float32)[..., 1] / 255
+        back = (
+            np.asarray(Image.open(io.BytesIO(body)).convert("RGB"), dtype=np.float32)[
+                ..., 1
+            ]
+            / 255
+        )
         self.assertEqual(back.shape, (16, 32))
         self.assertLess(float(np.abs(back - grey).max()), 0.02)
 
@@ -210,18 +449,26 @@ class ShadeTest(unittest.TestCase):
     def test_a_plate_shaded_to_one_side_is_metal_all_over(self):
         # steel, lit at the left and painted darker to the right, to a third; a dark strap beside it
         size = 64
-        shade = mt.np.linspace(1.0, 0.33, size, dtype=mt.np.float32)[None, :].repeat(size, axis=0)
+        shade = mt.np.linspace(1.0, 0.33, size, dtype=mt.np.float32)[None, :].repeat(
+            size, axis=0
+        )
         diffuse = mt.np.ones((size, size, 4), dtype=mt.np.float32)
         specular = mt.np.ones((size, size, 4), dtype=mt.np.float32)
         diffuse[..., :3] = 0.45 * shade[..., None]
         specular[..., :3] = 0.36 * shade[..., None]
         specular[..., 3] = 0.24 * shade
-        diffuse[48:, :, :3] = (0.20, 0.12, 0.08)  # leather: a dim mirror under its colour
+        diffuse[48:, :, :3] = (
+            0.20,
+            0.12,
+            0.08,
+        )  # leather: a dim mirror under its colour
         specular[48:, :, :3] = 0.04
         specular[48:, :, 3] = 0.06
         metal, share = mt.metal_map(diffuse, specular, plate=True)
         plain, same = mt.metal_map(diffuse, specular)
-        self.assertEqual(share, same)  # the share, and so the class, is of the rule without it
+        self.assertEqual(
+            share, same
+        )  # the share, and so the class, is of the rule without it
         self.assertLess(plain[: int(44 * plain.shape[0] / size), -2:].mean(), 0.5)
         scale = metal.shape[0] / size
         plate = metal[: int(44 * scale)]
@@ -229,7 +476,9 @@ class ShadeTest(unittest.TestCase):
         self.assertLess(metal[int(52 * scale) :].mean(), 0.05)  # and not the strap
 
 
-@unittest.skipUnless(HAVE_GAME, "the game is not installed (DAO_GAME_DIR), or numpy and Pillow are not")
+@unittest.skipUnless(
+    HAVE_GAME, "the game is not installed (DAO_GAME_DIR), or numpy and Pillow are not"
+)
 class GameTest(unittest.TestCase):
     """A dozen of the game's own materials, each beyond doubt, by what makes it so."""
 
@@ -241,7 +490,10 @@ class GameTest(unittest.TestCase):
         return mt.classify(self.game, self.game.materials[name])
 
     def test_the_game_has_its_materials(self):
-        counts = {d: sum(1 for m in self.game.materials.values() if m.definition == d) for d in mt.SOLID}
+        counts = {
+            d: sum(1 for m in self.game.materials.values() if m.definition == d)
+            for d in mt.SOLID
+        }
         self.assertGreater(counts["static.mat"], 900)
         self.assertGreater(counts["character.mat"], 900)
         self.assertGreater(self.game.skipped["vfx.mat"], 1000)
@@ -252,7 +504,12 @@ class GameTest(unittest.TestCase):
         # a castle's rubble wall: named a wall, given a stone footstep
         self.assertEqual(self.row("fci_exteriorwall01").cls, "stone")
         # the tower's benches and tables, whose bright painted mirror made them metal to a guess
-        for name in ("prp_tevbench1", "prp_tevtable1", "plc_tevtable_02", "prp_benchmarble01"):
+        for name in (
+            "prp_tevbench1",
+            "prp_tevtable1",
+            "plc_tevtable_02",
+            "prp_benchmarble01",
+        ):
             self.assertEqual(self.row(name).cls, "stone", name)
 
     def test_wood(self):
@@ -302,7 +559,9 @@ class GameTest(unittest.TestCase):
         self.assertGreater(row.share, 0.08)
         self.assertLess(row.share, 0.35)
         self.assertEqual(row.map.shape, (64, 32))
-        self.assertLess(float(row.map[5:10, 8:22].mean()), 0.02)  # planks, between the rim and the boss
+        self.assertLess(
+            float(row.map[5:10, 8:22].mean()), 0.02
+        )  # planks, between the rim and the boss
         self.assertGreater(float(row.map[13:18, 13:18].mean()), 0.5)  # the boss
         self.assertGreater(float(row.map[0, 11:19].mean()), 0.5)  # the rim
 
@@ -346,21 +605,37 @@ class ObjectsTest(unittest.TestCase):
             self.assertAlmostEqual(value, 0.5, places=6)
 
     def test_wide_ridges_show_only_in_wide_patches(self):
-        x = mt.np.tile(mt.np.repeat(mt.np.array([0.5, -0.5]), 8), (64, 4))  # ridges 8 texels wide
+        x = mt.np.tile(
+            mt.np.repeat(mt.np.array([0.5, -0.5]), 8), (64, 4)
+        )  # ridges 8 texels wide
         _, spreads = mt.bumps(self.normal_map(x, mt.np.zeros_like(x)))
-        self.assertAlmostEqual(spreads[0], 0.0, places=6)  # every patch of 2 lies on one slope
+        self.assertAlmostEqual(
+            spreads[0], 0.0, places=6
+        )  # every patch of 2 lies on one slope
         self.assertLess(spreads[1], spreads[3])
         self.assertAlmostEqual(spreads[3], 0.5, places=6)  # a patch of 16 holds both
 
     def test_a_material_object_says_what_it_is(self):
         material = mt.Material(
-            "m", '<?xml version="1.0"?>\n<MaterialObject Name="m">\n\t<Material Name="Prop.mat"></Material>\n</MaterialObject>', "a.erf"
+            "m",
+            '<?xml version="1.0"?>\n<MaterialObject Name="m">\n\t<Material Name="Prop.mat"></Material>\n</MaterialObject>',
+            "a.erf",
         )
-        text = mt.object_text(material, True, "m_m.dds", ((256, 512), [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]))
+        text = mt.object_text(
+            material, True, "m_m.dds", ((256, 512), [0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
+        )
         self.assertIn('<Float Name="mml_fDaoMetal" value="1.00"></Float>', text)
-        self.assertIn('<Texture Name="mml_tDaoMetal" ResName="m_m.dds"></Texture>', text)
-        self.assertIn('<Vector4f Name="mml_vDaoBumps" value="256.00 512.00 0.10000 0.20000"></Vector4f>', text)
-        self.assertIn('<Vector4f Name="mml_vDaoBumpsFar" value="0.30000 0.40000 0.50000 0.60000"></Vector4f>', text)
+        self.assertIn(
+            '<Texture Name="mml_tDaoMetal" ResName="m_m.dds"></Texture>', text
+        )
+        self.assertIn(
+            '<Vector4f Name="mml_vDaoBumps" value="256.00 512.00 0.10000 0.20000"></Vector4f>',
+            text,
+        )
+        self.assertIn(
+            '<Vector4f Name="mml_vDaoBumpsFar" value="0.30000 0.40000 0.50000 0.60000"></Vector4f>',
+            text,
+        )
         self.assertTrue(text.rstrip().endswith("</MaterialObject>"))
         self.assertLess(text.index("mml_fDaoMetal"), text.index("</MaterialObject>"))
         plain = mt.object_text(material, False, None, ((64, 64), [0.0] * 6))
@@ -374,35 +649,57 @@ class ObjectsTest(unittest.TestCase):
             '\t<DefaultSemantic Name="AlphaNoTint"></DefaultSemantic>\n</MaterialObject>',
             "a.erf",
         )
-        self.assertIn('<DefaultSemantic Name="AlphaNoTint">', mt.object_text(helm, True, None, None))
+        self.assertIn(
+            '<DefaultSemantic Name="AlphaNoTint">',
+            mt.object_text(helm, True, None, None),
+        )
 
     def test_the_add_ins_are_read_from_a_folder_of_their_files(self):
-        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as folder:
-            with open(os.path.join(folder, "pn_arm_bdaa.mao"), "w", encoding="latin-1") as f:
+        with (
+            tempfile.TemporaryDirectory() as root,
+            tempfile.TemporaryDirectory() as folder,
+        ):
+            with open(
+                os.path.join(folder, "pn_arm_bdaa.mao"), "w", encoding="latin-1"
+            ) as f:
                 f.write(
                     '<MaterialObject Name="PN_ARM_BDAa">\n\t<Material Name="Character.mat"></Material>\n'
                     '\t<Texture Name="mml_tDiffuse" ResName="pn_arm_bdaa_0d.dds"></Texture>\n</MaterialObject>'
                 )
-            with open(os.path.join(folder, "fx_glow.mao"), "w", encoding="latin-1") as f:
-                f.write('<MaterialObject Name="fx_glow">\n\t<Material Name="VFX.mat"></Material>\n</MaterialObject>')
+            with open(
+                os.path.join(folder, "fx_glow.mao"), "w", encoding="latin-1"
+            ) as f:
+                f.write(
+                    '<MaterialObject Name="fx_glow">\n\t<Material Name="VFX.mat"></Material>\n</MaterialObject>'
+                )
             with open(os.path.join(folder, "pn_arm_bdaa_0d.dds"), "wb") as f:
                 f.write(b"DDS ")
             game = mt.Game(root, addins=folder)
             self.assertEqual(list(game.materials), ["pn_arm_bdaa"])
             self.assertEqual(game.materials["pn_arm_bdaa"].archive, mt.READ_OUT)
             self.assertEqual(game.read_out, 1)
-            self.assertEqual(game.textures["pn_arm_bdaa_0d.dds"][1:], (os.path.join(folder, "pn_arm_bdaa_0d.dds"), 0, 4))
+            self.assertEqual(
+                game.textures["pn_arm_bdaa_0d.dds"][1:],
+                (os.path.join(folder, "pn_arm_bdaa_0d.dds"), 0, 4),
+            )
             self.assertEqual(mt.Game(root, addins=None).materials, {})
         # and an add-in's plate is asked of its textures, as the game's own is
-        verdict = mt.by_name("pn_arm_bdaa", "character.mat", "pn_arm_bdaa_0d.dds", "ARM_BDA.matproj")
+        verdict = mt.by_name(
+            "pn_arm_bdaa", "character.mat", "pn_arm_bdaa_0d.dds", "ARM_BDA.matproj"
+        )
         self.assertEqual(verdict.cls, mt.PAINT)
 
     def test_the_table_is_read_as_written(self):
         with tempfile.TemporaryDirectory() as folder:
             path = os.path.join(folder, "materials.ini")
             with open(path, "w", encoding="utf-8") as f:
-                f.write("; a comment = metal\nanvil_01 = metal\npn_arm_masa   = mixed  ; 51% metal\nrug = cloth ; by hand\nodd = nonsense\n")
-            self.assertEqual(mt.table_classes(path), {"anvil_01": "metal", "pn_arm_masa": "mixed", "rug": "cloth"})
+                f.write(
+                    "; a comment = metal\nanvil_01 = metal\npn_arm_masa   = mixed  ; 51% metal\nrug = cloth ; by hand\nodd = nonsense\n"
+                )
+            self.assertEqual(
+                mt.table_classes(path),
+                {"anvil_01": "metal", "pn_arm_masa": "mixed", "rug": "cloth"},
+            )
 
 
 if __name__ == "__main__":

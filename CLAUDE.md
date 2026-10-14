@@ -10,24 +10,25 @@ Looking good is the goal: more realistic lighting, better materials, better shad
 
 The bar, since 2026-10-11: "something on the quality of a Minecraft visual overhaul" (the user, with a shader pack's before and after: a low sun, lit haze, soft shadows, bloom). The light probes were judged "good infra work" that "doesn't seem to make any significant visual difference"; what is wanted is "some kind of lighting overhaul to really make the scenes look realistic and punchy". `dev/NOTES.md`'s "Not done" has the steps in the order meant.
 
+**The first release (issue 23, 2026-10-14) is a smaller scope**, on master: Improved materials (each material lit as what it is made of, by `data/materials.ini`; normal maps shaping baked and ambient light; highlights rolled off in the 16-bit scene), Improved shadows (16-tap filter, 2048 maps, the sun's shadow on figures), SMAA, ambient occlusion and anisotropic filtering, each an option on the Video tab. The lighting work (the relighter, light probes and their baker, the engine's light chooser, sun, sky, haze, shafts, glow, fire, the looks and the per-level tuning) is on the `dev` branch, out of the release for now.
+
 ## Layout
 
 ```
-src/Graphics.cpp     the plugin: looks, Direct3D detours, the engine's light chooser, the probes' mixing
-src/ProbeBaker.*     light probes baked from a level's files on a background thread
-src/BakeTool.cpp     the baker as a command (elgarashaders_bake.exe)
+src/Graphics.cpp     the plugin: its options, the Direct3D detours, the 16-bit scene, the shadow maps' size
+src/ResourceDump.*   the add-ins' files read through the game, for tools/material_table.py
 shaders/             what the game's shaders are given: *.hlsl, SMAA, and build_shaders.py, which rebuilds the game's shaders with them
-data/graphics.ini    the looks
+data/materials.ini   what each material is made of
 tools/               build.ps1, deploy.ps1, shader_hlsl.py (the game's compiled shaders back to HLSL) and its test
 extern/DAOLib        the library, a submodule
 dev/                 notes
 ```
 
-The plugin is `elgarashaders`: `build\<preset>\daolib\plugins\elgarashaders\` is its whole folder (the DLL, `graphics.ini`, `override\` with the rebuilt shaders). Its log is `Documents\BioWare\Dragon Age\daolib\elgarashaders.log` (on this machine under OneDrive), and baked probes are kept beside it in `elgarashaders\probes\<level>.bin`.
+The plugin is `elgarashaders`: `build\<preset>\daolib\plugins\elgarashaders\` is its whole folder (the DLL, `override\` with the rebuilt shaders, and `graphics.chosen`, the options as the player last set them). Its log is `Documents\BioWare\Dragon Age\daolib\elgarashaders.log` (on this machine under OneDrive).
 
 ## DAOLib
 
-What is general belongs in DAOLib and is DAOLib's own session's (lib-agent's) to integrate: the pure, tested parts the baker stands on (`dao/core/Erf.h`, `Dds.h`, `Level.h`, `RayCast.h`, `LightProbes.h`, the GFF4 reader's floats and raw lists), `CCArea::Scene`, and the address rows. They are on DAOLib's master since its issue 76 (bbd057f, 2026-10-11). The submodule is at DAOLib's 198252f (its #106), whose `dao::core::erf::Archive` is the archive reader `src/LevelFiles.h` had of its own until this repo's #22. `DAOLIB_DIR` (the environment's, or CMake's) builds against another checkout of DAOLib instead.
+What is general belongs in DAOLib and is DAOLib's own session's (lib-agent's) to integrate: the pure, tested parts the baker stands on (`dao/core/Erf.h`, `Dds.h`, `Level.h`, `RayCast.h`, `LightProbes.h`, the GFF4 reader's floats and raw lists), `CCArea::Scene`, and the address rows. They are on DAOLib's master since its issue 76 (bbd057f, 2026-10-11), and the baker (on `dev`) reads archives through DAOLib's `dao::core::erf::Archive` since this repo's #22. `DAOLIB_DIR` (the environment's, or CMake's) builds against another checkout of DAOLib instead.
 
 A change DAOLib needs is asked of lib-agent, not made from here (one agent, one repo). An engine address is read in the GOG exe and named through the address library's session (addr-lib-agent), as DAOLib's `CLAUDE.md` says.
 
@@ -39,9 +40,7 @@ A change DAOLib needs is asked of lib-agent, not made from here (one agent, one 
 .\tools\deploy.ps1 -Remove
 ```
 
-Everything is 32-bit, as the game is. The shaders are rebuilt on every build from the installed game's `shaders.erf` (GOG's install, or `DAO_GAME_DIR`) with the Windows SDK's `fxc.exe`. Shaders are not reloaded while the game runs: a shader change needs a restart. `graphics.ini` is read again when it changes, so a look is tuned live.
-
-But for the relighter as a tool: `.\tools\build-bake.ps1` builds it for 64 bits with Embree into `build\bake64`, held to the plugin's warnings. `-Lint` runs clang-tidy over its three sources, which is the only lint the Embree half of `Relighter.cpp` gets (`build.ps1 -Lint` reads the 32-bit build, where it is not compiled); `-Sanitize` builds it with AddressSanitizer into `build\bake64-asan`, to run a small bake under (`side=64`) after a change to the bake's code.
+Everything is 32-bit, as the game is. The shaders are rebuilt on every build from the installed game's `shaders.erf` (GOG's install, or `DAO_GAME_DIR`) with the Windows SDK's `fxc.exe`. Shaders are not reloaded while the game runs: a shader change needs a restart.
 
 The game is driven through Eluvian (`.mcp.json`; `C:\project\DAOEluvianMCP\tools\eluvian_bridge.py --call game_launch ...`). One main game at a time, shared with other sessions: say so before launching, check for a running one, take the plugin out of `bin_ship\daolib\plugins` after. When turn-based-agent asks for a gap, close the game, take the plugin out, answer "gap", and start no game and no build until it says "done".
 
@@ -56,7 +55,7 @@ A test deploys nothing: `game_launch` takes a `plugins` folder to load from in p
 - **Several areas.** Indoors, underground, outdoors; a dark place and a lit one.
 - Find which level a save is really in before testing a level's files (an area's level is named in its `.are`, not by the area's name).
 - A change that touches the Vanilla look is checked against the game with the plugin removed.
-- A setting the options screen holds (the occlusion, the anti-aliasing, the anisotropy, the Relit checkbox, a level's tuning) is switched through the options screen in a test (`build\scratch\elgara-opt.py`), never through `graphics.ini`: the relit look does not read the file for them. And the game's own anti-aliasing changes how a frame is drawn (the distance in a pass of its own, no second target): say which it was, and try both for anything that reads or writes a target.
+- A setting the options screen holds (the five options) is switched through the options screen in a test (`build\scratch\elgara-opt.py`), never through a file. Improved shadows' finer maps are made only as the game starts. And the game's own anti-aliasing changes how a frame is drawn (the distance in a pass of its own, no second target): say which it was, and try both for anything that reads or writes a target.
 - Findings worth keeping go on the issue with a before/after picture of the same frame.
 
 ## Style

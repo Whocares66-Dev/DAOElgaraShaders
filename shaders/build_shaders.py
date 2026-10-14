@@ -1,7 +1,7 @@
 """The game's own shaders, changed: what Elgara Shaders draws with.
 
-    python shaders/build_shaders.py <folder to write to> [map size]
-        [show-occlusion] [show-glow] [no-smaa]
+    python shaders/build_shaders.py <folder to write to>
+        [show-occlusion] [show-share] [no-smaa]
 
 Each shader is read from the game's shaders.erf, listed by fxc, turned into
 HLSL (tools/shader_hlsl.py), given a function of ours in place of or after
@@ -16,12 +16,12 @@ one source: the point's side of the plane that divides the two maps is
 `dp3 <side>, v<N>, c<ShadowData + 8>`, which says which input is the point in
 the world, and the shadow is settled by the first `cmp <lit>, -<...>` after
 the last tap of the near map, the choice between the two maps. DaoShadow's
-answer is put into <lit> after it.
+answer is put into <lit> after it, where the plugin says (Improved shadows).
 
-The look's numbers (look.hlsl). What the level's and the figures' shaders do
-of ours is by how much the plugin says, in registers of its own: the relief,
-the materials, the sun on figures. With no plugin they are 0 and those
-shaders draw as the game's.
+The options' numbers (look.hlsl). What the level's and the figures' shaders
+do of ours is by how much the plugin says, in registers of its own: the
+relief, the materials, the shadows and the sun's shadow on figures. With no
+plugin they are 0 and those shaders draw as the game's.
 
 The baked light (bake.hlsl, with_shaped_bake). Where a level's shader reads
 its lightmap, the colour is shaped by the surface's normal map.
@@ -30,16 +30,10 @@ The materials (materials.hlsl, with_materials). The shaders of bodies, armour
 and weapons that gather their highlights the common way scale them by their
 sharpness and their mirror colour by the angle it is seen at.
 
-The colours (grade.hlsl, GRADES). The game's colour grade reads the picture
-with its first `texld <r>, v<N>, s0`, which becomes DaoSharpen's reading of
-it, and DaoGrade has the last word on what the shader writes.
-
-The glow (glow_bright.hlsl, glow_blur.hlsl, glow_shafts.hlsl, glow_sum.hlsl).
-Seven passes of ours in the grade's chain before its own: what of the
-picture is brighter than its range holds, a quarter of its size; that spread
-across and down; spread again into a sixteenth of the size; how open the way
-to the sun is from each pixel, for shafts of light; and all of it made one
-picture the grade adds to its reading.
+The picture (grade.hlsl). The game's colour grade reads the picture with
+its first `texld <r>, v<N>, s0`, which becomes DaoPicture's reading of it,
+darkened by the ambient occlusion, and DaoGrade has the last word on what
+the shader writes.
 
 It needs the game (tools/script_commands.py's GAME, or DAO_GAME_DIR) and
 fxc.exe of the Windows SDK; without either it says so and writes nothing.
@@ -119,7 +113,9 @@ def with_our_shadow(shader):
     choice = shader.find(r"^cmp r\d+\.[xyzw], -", taps[-1])
     lit = re.match(r"cmp (r\d+\.[xyzw]),", shader.statements[choice].asm).group(1)
     shader.add_input("pixel", "float2", "VPOS")
-    shader.insert(choice, [f"{lit} = DaoShadow({world}.xyz, input.pixel);"])
+    shader.insert(
+        choice, [f"if (DAO_SHADOWS > 0) {lit} = DaoShadow({world}.xyz, input.pixel);"]
+    )
 
 
 # How far towards the sun from a figure's surface its shadow is asked for, in
@@ -157,7 +153,9 @@ def figure_passes(material):
     sets = {
         found.group(1): found.group(2)
         for found in re.finditer(
-            r'<ParameterSet\s+Name\s*=\s*"([^"]+)"\s*>(.*?)</ParameterSet>', material, re.DOTALL
+            r'<ParameterSet\s+Name\s*=\s*"([^"]+)"\s*>(.*?)</ParameterSet>',
+            material,
+            re.DOTALL,
         )
     }
     for found in re.finditer(r"(<Pass\b[^>]*>)(.*?)</Pass>", material, re.DOTALL):
@@ -165,7 +163,9 @@ def figure_passes(material):
         if drawn_by and re.match(FIGURE_SHADERS, drawn_by.group(1), re.IGNORECASE):
             handed = found.group(2) + "".join(
                 sets.get(ref, "")
-                for ref in re.findall(r'<ParameterSetRef\s+Ref\s*=\s*"([^"]+)"', found.group(2))
+                for ref in re.findall(
+                    r'<ParameterSetRef\s+Ref\s*=\s*"([^"]+)"', found.group(2)
+                )
             )
             yield found.end(1), drawn_by.group(1).lower() + ".fxo", handed
 
@@ -175,7 +175,12 @@ def shadow_maps_in(handed):
     None where it is not handed both."""
     names = tuple(
         found.group(1)
-        if (found := re.search(rf'SamplerName\s*=\s*"([^"]+)"\s+Usage\s*=\s*"ShadowTexture_{which}"', handed))
+        if (
+            found := re.search(
+                rf'SamplerName\s*=\s*"([^"]+)"\s+Usage\s*=\s*"ShadowTexture_{which}"',
+                handed,
+            )
+        )
         else None
         for which in ("Primary", "Secondary")
     )
@@ -186,7 +191,9 @@ def find_shadow_maps(materials):
     """Fill SHADOW_MAPS from the game's material definitions. One shader
     handed the maps under two pairs of names is refused."""
     for body in materials.values():
-        for _, name, handed in figure_passes(body.decode("utf-8-sig", errors="replace")):
+        for _, name, handed in figure_passes(
+            body.decode("utf-8-sig", errors="replace")
+        ):
             names = shadow_maps_in(handed)
             if names and SHADOW_MAPS.setdefault(name, names) != names:
                 raise shader_hlsl.ShaderError(
@@ -219,7 +226,12 @@ def with_shadow_parameters(material):
         lines = ""
         if shadow_maps_in(handed) is None:
             for number, (sampler, usage) in enumerate(
-                zip(SHADOW_MAPS.get(name, CHARACTER_SHADOW_MAPS), ("Primary", "Secondary"), strict=True), 1
+                zip(
+                    SHADOW_MAPS.get(name, CHARACTER_SHADOW_MAPS),
+                    ("Primary", "Secondary"),
+                    strict=True,
+                ),
+                1,
             ):
                 lines += (
                     f'\n            <InternalParameter Type="Texture" Name="mml_tShadowPartition{number}"'
@@ -331,7 +343,9 @@ MATERIAL_PARAMETERS = (
     '<Parameter Type = "Vector4f" Name = "mml_vDaoBumpsFar" Default = "0 0 0 0"/>'
     '<Parameter Type = "Vector4f" Name = "mml_vDaoClear" Default = "0 0 0 0"/>'
 )
-MATERIAL_SHADERS = r"^(ch[12](?!\w*_vl)\w*|weapon1|cloth1|prop1(_punch)?|propalpha1|static1\w*)\.psh$"
+MATERIAL_SHADERS = (
+    r"^(ch[12](?!\w*_vl)\w*|weapon1|cloth1|prop1(_punch)?|propalpha1|static1\w*)\.psh$"
+)
 
 
 # What a pass's render state does with the alpha its shader writes, which is
@@ -360,7 +374,10 @@ def pass_kind(state):
         return BLEND, None
     if values.get("DS_ALPHATESTENABLE", "FALSE").upper() != "TRUE":
         return PLAIN, None
-    if values.get("DS_ALPHAFUNC", "").upper() != "CMP_GREATEREQUAL" or "DS_ALPHAREF" not in values:
+    if (
+        values.get("DS_ALPHAFUNC", "").upper() != "CMP_GREATEREQUAL"
+        or "DS_ALPHAREF" not in values
+    ):
         return BLEND, None
     return TEST, int(values["DS_ALPHAREF"])
 
@@ -369,7 +386,9 @@ def without_alpha_test(state):
     """A render state's file under our name for it, with its alpha test off:
     for a pass whose shader cuts itself out."""
     state, count = re.subn(
-        r'(State\s*=\s*"DS_ALPHATESTENABLE"\s+Value\s*=\s*")TRUE(")', r"\1FALSE\2", state
+        r'(State\s*=\s*"DS_ALPHATESTENABLE"\s+Value\s*=\s*")TRUE(")',
+        r"\1FALSE\2",
+        state,
     )
     if count != 1:
         raise shader_hlsl.ShaderError("a cut-out's state has no alpha test to take out")
@@ -394,11 +413,11 @@ def with_share_kept(state):
         return None
     state, count = re.subn(
         r'(<DeviceState\s+State\s*=\s*"DS_DESTBLEND"[^>]*>)',
-        r'''\1
+        r"""\1
     <DeviceState State="DS_SEPARATEALPHABLENDENABLE" Value="TRUE" />
     <DeviceState State="DS_SRCBLENDALPHA" Value="BLEND_ZERO" />
     <DeviceState State="DS_DESTBLENDALPHA" Value="BLEND_INVSRCALPHA" />
-    <DeviceState State="DS_BLENDOPALPHA" Value="BLENDOP_ADD" />''',
+    <DeviceState State="DS_BLENDOPALPHA" Value="BLENDOP_ADD" />""",
         state,
         count=1,
     )
@@ -420,7 +439,7 @@ CUTS = {}
 # The shaders that can say an ambient share: those of the materials' model,
 # and a face's, hair's and an eye's, which say it of what they scatter
 # (with_scattered_share).
-SHARE_SHADERS = MATERIAL_SHADERS[:-len(r")\.psh$")] + r"|face[02]|hair[02]|eye0)\.psh$"
+SHARE_SHADERS = MATERIAL_SHADERS[: -len(r")\.psh$")] + r"|face[02]|hair[02]|eye0)\.psh$"
 
 
 def passes_of(material):
@@ -429,7 +448,11 @@ def passes_of(material):
     for found in re.finditer(r"<Pass\b[^>]*>", material):
         drawn_by = re.search(r'PixelShader\s*=\s*"([^"]+)"', found.group(0))
         state = re.search(r'State\s*=\s*"([^"]+)"', found.group(0))
-        if drawn_by and state and re.match(SHARE_SHADERS, drawn_by.group(1), re.IGNORECASE):
+        if (
+            drawn_by
+            and state
+            and re.match(SHARE_SHADERS, drawn_by.group(1), re.IGNORECASE)
+        ):
             yield found.group(0), drawn_by.group(1), state.group(1)
 
 
@@ -450,7 +473,9 @@ def find_uses(materials, states):
             if kind == TEST:
                 had = CUTS.setdefault(name, (least, True))
                 if had[0] != least:
-                    raise shader_hlsl.ShaderError(f"{name} is cut out at {had[0]} and at {least}")
+                    raise shader_hlsl.ShaderError(
+                        f"{name} is cut out at {had[0]} and at {least}"
+                    )
                 CUTS[name] = (least, had[1] and definition in seen)
 
 
@@ -595,19 +620,24 @@ def with_materials(shader):
         (
             i
             for i in range(tint + 1, min(last + 3, len(st)))
-            if re.match(rf"^mad(?:_pp)? {made}\.xyz, r\d+(?:\.\w+)?, r\d+, {made}$", st[i].asm)
+            if re.match(
+                rf"^mad(?:_pp)? {made}\.xyz, r\d+(?:\.\w+)?, r\d+, {made}$", st[i].asm
+            )
         ),
         None,
     )
     if spread is None and falloff is not None:
-        fed = re.match(rf"^mad(?:_pp)? r\d+\.xyz, {made}, v\d+\.w, (r\d+)$", st[falloff].asm)
+        fed = re.match(
+            rf"^mad(?:_pp)? r\d+\.xyz, {made}, v\d+\.w, (r\d+)$", st[falloff].asm
+        )
         if fed:
             spread = next(
                 (
                     i
                     for i in range(tint - 1, join, -1)
                     if re.match(
-                        rf"^mad(?:_pp)? {fed.group(1)}\.xyz, r\d+(?:\.\w+)?, r\d+, r\d+$", st[i].asm
+                        rf"^mad(?:_pp)? {fed.group(1)}\.xyz, r\d+(?:\.\w+)?, r\d+, r\d+$",
+                        st[i].asm,
                     )
                 ),
                 None,
@@ -643,13 +673,21 @@ def with_materials(shader):
         (
             found
             for i in range(power, -1, -1)
-            if (found := re.match(r"^r\d+ = tex2D\(smpSpecularMask, (.+)\);", st[i].hlsl))
+            if (
+                found := re.match(
+                    r"^r\d+ = tex2D\(smpSpecularMask, (.+)\);", st[i].hlsl
+                )
+            )
         ),
         None,
     )
     if mask:
         changes.append(
-            (power, "after", f"daoMetal = DaoMetal({mask.group(1)}, mml_fSpecularReflectionMult);")
+            (
+                power,
+                "after",
+                f"daoMetal = DaoMetal({mask.group(1)}, mml_fSpecularReflectionMult);",
+            )
         )
     # A shield's or a banner's arms are paint laid over it as it is drawn
     # (smpHeraldry; no material's own textures have them): where they lie the
@@ -668,7 +706,11 @@ def with_materials(shader):
         (
             found.group(2)
             for i in range(facing)
-            if (found := re.match(r"^mad(?:_pp)? (r\d+)\.xyz, \1\.z, (v\d+), ", st[i].asm))
+            if (
+                found := re.match(
+                    r"^mad(?:_pp)? (r\d+)\.xyz, \1\.z, (v\d+), ", st[i].asm
+                )
+            )
         ),
         None,
     )
@@ -694,16 +736,32 @@ def with_materials(shader):
         ]
         whole = writes[-1] if writes else None
         if whole is not None and whole < lobes[0] and st[whole].depth == 0:
-            changes.append((max(whole, power), "after", f"daoCalm = DaoCalmed(daoPower, {normal}.xyz, {bumped});"))
+            changes.append(
+                (
+                    max(whole, power),
+                    "after",
+                    f"daoCalm = DaoCalmed(daoPower, {normal}.xyz, {bumped});",
+                )
+            )
             lobed = "daoCalm"
         else:
-            changes.append((facing, "after", f"daoCalm = DaoCalmed(daoPower, {normal}.xyz, {bumped});"))
+            changes.append(
+                (
+                    facing,
+                    "after",
+                    f"daoCalm = DaoCalmed(daoPower, {normal}.xyz, {bumped});",
+                )
+            )
         mirrored_by = "daoCalm"
     if spread is not None:
         lit_into, _, lit = st[spread].hlsl.partition(" = ")
         scattered, _, rest = lit.rpartition(" + ")
         changes.append(
-            (spread, "set", f"{lit_into} = ({scattered}) * DaoScattered(daoMetal) + {rest}")
+            (
+                spread,
+                "set",
+                f"{lit_into} = ({scattered}) * DaoScattered(daoMetal) + {rest}",
+            )
         )
     if falloff is not None:
         changes.append(
@@ -727,7 +785,11 @@ def with_materials(shader):
         cube = re.match(r"^(r\d+) = texCUBElod\((\w+), (r\d+)\.xyzw\);$", st[i].hlsl)
         if cube and st[i].asm.startswith("texldl"):
             changes.append(
-                (i, "set", f"{cube.group(1)} = DaoReflected({cube.group(2)}, {cube.group(3)}.xyzw, {mirrored_by});")
+                (
+                    i,
+                    "set",
+                    f"{cube.group(1)} = DaoReflected({cube.group(2)}, {cube.group(3)}.xyzw, {mirrored_by});",
+                )
             )
     # Each light's highlight, and its own weight towards the edge (DaoEdge):
     # by V.H, which is L.H. The half vector is the last `nrm` before the
@@ -749,24 +811,51 @@ def with_materials(shader):
         written = re.match(r"^(\S+) = pow\((.+), \S+\);$", st[lobe].hlsl)
         if not written:
             continue
-        changes.append((lobe, "set", f"{written.group(1)} = DaoLobe({written.group(2)}, {lobed});"))
+        changes.append(
+            (lobe, "set", f"{written.group(1)} = DaoLobe({written.group(2)}, {lobed});")
+        )
         since = lobes[count - 1] if count else power
-        half = next((i for i in range(lobe - 1, since, -1) if re.match(r"^nrm(?:_pp)? r\d+\.xyz, r\d+$", st[i].asm)), None)
+        half = next(
+            (
+                i
+                for i in range(lobe - 1, since, -1)
+                if re.match(r"^nrm(?:_pp)? r\d+\.xyz, r\d+$", st[i].asm)
+            ),
+            None,
+        )
         if half is None or st[half].depth != st[lobe].depth:
             continue
-        halved, summed = re.match(r"^nrm(?:_pp)? (r\d+)\.xyz, (r\d+)$", st[half].asm).groups()
+        halved, summed = re.match(
+            r"^nrm(?:_pp)? (r\d+)\.xyz, (r\d+)$", st[half].asm
+        ).groups()
         sum_at = next(
-            (i for i in range(half - 1, since, -1) if re.match(rf"^mad(?:_pp)? {summed}\.xyz, v\d+, r\d+\.[xyzw], \S+$", st[i].asm)),
+            (
+                i
+                for i in range(half - 1, since, -1)
+                if re.match(
+                    rf"^mad(?:_pp)? {summed}\.xyz, v\d+, r\d+\.[xyzw], \S+$", st[i].asm
+                )
+            ),
             None,
         )
         if sum_at is None or st[sum_at].depth != st[lobe].depth:
             continue
         eye = st[sum_at].hlsl.partition(" = ")[2].rpartition(" + ")[0]
-        changes.append((half, "after", f"daoEdgeNow = DaoEdge(dot({halved}.xyz, {eye}));"))
+        changes.append(
+            (half, "after", f"daoEdgeNow = DaoEdge(dot({halved}.xyz, {eye}));")
+        )
         if flat and faced == "daoFacing" and st[lobe].depth == 0:
-            changes.append((half, "after", f"daoFlat = abs(dot(normalize({flat}.xyz), {eye}));"))
+            changes.append(
+                (half, "after", f"daoFlat = abs(dot(normalize({flat}.xyz), {eye}));")
+            )
             faced = "daoFlat"
-        changes.append((lobe, "after", f"daoEdged += {written.group(1)} * daoEdgeNow; daoLobes += {written.group(1)};"))
+        changes.append(
+            (
+                lobe,
+                "after",
+                f"daoEdged += {written.group(1)} * daoEdgeNow; daoLobes += {written.group(1)};",
+            )
+        )
         edged += 1
     changes.append(
         (
@@ -784,15 +873,21 @@ def with_materials(shader):
         albedo = re.match(MATERIAL_SPREAD, st[spread].asm).group(3)
         after = max(spread, tint, falloff if falloff is not None else tint)
         result = st[after].hlsl.partition(" = ")[0]
-        if not any(re.match(rf"\w+ {albedo}[\.,]", st[i].asm) for i in range(spread + 1, after + 1)):
-            changes.append((after, "after", f"daoAlbedo = {albedo}.xyz; daoLit = {result};"))
+        if not any(
+            re.match(rf"\w+ {albedo}[\.,]", st[i].asm)
+            for i in range(spread + 1, after + 1)
+        ):
+            changes.append(
+                (after, "after", f"daoAlbedo = {albedo}.xyz; daoLit = {result};")
+            )
             shader.share = f"{ambient}.xyz" if ambient else None
     # At one place, what is put in after it goes in first: it is then after
     # what is set there.
     # (Of two put in after one place, the one that names daoPower's making
     # goes in last, so it stands first.)
     for place, how, hlsl in sorted(
-        changes, key=lambda c: (-c[0], c[1] != "after", c[2].startswith("const float daoPower"))
+        changes,
+        key=lambda c: (-c[0], c[1] != "after", c[2].startswith("const float daoPower")),
     ):
         if how == "set":
             shader.statements[place].hlsl = hlsl
@@ -908,102 +1003,13 @@ def without_cut(shader):
             return
 
 
-def with_level_lights(shader):
-    """Let the look say how strong a level's own lamps are on it and how much
-    of its ambient light is left (look.hlsl's DaoLevelLamp, DaoLevelAmbient).
-    A level's shader is handed the same block a figure's is: point lights at
-    [0] and [1], [5] and [6], [7] and [8], [9] and [11], the colour the
-    second of each; the sun at [2] and [3]; and at [4] one colour added to
-    the lights' sum, the area's ambient light (read in static1.psh,
-    2026-10-11: `add <sum>.xyz, <lights>, c4`)."""
-    lights = shader.parameters["g_vLightParams"].name
-    for statement in shader.statements:
-        for colour in (1, 6, 8, 11):
-            statement.hlsl = re.sub(
-                rf"{lights}\[{colour}\]",
-                f"({lights}[{colour}] * DaoLevelLamp())",
-                statement.hlsl,
-            )
-        statement.hlsl = re.sub(
-            rf"{lights}\[4\]",
-            f"({lights}[4] * DaoLevelAmbient({lights}[3].xyz))",
-            statement.hlsl,
-        )
-
-
-def reads_lamp(listing):
-    """Whether a shader reads the point light a figure's lamp is handed in,
-    g_vLightParams [9] and [11]."""
-    lights = re.search(r"//\s+g_vLightParams\s+c(\d+)\s+(\d+)", listing)
-    if lights is None or int(lights.group(2)) < 12 or "ps_3_0" not in listing:
-        return False
-    colour = rf"\bc{int(lights.group(1)) + 11}\b"
-    return re.search(colour, listing.split("ps_3_0")[-1]) is not None
-
-
-# Notes on the light of a figure's place, 2026-10-11. The fills could go
-# altogether if a figure had the level's own light where it stands, and that
-# light is baked into lightmaps a figure has no part of. Two things the engine
-# does hand a figure were tried for it, each with no fills in four areas, and
-# neither is it:
-# - The light probe's cube map (the materials' aur_cmLightProbe0), read along
-#   the normal at its smallest level. The engine chooses a figure the nearest
-#   probe of its own room (a probe's score is one over its distance,
-#   0x0053D3E0), and in the Circle the map is the room's warm light. In the
-#   Dead Trenches it is a dim yellow-brown in a room of pale stone, the frame
-#   24 percent darker than vanilla; and hair, faces and eyes have no cube map.
-# - The ambient light kept to the figure's room. An ambient light's score is
-#   its brightness alone (0x0053D040), with none of the room test a point
-#   light's and a probe's have (0x0053D210); with that test put on it nothing
-#   changed in the Trenches or the Circle. The Trenches' orange ambient is its
-#   room's own.
-# So what the engine has of a place's light for a figure is what its artists
-# gave it, and they lit their figures by the fills instead.
-#
-# Where that light comes from, read from the game's files the same day. A
-# level has light probes, each a node named LightProbe in a room's layout
-# (<level>_<room>_ll.mmh, GFF4): its place, the names of a cube map (.dds, 256
-# a side, nine levels) and an irradiance file (.mtx), and the irradiance
-# itself as three 4x4 matrices (MMHLightProbeIrradianceRed, Green, Blue):
-# Ramamoorthi and Hanrahan's matrix of nine spherical-harmonics coefficients,
-# divided by pi (the game's own .mtx files check against the coefficients
-# they list to 1.5e-8). The engine takes the matrices from the layout, not the
-# .mtx. The same layouts hold the room's lamps (MMHNodePointLightColor,
-# Radius, IsStatic, MMHNodeLightAffectDomain) and its ambient light.
-# Of the campaign's 232 areas, by the level each area's own file names, 150
-# have one probe or none; the Dead Trenches has 11, the Arl's dungeon 14.
-# A layout in a plugin's override folder is the one the game uses: a room's
-# archive is a source of priority 100007, the last of all (measured at
-# 0x004C5BA0), and seen in the mage origin's Circle (level lak303d, not
-# lak503d, the campaign's tower, which a first test patched by mistake) with
-# its probes made blue and its lamps green. So a level can be given more
-# probes with files alone; baking their light and placing them is not begun.
-
-
-def with_point_lights(shader):
-    """Let the look say how much of each of a figure's point lights it takes
-    (look.hlsl's DaoPointLight): a lamp of the room it stands in, or one of
-    the fill lights the engine stands far off to light every figure of an
-    area alike. The engine hands a figure the best four it has for it, each a
-    place and reach and a colour, [0] and [1], [5] and [6], [7] and [8], [9]
-    and [11], and with Graphics.cpp's lamps the lamps that reach the figure
-    come before the fills. The colour is multiplied wherever it is read."""
-    lights = shader.parameters["g_vLightParams"].name
-    for place, colour in ((0, 1), (5, 6), (7, 8), (9, 11)):
-        for statement in shader.statements:
-            statement.hlsl = re.sub(
-                rf"{lights}\[{colour}\]",
-                f"({lights}[{colour}] * DaoPointLight({lights}[{place}].w, {lights}[3].xyz, {lights}[{colour}].w))",
-                statement.hlsl,
-            )
-
-
 def with_our_grade(shader, occlusion=False, show=False):
-    """Read the picture through DaoSharpen, and give DaoGrade the last word.
-    With `occlusion` the picture read is darkened by DaoOcclusion and has the
-    glow added (the grade's own pass, which is given both; the fading form is
-    another chain's and is given neither); with `show` the right half of the
-    screen is that darkening alone, to tune it by."""
+    """Read the picture through DaoPicture, and give DaoGrade the last word.
+    With `occlusion` the picture read is darkened by DaoOcclusion (the
+    grade's own pass; the fading form is another chain's and is not given
+    it); with `show` the right half of the screen is that darkening alone,
+    to tune it by, and with "share" the whole screen is what the occlusion
+    pass hands the grade."""
     read = shader.find(r"^texld\w* r\d+, v\d+, s0$")
     register, coordinate = re.match(
         r"texld\w* (r\d+), (v\d+),", shader.statements[read].asm
@@ -1011,30 +1017,16 @@ def with_our_grade(shader, occlusion=False, show=False):
     picture = next(
         p.name for p in shader.parameters.values() if p.set == "s" and p.base == 0
     )
-    glow = (
-        f"DaoGlow({coordinate}.xy) + DaoAir({coordinate}.xy)" if occlusion else "0"
-    )
-    colour = f"DaoSharpen({picture}, {coordinate}.xy, {glow})"
+    colour = f"DaoPicture({picture}, {coordinate}.xy)"
     open_ = f"DaoOcclusion({coordinate}.xy)"
     if occlusion:
         colour += f" * {open_}"
     shader.replace(read, read, [f"{register} = float4({colour}, 1);"])
     shader.add_input("pixel", "float2", "VPOS")
     last = ["oC0.xyz = DaoGrade(oC0.xyz, input.pixel);"]
-    if occlusion and show == "glow":
-        # The glow as it is kept, the square root of its light, whatever the look's Bloom.
-        last.append(f"if ({coordinate}.x > 0.5) oC0.xyz = tex2D(smpGlow, {coordinate}.xy).rgb;")
-    elif occlusion and show == "depth":
-        # The depth the occlusion reads, whole screen: metres in red (a wrap a
-        # metre) and green (a wrap every ten centimetres), the openness in blue.
-        last.append(
-            f"oC0.xyz = float3(frac(tex2D(smpMetres, {coordinate}.xy).r), "
-            f"frac(tex2D(smpMetres, {coordinate}.xy).r * 10), {open_});"
-        )
-    elif occlusion and show == "share":
-        # What the occlusion pass hands the grade, whole screen: the openness
-        # in red, the ambient share in green, and what the picture is
-        # multiplied by, the one on the other, in blue.
+    if occlusion and show == "share":
+        # The openness in red, the ambient share in green, and what the
+        # picture is multiplied by, the one on the other, in blue.
         last.append(
             f"oC0.xyz = float3(tex2D(smpOcclusion, {coordinate}.xy).rg, {open_});"
         )
@@ -1043,35 +1035,18 @@ def with_our_grade(shader, occlusion=False, show=False):
     shader.insert(len(shader.statements) - 1, last)
 
 
-# The look's values, each (its name in the chain, the pass that reads it,
-# what it is when no one sets it, the least and the most it may be). A shader
-# reads one as f<name>; a plugin sets one by its name on da_hsvmatrix
-# (dao/Framebuffer.h), which is how Graphics.cpp applies graphics.ini. A value
+# The chain's values of ours, each (its name in the chain, the pass that
+# reads it, what it is when no one sets it, the least and the most it may
+# be). A shader reads one as f<name>; a plugin sets one by its name on
+# da_hsvmatrix (dao/Framebuffer.h), which is how Graphics.cpp applies the
+# options. A value
 # two passes read names both, with a + between.
 LOOK = [
-    ("DaoSharpen", "grade", 0.6, 0, 1),
-    ("DaoVibrance", "grade", 0.3, 0, 2),
-    ("DaoContrast", "grade", 0.25, -1, 1),
-    ("DaoSaturation", "grade", 0.0, -1, 1),
-    ("DaoWarmth", "grade", 0.0, -1, 1),
     ("DaoHighlights", "grade", 0.0, 0, 1),
-    ("DaoExposure", "grade+glow", 0.0, -3, 3),
-    ("DaoRange", "grade+glow", 1.5, 1, 16),
-    ("DaoBloom", "grade", 0.0, 0, 4),
-    # The sun as the picture sees it and the air it lights (grade.hlsl's
-    # DaoAir): Graphics.cpp's to set each frame, and no look's.
-    ("DaoSunX", "grade+shafts+sum", 0.0, -64, 64),
-    ("DaoSunY", "grade+shafts+sum", 0.0, -64, 64),
-    ("DaoSunSide", "grade+shafts+sum", 0.0, -1, 1),
-    ("DaoLensX", "grade+shafts+sum+occlusion", 1.0, 0, 64),
-    ("DaoLensY", "grade+shafts+sum+occlusion", 1.0, 0, 64),
-    ("DaoHazeThick", "grade", 0.0, 0, 1),
-    ("DaoSunRed", "grade+sum", 0.0, 0, 64),
-    ("DaoSunGreen", "grade+sum", 0.0, 0, 64),
-    ("DaoSunBlue", "grade+sum", 0.0, 0, 64),
-    # And two that are a look's: how brightly the sun lights the air, and its shafts.
-    ("DaoSunHaze", "grade", 0.0, 0, 4),
-    ("DaoShafts", "sum", 0.0, 0, 8),
+    # The picture's width and height on a plane one unit before the eye
+    # (Graphics.cpp's KeepLens), each frame.
+    ("DaoLensX", "occlusion", 1.0, 0, 64),
+    ("DaoLensY", "occlusion", 1.0, 0, 64),
     ("DaoOcclusion", "occlusion", 1.0, 0, 6),
     ("DaoOcclusionRadius", "occlusion", 0.7, 0.1, 3),
 ]
@@ -1115,12 +1090,7 @@ CHAIN_RESOURCES = """
         <target id="DaoOcclusionA" width="BACKBUFFER_WIDTH" height="BACKBUFFER_HEIGHT" format="A8R8G8B8" shared="true"/>
         <target id="DaoOcclusionB" width="BACKBUFFER_WIDTH" height="BACKBUFFER_HEIGHT" format="A8R8G8B8" shared="true"/>
         <float id="DaoAcross" value="0.0" range="0.0 1.0" />
-        <float id="DaoDown" value="1.0" range="0.0 1.0" />
-        <target id="DaoGlowA" width="BACKBUFFER_WIDTH/4" height="BACKBUFFER_HEIGHT/4" format="A8R8G8B8" shared="true"/>
-        <target id="DaoGlowB" width="BACKBUFFER_WIDTH/4" height="BACKBUFFER_HEIGHT/4" format="A8R8G8B8" shared="true"/>
-        <target id="DaoGlowC" width="BACKBUFFER_WIDTH/16" height="BACKBUFFER_HEIGHT/16" format="A8R8G8B8" shared="true"/>
-        <target id="DaoGlowD" width="BACKBUFFER_WIDTH/16" height="BACKBUFFER_HEIGHT/16" format="A8R8G8B8" shared="true"/>
-        <target id="DaoGlow" width="BACKBUFFER_WIDTH" height="BACKBUFFER_HEIGHT" format="A8R8G8B8" shared="true"/>"""
+        <float id="DaoDown" value="1.0" range="0.0 1.0" />"""
 
 # The four passes before the grade's own: the depth in metres, the occlusion
 # into A, blurred across into B, blurred down into A again.
@@ -1155,57 +1125,6 @@ CHAIN_FILTERS = """<filter id="Dao Depth" library="DAEffects" material="HSLMatri
                 run semantic DaoOcclusionBlur
             </filter>
 
-            <filter id="Dao Glow Bright" library="DAEffects" material="HSLMatrix">
-                Input       = BackBufferCopy
-{glow_look}
-                bind DaoGlowA at 0
-                run semantic DaoGlowBright
-            </filter>
-
-            <filter id="Dao Glow Across" library="DAEffects" material="HSLMatrix">
-                Glow        = DaoGlowA
-                fAxis       = DaoAcross
-                bind DaoGlowB at 0
-                run semantic DaoGlowBlur
-            </filter>
-
-            <filter id="Dao Glow Down" library="DAEffects" material="HSLMatrix">
-                Glow        = DaoGlowB
-                fAxis       = DaoDown
-                bind DaoGlowA at 0
-                run semantic DaoGlowBlur
-            </filter>
-
-            <filter id="Dao Glow Wide Across" library="DAEffects" material="HSLMatrix">
-                Glow        = DaoGlowA
-                fAxis       = DaoAcross
-                bind DaoGlowD at 0
-                run semantic DaoGlowBlur
-            </filter>
-
-            <filter id="Dao Glow Wide Down" library="DAEffects" material="HSLMatrix">
-                Glow        = DaoGlowD
-                fAxis       = DaoDown
-                bind DaoGlowC at 0
-                run semantic DaoGlowBlur
-            </filter>
-
-            <filter id="Dao Shafts" library="DAEffects" material="HSLMatrix">
-                Metres      = DaoDepthMetres
-{shafts_look}
-                bind DaoGlowB at 0
-                run semantic DaoShafts
-            </filter>
-
-            <filter id="Dao Glow Sum" library="DAEffects" material="HSLMatrix">
-                Glow        = DaoGlowA
-                GlowWide    = DaoGlowC
-                Shafts      = DaoGlowB
-{sum_look}
-                bind DaoGlow at 0
-                run semantic DaoGlowSum
-            </filter>
-
             """
 
 # The passes as the material knows them, drawn like the grade's own: a
@@ -1237,7 +1156,6 @@ SCENE_PARAMETER = '<Parameter Type="Texture" Name="Input" SamplerName="smpScene"
 OCCLUSION_PARAMETER = (
     '<Parameter Type="Texture" Name="Occlusion" SamplerName="smpOcclusion" />'
 )
-GLOW_PARAMETER = '<Parameter Type="Texture" Name="Glow" SamplerName="smpGlow" />'
 
 # Our own pixel shaders, compiled as they are: the file here, and the name the
 # material asks for.
@@ -1245,30 +1163,7 @@ OURS = [
     ("occlusion_depth.hlsl", "daodepth.psh.fxo"),
     ("occlusion.hlsl", "daoocclusion.psh.fxo"),
     ("occlusion_blur.hlsl", "daoocclusionblur.psh.fxo"),
-    ("glow_bright.hlsl", "daoglowbright.psh.fxo"),
-    ("glow_blur.hlsl", "daoglowblur.psh.fxo"),
-    ("glow_shafts.hlsl", "daoshafts.psh.fxo"),
-    ("glow_sum.hlsl", "daoglowsum.psh.fxo"),
 ]
-
-# The state the glow's last pass is drawn with: a pass over the screen like
-# the game's own (hsvmatrixblend.sta.xml), reading three textures between
-# their texels where the game's reads one.
-GLOW_STATE = "DaoGlow.sta"
-GLOW_STATE_FILE = """<?xml version="1.0" encoding="UTF-8"?>
-<MaterialState Name="DaoGlow">
-  <DeviceState State="DS_CULLMODE" Value="CULL_NONE" />
-  <DeviceState State="DS_ZENABLE" Value="ZBUFFERENABLE_FALSE" />
-  <DeviceState State="DS_ZWRITEENABLE" Value="FALSE" />
-  <DeviceState State="DS_ALPHABLENDENABLE" Value="FALSE" />
-""" + "".join(
-    f"""  <SamplerState Stage="{stage}" State="SAMP_MINFILTER" Value="TEXFILT_LINEAR" />
-  <SamplerState Stage="{stage}" State="SAMP_MAGFILTER" Value="TEXFILT_LINEAR" />
-  <SamplerState Stage="{stage}" State="SAMP_ADDRESSU"  Value="TEXADD_CLAMP" />
-  <SamplerState Stage="{stage}" State="SAMP_ADDRESSV"  Value="TEXADD_CLAMP" />
-"""
-    for stage in range(3)
-) + "</MaterialState>\n"
 
 
 def with_our_passes(chain, material, antialias=True):
@@ -1298,8 +1193,6 @@ def with_our_passes(chain, material, antialias=True):
     chain = chain.replace(
         reads,
         f"Input       = {picture}\n                Occlusion   = DaoOcclusionA"
-        "\n                Glow        = DaoGlow"
-        "\n                Metres      = DaoDepthMetres"
         + look_settings("grade"),
         1,
     )
@@ -1314,15 +1207,12 @@ def with_our_passes(chain, material, antialias=True):
         chain,
         '<filter id="HSL Filter"',
         (smaa.CHAIN_FILTERS if antialias else "")
-        + CHAIN_FILTERS.replace("\n{occlusion_look}", look_settings("occlusion"))
-        .replace("\n{glow_look}", look_settings("glow"))
-        .replace("\n{shafts_look}", look_settings("shafts"))
-        .replace("\n{sum_look}", look_settings("sum")),
+        + CHAIN_FILTERS.replace("\n{occlusion_look}", look_settings("occlusion")),
         before=True,
     )
     # The picture's parameter comes four times: the grade's pass and its
     # fading form, each for shader model 3 and then 2. Model 3's two are given
-    # the look's values, so the fading form, which another chain runs and no
+    # the chain's values, so the fading form, which another chain runs and no
     # filter of ours sets, draws with their defaults; the grade's own is given
     # the occlusion too.
     picture_parameter = '<Parameter Type="Texture" Name="Input" SamplerName="s0" />'
@@ -1332,16 +1222,7 @@ def with_our_passes(chain, material, antialias=True):
             f"the game's material reads the picture {len(pieces) - 1} times, not 4"
         )
     values = "".join("\n            " + line for line in look_parameters("grade"))
-    pieces[1] = (
-        "\n            "
-        + OCCLUSION_PARAMETER
-        + "\n            "
-        + GLOW_PARAMETER
-        + "\n            "
-        + '<Parameter Type="Texture" Name="Metres" SamplerName="smpMetres" />'
-        + values
-        + pieces[1]
-    )
+    pieces[1] = "\n            " + OCCLUSION_PARAMETER + values + pieces[1]
     pieces[3] = values + pieces[3]
     material = picture_parameter.join(pieces)
     semantics = (
@@ -1357,31 +1238,6 @@ def with_our_passes(chain, material, antialias=True):
                 METRES_PARAMETER,
                 '<Parameter Type="Float" Name="fAxis" Default="0.0"/>',
             ],
-        )
-        + semantic(
-            "DaoGlowBright",
-            [
-                '<Parameter Type="Texture" Name="Input" SamplerName="smpPicture" />',
-                *look_parameters("glow"),
-            ],
-        )
-        + semantic(
-            "DaoGlowBlur",
-            [
-                GLOW_PARAMETER,
-                '<Parameter Type="Float" Name="fAxis" Default="0.0"/>',
-            ],
-        )
-        + semantic("DaoShafts", [METRES_PARAMETER, *look_parameters("shafts")])
-        + semantic(
-            "DaoGlowSum",
-            [
-                GLOW_PARAMETER,
-                '<Parameter Type="Texture" Name="GlowWide" SamplerName="smpGlowWide" />',
-                '<Parameter Type="Texture" Name="Shafts" SamplerName="smpShafts" />',
-                *look_parameters("sum"),
-            ],
-            GLOW_STATE,
         )
     )
     if antialias:
@@ -1660,17 +1516,6 @@ def with_bounded_bloom(shader):
     shader.insert(len(shader.statements) - 1, ["oC0 = saturate(oC0);"])
 
 
-# The shaders of what burns: the effects' own (a fire, a spell, sparks; smoke
-# and dust too) and lava's.
-HOT = ("vfx0", "vfxchunky", "lava0")
-
-
-def with_hot_light(shader):
-    """Make what burns brighter than its picture (look.hlsl's DaoHot): the
-    last word on the colour the shader writes."""
-    shader.insert(len(shader.statements) - 1, ["oC0.xyz = DaoHot(oC0.xyz);"])
-
-
 def with_scattered_share(shader):
     """Work out the ambient share of a shader the materials' model does not
     reach, a face's, hair's or an eye's, from what it scatters: these add
@@ -1688,16 +1533,23 @@ def with_scattered_share(shader):
     if getattr(shader, "share", None) is not None:
         return
     ambient = next(
-        (register for _, _, semantic, register, _ in shader.inputs if semantic.startswith("COLOR")),
+        (
+            register
+            for _, _, semantic, register, _ in shader.inputs
+            if semantic.startswith("COLOR")
+        ),
         None,
     )
     if ambient is None:
         return
     for index, statement in enumerate(shader.statements):
-        found = re.match(rf"^add(?:_pp)? (r\d+)\.xyz, (r\d+), {ambient}$", statement.asm)
+        found = re.match(
+            rf"^add(?:_pp)? (r\d+)\.xyz, (r\d+), {ambient}$", statement.asm
+        )
         if found and statement.depth == 0:
             shader.insert(
-                index + 1, [f"daoScatteredShare = DaoShare({ambient}.xyz, {found.group(1)}.xyz);"]
+                index + 1,
+                [f"daoScatteredShare = DaoShare({ambient}.xyz, {found.group(1)}.xyz);"],
             )
             shader.insert(-1, ["float daoScatteredShare = 1;"])
             shader.scattered = True
@@ -1783,16 +1635,16 @@ def with_ambient_share(shader):
     shader.insert(len(shader.statements) - 1, said)
 
 
-def changes_for(stem, listing, map_size, show):
+def changes_for(stem, listing, show):
     """What this build changes in one of the game's pixel shaders: the
     functions that change it, and the HLSL they call."""
     changes, preamble = [], ""
-    shadow = f"#define DAO_SHADOW_MAP_SIZE {float(map_size)}\n" + ours("shadow.hlsl")
+    shadow = ours("look.hlsl") + ours("shadow.hlsl")
     if stem in RECEIVERS:
         changes.append(with_our_shadow)
         preamble += shadow
     if takes_sun_shadow(stem, listing):
-        changes += [with_sun_shadow, with_materials, with_point_lights, without_cut]
+        changes += [with_sun_shadow, with_materials, without_cut]
         # Not a face: skin is soft, and its map is pores and lines, which
         # want no sharpening.
         if not stem.startswith("face"):
@@ -1804,12 +1656,14 @@ def changes_for(stem, listing, map_size, show):
             + ours("materials.hlsl")
             + ours("bake.hlsl")
         )
-    elif stem.startswith(CHARACTERS) and reads_lamp(listing):
+    elif (
+        stem.startswith(CHARACTERS)
+        and "g_vLightParams" in listing
+        and "ps_3_0" in listing
+    ):
         # A figure's shader the sun's shadow is not put on (it has the
-        # shadow's data already): its lamp and fills are the look's all the
-        # same, or it would be lit by a lamp at the engine's full strength
-        # beside others at the look's.
-        changes += [with_point_lights, without_cut]
+        # shadow's data already): left uncut as the others are.
+        changes.append(without_cut)
         preamble += ours("look.hlsl")
     if stem == "hslmatrix":
         changes.append(lambda s: with_our_grade(s, occlusion=True, show=show))
@@ -1819,15 +1673,12 @@ def changes_for(stem, listing, map_size, show):
         preamble += ours("grade.hlsl")
     if stem in BLOOM_MASKS:
         changes.append(with_bounded_bloom)
-    if stem.startswith(HOT) and "ps_3_0" in listing:
-        changes.append(with_hot_light)
-        preamble += ours("look.hlsl")
     if stem in PROPS:
-        changes += [with_ambient_relief, with_level_lights, without_cut]
+        changes += [with_ambient_relief, without_cut]
         preamble += ours("look.hlsl") + ours("bake.hlsl")
     if takes_baked_light(listing):
-        changes += [with_shaped_bake, with_level_lights, without_cut]
-        if "daoLook" not in preamble:
+        changes += [with_shaped_bake, without_cut]
+        if "DaoShapedBake" not in preamble:
             preamble += ours("look.hlsl") + ours("bake.hlsl")
     # The materials, for a prop and a level's surface as for a figure: first,
     # before another change rewrites a statement they are found by.
@@ -1846,8 +1697,7 @@ def main(argv):
         print(__doc__)
         return 2
     out = argv[0]
-    map_size = int(argv[1]) if len(argv) > 1 else 1024
-    show = next((name for name in ("glow", "depth", "share") if "show-" + name in argv), "show-occlusion" in argv)
+    show = "share" if "show-share" in argv else "show-occlusion" in argv
     antialias = "no-smaa" not in argv
     data = os.path.join(script_commands.GAME, "packages", "core", "data")
     archive = os.path.join(data, "shaders.erf")
@@ -1872,7 +1722,10 @@ def main(argv):
         with open(os.path.join(out, "materials.made"), encoding="utf-8") as f:
             kept = {line.strip().lower() for line in f}
     for stale in os.listdir(out):
-        if stale.lower().endswith((".fxo", ".xml", ".dds")) and stale.lower() not in kept:
+        if (
+            stale.lower().endswith((".fxo", ".xml", ".dds"))
+            and stale.lower() not in kept
+        ):
             os.remove(os.path.join(out, stale))
     chain, material = with_our_passes(
         script_commands.erf_entries(os.path.join(data, "postprocesseffects.erf"))[
@@ -1885,13 +1738,6 @@ def main(argv):
     )
     if antialias:
         smaa.write_files(out)
-    with open(
-        os.path.join(out, GLOW_STATE.lower() + ".xml"),
-        "w",
-        encoding="utf-8",
-        newline="",
-    ) as f:
-        f.write(GLOW_STATE_FILE)
     for name, text in (
         ("da_hsvmatrix.ffx.xml", chain),
         ("hslmatrix.mat.xml", material),
@@ -1911,7 +1757,9 @@ def main(argv):
                 materials[name].decode("utf-8-sig"), (theirs, ours_)
             )
             text = with_pass_variants(
-                with_material_parameters(with_shadow_parameters(text)), states, solid_states
+                with_material_parameters(with_shadow_parameters(text)),
+                states,
+                solid_states,
             )
             with open(os.path.join(out, name), "w", encoding="utf-8", newline="") as f:
                 f.write(text)
@@ -1922,13 +1770,21 @@ def main(argv):
     # (a tree's canopy and the distortion mask are drawn by ch1alphmultnt and
     # static1_alpha and were not in the list of five: found 2026-10-12).
     for name in sorted(materials):
-        if name.endswith(".mat.xml") and name not in written and name not in NO_DEPTH_PASS:
+        if (
+            name.endswith(".mat.xml")
+            and name not in written
+            and name not in NO_DEPTH_PASS
+        ):
             theirs = materials[name].decode("utf-8-sig")
             ours_ = with_pass_variants(
-                with_material_parameters(with_shadow_parameters(theirs)), states, solid_states
+                with_material_parameters(with_shadow_parameters(theirs)),
+                states,
+                solid_states,
             )
             if ours_ != theirs:
-                with open(os.path.join(out, name), "w", encoding="utf-8", newline="") as f:
+                with open(
+                    os.path.join(out, name), "w", encoding="utf-8", newline=""
+                ) as f:
                     f.write(ours_)
                 written.add(name)
     for name, text in solid_states.items():
@@ -1967,20 +1823,44 @@ def main(argv):
             name, body = item
             try:
                 listing = list_shader(fxc, name, body, work)
-                changes, preamble = changes_for(
-                    name[: -len(".psh.fxo")], listing, map_size, show
-                )
+                changes, preamble = changes_for(name[: -len(".psh.fxo")], listing, show)
                 if not changes:
                     return None
-                build(fxc, name, listing, out, [alpha_as(own_alpha(name)), *changes], preamble, work)
+                build(
+                    fxc,
+                    name,
+                    listing,
+                    out,
+                    [alpha_as(own_alpha(name)), *changes],
+                    preamble,
+                    work,
+                )
                 # And the builds the passes that draw it another way are
                 # pointed at (with_pass_variants).
                 uses = USES.get(name, set())
                 if TEST in uses:
                     cut_out = alpha_as("cut", *CUTS[name])
-                    build(fxc, name, listing, out, [cut_out, *changes], preamble, work, "dao" + name)
+                    build(
+                        fxc,
+                        name,
+                        listing,
+                        out,
+                        [cut_out, *changes],
+                        preamble,
+                        work,
+                        "dao" + name,
+                    )
                 if PLAIN in uses and own_alpha(name) != "share":
-                    build(fxc, name, listing, out, [alpha_as("share"), *changes], preamble, work, "daoshare" + name)
+                    build(
+                        fxc,
+                        name,
+                        listing,
+                        out,
+                        [alpha_as("share"), *changes],
+                        preamble,
+                        work,
+                        "daoshare" + name,
+                    )
             except (shader_hlsl.ShaderError, subprocess.CalledProcessError) as e:
                 return f"build_shaders: {name}: {e}"
             return ""
@@ -2003,7 +1883,12 @@ def main(argv):
     whole = sum(1 for _, spread, falloff in MATERIALS_REACHED if spread and falloff)
     print(
         f"build_shaders: materials in {len(MATERIALS_REACHED)} shaders, {whole} of them whole: "
-        + " ".join(sorted(name.split(".")[0] + ("" if s and f else "*") for name, s, f in MATERIALS_REACHED))
+        + " ".join(
+            sorted(
+                name.split(".")[0] + ("" if s and f else "*")
+                for name, s, f in MATERIALS_REACHED
+            )
+        )
     )
     return 1 if failed else 0
 

@@ -10,7 +10,7 @@
     `git submodule update --init --recursive` after cloning), else ..\DAOLib.
 
 .PARAMETER Preset
-    debug       elgarashaders.dll, its shaders, the baker's command and the tests;
+    debug       elgarashaders.dll, its shaders and the tests;
                 build\debug\daolib\plugins\elgarashaders is then the plugin's folder,
                 for tools\deploy.ps1. The first run compiles spdlog and Detours
                 through vcpkg.

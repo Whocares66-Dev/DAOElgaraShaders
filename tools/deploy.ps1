@@ -4,30 +4,22 @@
 
 .DESCRIPTION
     After `.\tools\build.ps1 -Preset <preset>`, puts the plugin's folder,
-    build\<preset>\daolib\plugins\elgarashaders\ (elgarashaders.dll, its .pdb, graphics.ini
-    and the override folder of rebuilt shaders), under bin_ship\daolib\plugins. The game must
+    build\<preset>\daolib\plugins\elgarashaders\ (elgarashaders.dll, its .pdb and the
+    override folder of rebuilt shaders), under bin_ship\daolib\plugins. The game must
     not be running from that folder: it holds those files open. DAOLib's loader
     (dinput8.dll) and its address files are DAOLib's to put there (its own deploy.ps1, or a
     release of it); other plugins in the folder are left as they are.
 
-    A look chosen in play is kept in the installed folder's graphics.chosen, which a deploy
-    leaves as it is.
+    The options chosen in play are kept in the installed folder's graphics.chosen, which a
+    deploy leaves as it is.
 
-    The levels lit again go with it: for each level of -Relit, the lightmaps, probes,
-    reflection cubes and tints
-    `.\tools\relight.ps1` left in build\relit\<level>\ are put in the plugin's override
-    folder, where they are what the game lights that level by. A level goes into the game
-    once it has been looked at in play, so the levels are named and none is taken unasked.
-
-    -Remove deletes the plugin's folder. The light probes baked in play and the log are in
-    Documents\BioWare\Dragon Age\daolib\ and stay. A folder that is a link, or has one
-    anywhere in it (a junction, a symbolic link), is not deleted: a recursive delete goes
-    through one and empties what it points at.
+    -Remove deletes the plugin's folder. The log is in Documents\BioWare\Dragon Age\daolib\
+    and stays. A folder that is a link, or has one anywhere in it (a junction, a symbolic
+    link), is not deleted: a recursive delete goes through one and empties what it points at.
 
 .EXAMPLE
     .\tools\deploy.ps1                 # debug build into the GOG install
     .\tools\deploy.ps1 -Preset release
-    .\tools\deploy.ps1 -Preset release -Relit lak303d
     .\tools\deploy.ps1 -Remove
 #>
 [CmdletBinding()]
@@ -35,7 +27,6 @@ param(
     [ValidateSet('debug', 'release')]
     [string] $Preset = 'debug',
     [switch] $Remove,
-    [string[]] $Relit = @(),
     [string] $Game = 'C:\Program Files (x86)\GOG Galaxy\Games\Dragon Age Origins\bin_ship'
 )
 
@@ -96,19 +87,11 @@ if (-not (Test-Path (Join-Path $built 'elgarashaders.dll'))) {
 if (-not (Test-Path (Join-Path $Game 'dinput8.dll'))) {
     Show-Line "no dinput8.dll beside DAOrigins.exe: DAOLib's loader is not installed, and nothing loads the plugin" -Colour Yellow
 }
-# The look chosen in play is the player's, kept across a deploy.
+# The options chosen in play are the player's, kept across a deploy.
 $chosen = Join-Path $pluginFolder 'graphics.chosen'
 $kept = if (Test-Path $chosen) { Get-Content -LiteralPath $chosen -Raw } else { $null }
 Remove-PluginFolder
 New-Item -ItemType Directory -Force $plugins | Out-Null
 Copy-Item -LiteralPath $built -Destination $pluginFolder -Recurse
 if ($null -ne $kept) { Set-Content -LiteralPath $chosen -Value $kept -NoNewline }
-foreach ($level in $Relit) {
-    $lit = Join-Path $repo "build\relit\$level"
-    $files = @(Get-ChildItem -LiteralPath $lit -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Extension -in '.dds', '.elgp', '.lamps', '.rml', '.mmh' })
-    if ($files.Count -eq 0) { throw "Nothing of $level in $lit; run .\tools\relight.ps1 -Level $level first" }
-    $files | Copy-Item -Destination (Join-Path $pluginFolder 'override')
-    Show-Line "$level lit again: $($files.Count) files"
-}
 Show-Line "deployed $built to $pluginFolder" -Colour Green
