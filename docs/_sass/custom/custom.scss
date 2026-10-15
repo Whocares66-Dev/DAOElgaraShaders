@@ -1,0 +1,198 @@
+// The guide's own touches over its sun-colored scheme (color_schemes/elgara.scss): links
+// underlined, a picture from the game with no frame and never wider than the
+// text, a key drawn as a key, and a table of rows with a rule between them.
+
+// -- the sidebar and the header ------------------------------------------------------------------
+
+// The site's name.
+.site-title {
+  display: flex;
+  align-items: center;
+  color: #ffc83d;
+}
+
+.site-title .site-name {
+  font-size: 1.25rem;
+  white-space: nowrap;
+}
+
+.nav-list .nav-list-item .nav-list-link {
+  color: #f3ece6;
+
+  &:hover {
+    color: #ffffff;
+    background-image: linear-gradient(90deg, rgba(242, 85, 44, 0.14), transparent);
+  }
+
+  &.active {
+    color: #ffffff;
+    font-weight: 600;
+    background-image: linear-gradient(90deg, rgba(242, 85, 44, 0.24), transparent);
+  }
+}
+
+// -- the text ------------------------------------------------------------------------------------
+
+.main-content a:not(.btn) {
+  text-decoration: underline;
+  text-decoration-color: #c9a98f;
+  text-underline-offset: 0.2em;
+
+  &:hover {
+    text-decoration-color: #ffffff;
+  }
+}
+
+// A frame from the game: no border, never wider than the text, a little room under it.
+.main-content img.screenshot {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1rem 0 1.5rem;
+}
+
+// A small picture of the interface, at its own size or less.
+.main-content img.ui {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1rem 0 1.5rem;
+}
+
+// A key, drawn as a key.
+kbd {
+  display: inline-block;
+  padding: 0.05em 0.45em;
+  border: 1px solid #c9a98f;
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 0.85em;
+  color: #ffffff;
+  background: #1e120b;
+}
+
+// A table: rows with a rule between them, no grid.
+.main-content table {
+  border-collapse: collapse;
+  box-shadow: none;
+}
+
+.main-content th,
+.main-content td {
+  border: none;
+  border-bottom: 1px solid #4a2a18;
+  background: transparent;
+}
+
+.table-wrapper {
+  box-shadow: none;
+}
+
+// -- the header's right ---------------------------------------------------------------------------
+
+// GitHub's mark, not the word (_includes/components/aux_nav.html), as DAOTurnBased's guide has it.
+.aux-nav,
+.aux-nav .aux-nav-list,
+.aux-nav .aux-nav-list .aux-nav-list-item {
+  display: flex;
+  align-items: center;
+  height: 100%;
+}
+
+.github-link {
+  display: flex;
+  align-items: center;
+  margin: 0 1.25rem 0 0.25rem;
+  color: #c9a98f;
+
+  &:hover {
+    color: #ffffff;
+  }
+}
+
+// The version selector (_includes/components/aux_nav.html), DAOTurnBased's, in the sun's colors.
+.docs-versions {
+  position: relative;
+  margin-right: 0.75rem;
+  font-size: 14px;
+  color: #f3ece6;
+  white-space: nowrap;
+}
+
+.docs-versions summary,
+.docs-version {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.2rem 0.6rem;
+  border: 1px solid #4a2a18;
+  border-radius: 6px;
+  list-style: none;
+
+  &::-webkit-details-marker {
+    display: none;
+  }
+
+  &::marker {
+    content: "";
+  }
+
+  svg {
+    color: #c9a98f;
+  }
+}
+
+.docs-versions summary {
+  cursor: pointer;
+}
+
+.docs-versions summary:hover,
+.docs-versions[open] summary {
+  color: #ffffff;
+  border-color: #c9a98f;
+}
+
+.docs-versions[open] summary svg {
+  transform: rotate(180deg);
+}
+
+.docs-versions ul {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 40;
+  min-width: 100%;
+  margin: 0.4rem 0 0;
+  padding: 0.25rem;
+  list-style: none;
+  background-color: #1e120b;
+  border: 1px solid #4a2a18;
+  border-radius: 6px;
+
+  a {
+    display: block;
+    padding: 0.25rem 0.6rem;
+    color: #f3ece6;
+    border-radius: 4px;
+
+    &:hover,
+    &[aria-current="true"] {
+      color: #ffffff;
+      background-image: linear-gradient(90deg, rgba(242, 85, 44, 0.24), transparent);
+    }
+  }
+}
+
+// The header's links scroll sideways in Just the Docs, which would clip the
+// list of versions to a box with a scrollbar: it drops over the page.
+.main-header,
+.aux-nav,
+.aux-nav-list {
+  overflow: visible;
+}
+
+.main-header {
+  position: relative;
+  z-index: 30;
+}

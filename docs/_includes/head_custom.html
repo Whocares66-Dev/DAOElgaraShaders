@@ -1,0 +1,21 @@
+{%- comment -%}
+On every page's head (Just the Docs' hook): the version selector closes when
+you click anywhere else, or press Escape, as a menu does (a <details> stays
+open by itself). As DAOTurnBased's guide has it.
+{%- endcomment -%}
+<script>
+  document.addEventListener("click", function (event) {
+    document.querySelectorAll("details.docs-versions[open]").forEach(function (menu) {
+      if (!menu.contains(event.target)) {
+        menu.open = false;
+      }
+    });
+  });
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") {
+      document.querySelectorAll("details.docs-versions[open]").forEach(function (menu) {
+        menu.open = false;
+      });
+    }
+  });
+</script>

@@ -1,0 +1,33 @@
+// The sun's colors, as a Just the Docs color scheme (the user, 2026-10-15: "use sun-colored theme,
+// reddish orange, yellow, white"): white text on a warm black, yellow headings, reddish-orange links
+// and accents. What is not a color is in custom/custom.scss, whose colors are these.
+
+// The theme's own dark scheme first, for what is not named here (code's colors among it).
+@import "./color_schemes/dark";
+
+$el-black: #120a06;
+$el-black-light: #1e120b;
+$el-border: #4a2a18;
+$el-orange: #f2552c;
+$el-yellow: #ffc83d;
+$el-white-dim: #f3ece6;
+$el-white: #ffffff;
+$el-muted: #c9a98f;
+
+$color-scheme: dark;
+$body-background-color: $el-black;
+$body-heading-color: $el-yellow;
+$body-text-color: $el-white-dim;
+$link-color: $el-orange;
+$nav-child-link-color: $el-muted;
+$sidebar-color: $el-black;
+$base-button-color: $el-black-light;
+$btn-primary-color: $el-orange;
+$code-background-color: $el-black-light;
+$code-linenumber-color: $el-muted;
+$feedback-color: $el-black-light;
+$table-background-color: $el-black;
+$search-background-color: $el-black-light;
+$search-foreground-color: $el-white-dim;
+$search-result-preview-color: $el-muted;
+$border-color: $el-border;

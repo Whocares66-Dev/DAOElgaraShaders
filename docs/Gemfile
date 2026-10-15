@@ -1,0 +1,9 @@
+# The guide's Jekyll, for a preview on this machine and for the GitHub Actions build:
+#
+#   bundle install
+#   bundle exec jekyll serve
+#
+# The github-pages gem keeps the dependency set GitHub Pages builds with, as DAOTurnBased's does.
+source "https://rubygems.org"
+gem "github-pages", group: :jekyll_plugins
+gem "webrick"
