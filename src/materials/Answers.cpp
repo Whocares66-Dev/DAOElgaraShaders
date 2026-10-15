@@ -56,8 +56,9 @@ const std::string *Answers::For(std::span<const std::byte> bytes) const
 
 std::optional<std::vector<std::byte>> Answers::Patched(std::span<const std::byte> bytes) const
 {
+    // An empty answer is a copy known to need nothing (MaterialLearn.h).
     const std::string *said = For(bytes);
-    if (said == nullptr)
+    if (said == nullptr || said->empty())
     {
         return std::nullopt;
     }

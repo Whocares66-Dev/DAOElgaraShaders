@@ -9,6 +9,8 @@
 // the game reads anything, and not changed after.
 #include "MaterialPatch.h"
 
+#include "MaterialLearn.h"
+
 #include "materials/Answers.h"
 
 #include "dao/Resources.h"
@@ -60,10 +62,20 @@ std::string Narrow(std::wstring_view name)
 std::optional<std::vector<std::byte>> Patch(std::wstring_view name, std::span<const std::byte> bytes)
 {
     auto patched = g_answers.Patched(bytes);
+    if (!patched)
+    {
+        patched = materiallearn::Patched(bytes);
+    }
     if (patched)
     {
         g_given.fetch_add(1, std::memory_order_relaxed);
         return patched;
+    }
+    // Not shipped, nor learned in an earlier session: to be worked out
+    // (MaterialLearn.h), unless it was learned to need nothing.
+    if (g_answers.For(bytes) == nullptr && !materiallearn::Knows(bytes))
+    {
+        materiallearn::Notice(name, bytes);
     }
     g_none.fetch_add(1, std::memory_order_relaxed);
     const std::lock_guard lock(g_namesMutex);

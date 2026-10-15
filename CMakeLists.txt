@@ -66,12 +66,15 @@ add_library(
     src/materials/Answers.cpp
     src/materials/Names.cpp
     src/materials/Said.cpp
+    src/materials/Learn.cpp
 )
 target_include_directories(elgara_materials PUBLIC src)
 # The names' tables are Python's regular expressions (lookbehind among them),
 # which PCRE2 reads as Python does and std::regex does not.
 find_package(pcre2 CONFIG REQUIRED)
 target_link_libraries(elgara_materials PRIVATE PCRE2::8BIT)
+# A texture read and a map written as the game keeps them (Learn.cpp).
+target_link_libraries(elgara_materials PUBLIC DAOLib::core)
 dao_apply_warnings(elgara_materials)
 
 # ---------------------------------------------------------------------------
@@ -83,7 +86,11 @@ dao_apply_warnings(elgara_materials)
 # ---------------------------------------------------------------------------
 add_daolib_plugin(
     elgarashaders
-    SOURCES src/Graphics.cpp src/MaterialPatch.cpp src/ResourceDump.cpp
+    SOURCES
+        src/Graphics.cpp
+        src/MaterialPatch.cpp
+        src/MaterialLearn.cpp
+        src/ResourceDump.cpp
 )
 target_link_libraries(elgarashaders PRIVATE elgara_materials)
 dao_apply_warnings(elgarashaders)

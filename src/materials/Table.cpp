@@ -74,7 +74,8 @@ constexpr std::string_view kAnswersHeader =
     R"(; What the plugin adds to each material object the game reads, by the object's bytes
 ; (issue 19). Made by elgarashaders_materials from data/materials.ini; not edited by hand.
 ; A line a copy: the FNV-1a hash of 64 bits of the file's bytes as the game reads them, in
-; hex; the material's name; the XML put before its </MaterialObject>.
+; hex; the material's name; the XML put before its </MaterialObject>, none where it is
+; given nothing.
 )";
 
 std::string Lower(std::string_view text)
@@ -288,41 +289,6 @@ MapWork KeyOf(const MaterialObject &object, const std::string &label)
     return {label, {object.Texture("mml_tSpecularMask"), object.Texture("mml_tDiffuse"), object.Plate()}, std::nullopt};
 }
 
-// The rule's map of a material, and its share; nullopt where it has no
-// textures to ask.
-std::optional<MetalMap> MapOf(const Catalogue &catalogue, const Copy &copy)
-{
-    const MaterialObject &object = copy.object;
-    const std::string specular = object.Texture("mml_tSpecularMask");
-    const std::string diffuse = object.Texture("mml_tDiffuse");
-    if (specular.empty() || diffuse.empty())
-    {
-        return std::nullopt;
-    }
-    const auto d = catalogue.Image(diffuse, copy.campaign);
-    const auto s = catalogue.Image(specular, copy.campaign);
-    if (!d || !s)
-    {
-        return std::nullopt;
-    }
-    return MakeMetalMap(*d, *s, object.Plate());
-}
-
-std::vector<std::byte> MapFile(const Picture &grey)
-{
-    dao::core::dds::Image image{grey.width, grey.height, {}};
-    image.rgba.resize(static_cast<std::size_t>(grey.width) * grey.height * 4);
-    for (std::size_t i = 0; i < grey.values.size(); ++i)
-    {
-        const auto v = static_cast<std::uint8_t>(std::lround(std::clamp(grey.values[i], 0.0F, 1.0F) * 255.0F));
-        image.rgba[(i * 4) + 0] = v;
-        image.rgba[(i * 4) + 1] = v;
-        image.rgba[(i * 4) + 2] = v;
-        image.rgba[(i * 4) + 3] = 255;
-    }
-    return dao::core::dds::Encode(image, dao::core::dds::Format::Dxt1);
-}
-
 } // namespace
 
 Catalogue::Catalogue() = default;
@@ -505,12 +471,7 @@ std::optional<std::vector<std::byte>> Catalogue::Bytes(const std::string &resour
 std::optional<Picture> Catalogue::Image(const std::string &resource, const std::string &campaign) const
 {
     const auto bytes = Bytes(resource, campaign);
-    const auto image = bytes ? dao::core::dds::Decode(*bytes) : std::nullopt;
-    if (!image)
-    {
-        return std::nullopt;
-    }
-    return FromRgba8(image->width, image->height, image->rgba);
+    return bytes ? PictureOf(*bytes) : std::nullopt;
 }
 
 std::vector<std::string> Catalogue::Enciphered(std::string_view extension) const
@@ -537,26 +498,16 @@ bool Catalogue::Readable(const std::string &resource) const
     });
 }
 
+ImageOf ImagesOf(const Catalogue &catalogue, const std::string &campaign)
+{
+    // The campaign held shared, so that the function's copies copy no string.
+    auto held = std::make_shared<const std::string>(campaign);
+    return [&catalogue, held](const std::string &resource) { return catalogue.Image(resource, *held); };
+}
+
 Classed Classify(const Catalogue &catalogue, const Names &names, const Copy &copy)
 {
-    Classed out;
-    out.verdict = names.ByName(copy.object);
-    bool ragged = false;
-    if (out.verdict.cls == kPaint)
-    {
-        if (auto map = MapOf(catalogue, copy))
-        {
-            out.share = map->share;
-            ragged = Ragged(map->metal);
-            out.map = std::move(map->metal);
-        }
-    }
-    out.cls = Settle(out.verdict, out.share, ragged);
-    if (out.cls != "mixed")
-    {
-        out.map.reset();
-    }
-    return out;
+    return Classify(copy.object, names, ImagesOf(catalogue, copy.campaign));
 }
 
 std::map<std::string, Hand> ReadHands(const std::filesystem::path &ini)
@@ -651,7 +602,7 @@ std::vector<MapWork> Settled(const Catalogue &catalogue, const std::vector<const
         MapWork work = KeyOf(materials[i]->main.object, materials[i]->name);
         if (row.cls == "mixed" && !row.map)
         {
-            if (auto map = MapOf(catalogue, materials[i]->main))
+            if (auto map = MapOf(materials[i]->main.object, ImagesOf(catalogue, materials[i]->main.campaign)))
             {
                 row.share = map->share;
                 row.map = std::move(map->metal);
@@ -773,18 +724,15 @@ void WorkOut(const Catalogue &catalogue, const Names &names, Work &work)
         work.cls = Classify(catalogue, names, *work.copy).cls;
     }
     work.map = KeyOf(work.copy->object, work.another ? work.name + "#" + Hex(work.hash) : work.name);
+    const ImageOf image = ImagesOf(catalogue, work.copy->campaign);
     if (work.cls == "mixed")
     {
-        if (auto map = MapOf(catalogue, *work.copy))
+        if (auto map = MapOf(work.copy->object, image))
         {
             work.map.map = std::move(map->metal);
         }
     }
-    const std::string normal = work.copy->object.Texture("mml_tNormalMap");
-    if (const auto picture = normal.empty() ? std::nullopt : catalogue.Image(normal, work.copy->campaign))
-    {
-        work.bumps = MeasureBumps(*picture);
-    }
+    work.bumps = BumpsOf(work.copy->object, image);
 }
 
 // The maps' names, the main copies' first so a map is named by the material
@@ -857,11 +805,10 @@ Objects MakeObjects(const Catalogue &catalogue, const Names &names, const std::m
         {
             Count(out, "answers for another copy");
         }
-        const std::string text = SaidFor(work.cls, names, mapFile, work.bumps);
-        if (!text.empty())
-        {
-            said[{work.name, Hex(work.hash)}] = text;
-        }
+        // Every copy has a line, an empty one where it is given nothing: a
+        // copy the plugin has no line for is one it works out in play
+        // (src/MaterialLearn.cpp), and these need no working out.
+        said[{work.name, Hex(work.hash)}] = SaidFor(work.cls, names, mapFile, work.bumps);
     }
     out.answers = kAnswersHeader;
     for (const auto &[key, text] : said)

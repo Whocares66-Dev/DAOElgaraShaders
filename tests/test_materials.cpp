@@ -4,6 +4,7 @@
 // cases tagged [game] read the installed game (DAO_GAME_DIR, or GOG's) and
 // pass with nothing asked where it is not there.
 #include "materials/Answers.h"
+#include "materials/Learn.h"
 #include "materials/Names.h"
 #include "materials/Said.h"
 #include "materials/Table.h"
@@ -374,6 +375,21 @@ TEST_CASE("a material is known by its bytes, and its answer goes before its end"
     CHECK_FALSE(answers.Patched({reinterpret_cast<const std::byte *>(other.data()), other.size()}));
 }
 
+TEST_CASE("an empty answer is a copy known to need nothing", "[answers]")
+{
+    const std::string object = "<MaterialObject Name=\"M\">\n</MaterialObject>\n";
+    const std::span<const std::byte> span(reinterpret_cast<const std::byte *>(object.data()), object.size());
+    char hex[17] = {};
+    std::snprintf(hex, sizeof hex, "%016llx", static_cast<unsigned long long>(materials::Fnv1a64(span)));
+    materials::Answers answers;
+    answers.Parse(std::string(hex) + " m \n");
+    CHECK(answers.Count() == 1);
+    CHECK(answers.Unparsed() == 0);
+    REQUIRE(answers.For(span) != nullptr);
+    CHECK(answers.For(span)->empty());
+    CHECK_FALSE(answers.Patched(span));
+}
+
 TEST_CASE("the lines a material is given by its class", "[answers]")
 {
     const auto &names = TheNames();
@@ -500,4 +516,40 @@ TEST_CASE("the game's metal in part: plate, a sword, shields, leather", "[game]"
     const auto helm = TheGame()->Materials().at("pn_hlf_s01b").main;
     CHECK(helm.object.Texture("mml_tDiffuse") == "pn_hlf_s01b_0d.dds");
     CHECK(helm.campaign == "Single Player");
+}
+
+TEST_CASE("a material worked out in play is worked out as the table works it out", "[game]")
+{
+    if (TheGame() == nullptr)
+    {
+        SKIP("the game is not installed (DAO_GAME_DIR)");
+    }
+    const auto &names = TheNames();
+    for (const char *name : {"pn_arm_masa", "w_shd_srda", "anvil_01", "tti_master"})
+    {
+        const auto &copy = TheGame()->Materials().at(name).main;
+        const materials::ImageOf image = materials::ImagesOf(*TheGame(), copy.campaign);
+        const auto learned = materials::Learn(name, copy.text, names, image, "learned_m.dds");
+        REQUIRE(learned.has_value());
+        const auto row = Row(name);
+        CHECK(learned->cls == row.cls);
+        CHECK(learned->map.empty() == !row.map.has_value());
+        CHECK(learned->said == materials::SaidFor(row.cls, names, row.map ? "learned_m.dds" : "",
+                                                  materials::BumpsOf(copy.object, image)));
+    }
+    // plate: metal in part, with its map, and its normal map's measure
+    const auto &plate = TheGame()->Materials().at("pn_arm_masa").main;
+    const auto learned =
+        materials::Learn("pn_arm_masa", plate.text, names, materials::ImagesOf(*TheGame(), plate.campaign), "m.dds");
+    CHECK(learned->said.find(R"(ResName="m.dds")") != std::string::npos);
+    CHECK(learned->said.find("mml_vDaoBumps") != std::string::npos);
+    CHECK(learned->map.size() > 128);
+    // with no textures to read, a painted material is no metal
+    const auto blind = materials::Learn(
+        "pn_arm_masa", plate.text, names, [](const std::string &) { return std::optional<materials::Picture>{}; },
+        "m.dds");
+    CHECK(blind->map.empty());
+    CHECK(blind->said.find("mml_fDaoMetal") == std::string::npos);
+    // what is no material object, or no solid one, is not worked out
+    CHECK_FALSE(materials::Learn("x", "<Effect/>", names, materials::ImagesOf(*TheGame(), "Single Player"), "m.dds"));
 }

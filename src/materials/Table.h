@@ -7,6 +7,7 @@
 // which copy of a file the game takes, in each campaign the install has.
 #pragma once
 
+#include "materials/Learn.h"
 #include "materials/Names.h"
 #include "materials/TextureRule.h"
 
@@ -94,17 +95,11 @@ class Catalogue
     std::map<std::string, Material> materials_;
 };
 
-// A material's class and how it was reached: the share of metal the rule
-// found and its map, where the names asked the textures.
-struct Classed
-{
-    Verdict verdict;
-    std::string cls;
-    std::optional<double> share;
-    std::optional<Picture> map;
-};
-
+// A copy classed (Learn.h's Classify) with its textures as its campaign takes them.
 Classed Classify(const Catalogue &catalogue, const Names &names, const Copy &copy);
+
+// The textures as a campaign takes them, for Learn.h.
+ImageOf ImagesOf(const Catalogue &catalogue, const std::string &campaign);
 
 // data/materials.ini's lines: by hand, `name = class ; by hand ...`, kept as
 // written by every later run; and the table's classes.

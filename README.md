@@ -4,7 +4,7 @@ Better shaders, shadows and anti-aliasing for Dragon Age: Origins, through the g
 
 Five options on the Video tab of the game's options screen, each one on by default:
 
-- **Improved materials**: metal, gilt and polished stone mirror and scatter light as what they are made of, normal maps shape the light in shade and indoors, and bright highlights are rolled off rather than clipped.
+- **Improved materials**: metal, gilt and polished stone mirror and scatter light as what they are made of, normal maps shape the light in shade and indoors, and bright highlights are rolled off rather than clipped. The game's own materials, its DLC's and Awakening's come with the plugin; a mod's armour and items are worked out from their textures as the game starts, in the background, and kept for the next time.
 - **Improved shadows**: soft-edged, finer shadows (sixteen filtered taps on maps twice the game's size), and the sun's shadows fall on characters too.
 - **SMAA**: smooths the edges the game's own anti-aliasing misses; it works with that or without it.
 - **Ambient occlusion** (Off, Low, Medium, High): shade in corners, creases and under things.
