@@ -19,7 +19,7 @@
 //
 // - Metalness is DATA: mml_fDaoMetal, a number the material says of itself,
 //   times a map of it, smpDaoMetal, where one texture is part metal and part
-//   not (data/materials.ini and tools/material_table.py; a material that
+//   not (data/materials.ini and src/materials; a material that
 //   says nothing is no metal). It was guessed here once, at each pixel from
 //   the mask's gloss and brightness, and every wrong guess was on the screen:
 //   a shield's painted face dark, a bench a mirror, gilt armour foil (the
@@ -30,7 +30,7 @@
 //   (kDaoMirrorOfMask). The mask says how shiny on the game's own scale, and
 //   the scale is measured: over the 638 masks of the game's stone, wood,
 //   cloth, leather and skin the median of a mask's brightness is 0.12 (0.13,
-//   0.13, 0.10, 0.11, 0.08 by class; tools/material_table.py's classes,
+//   0.13, 0.10, 0.11, 0.08 by class; the table's classes,
 //   counted 2026-10-12), and an ordinary surface that is no metal mirrors
 //   four parts in a hundred, so the one is taken for the other. It was 0.08
 //   times the mask first, the common reading of a "specular" input that is a
@@ -66,8 +66,8 @@
 //   (Kaplanyan et al. 2016; Tokuyoshi and Kaplanyan 2019), and where the
 //   pixel covers many texels of its normal map, by how far apart the map's
 //   normals are over a patch that size. That is measured from each normal
-//   map and said by the material (mml_vDaoBumps; tools/material_table.py's
-//   bumps). The game's normal maps keep two of a normal's three numbers, so
+//   map and said by the material (mml_vDaoBumps; src/materials/TextureRule's
+//   MeasureBumps). The game's normal maps keep two of a normal's three numbers, so
 //   their smaller pictures hold the mean way a patch faces and nothing of
 //   how its facets differ; without it a flagstone floor seen low was a
 //   smooth one in streaks, each pixel mirroring by whichever facet its
@@ -103,7 +103,7 @@ float4 mml_vDaoBumpsFar;
 // And for a clear solid, crystal, ice, a cut stone, glass: what it mirrors
 // face on, by its substance, and the power it shines by; nothing for anything
 // else. Their masks cannot say it: a crystal's has no gloss at all, being
-// painted to glow (tools/material_table.py's CLEAR has the numbers and where
+// painted to glow (data/material_names.txt's clear rows have the numbers and why
 // they are from).
 float4 mml_vDaoClear;
 

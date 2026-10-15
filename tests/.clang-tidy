@@ -1,0 +1,17 @@
+# The tests, held to the root .clang-tidy but for what Catch2's macros do to
+# the analysis, as DAOLib's tests are (measured 2026-10-05, DAOLib #34):
+#
+#   bugprone-unchecked-optional-access   a test checks an optional with
+#                                        REQUIRE(answer) and then reads
+#                                        *answer; the analyser does not know
+#                                        REQUIRE ends the test when it fails
+#                                        (189 findings, every one of them so)
+#   cognitive complexity, macros ignored each CHECK expands to branches that
+#                                        are not the test's own: counted, ten
+#                                        tests are over 25, one at 101, for
+#                                        the number of their checks alone
+InheritParentConfig: true
+Checks: >
+  -bugprone-unchecked-optional-access
+CheckOptions:
+  readability-function-cognitive-complexity.IgnoreMacros: true

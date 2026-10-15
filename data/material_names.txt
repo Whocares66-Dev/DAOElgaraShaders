@@ -1,0 +1,156 @@
+; What a material is by its names: the tables the table builder and the plugin both class a
+; material by (issue 19). Edited by hand. Lines are tab-separated:
+;
+;   table <worn|creatures|weapons|things> <class> <fallback or -> <words>
+;   tileset <class> <codes>
+;   sound <number> <class>
+;   wielded <pattern>
+;   worn_texture <pattern>
+;   clear <class> <what it mirrors face on>
+;   clear_power <the power a clear solid shines by>
+;
+; A table is read from its top and the first row whose words match says. The text matched is
+; the material's name, its diffuse texture's stem and its project, in lower case. Each word is
+; a regular expression (PCRE2, which reads Python's as Python does); the words are one
+; pattern joined by |. A class of `paint` says the textures say how much of the thing is
+; metal, and the fallback is what the rest of it is.
+
+; The people's clothes and armour, by the code in the name: <who>_<piece>_<kind><variant>.
+; The projects are ARM_MAS (massive: plate), ARM_HVY (heavy: plate over mail and scale),
+; ARM_DWP (dwarven plate), ARM_MED (medium: mail, splint and scale over leather), ARM_LGT
+; (light: leather, some of it studded), ARM_NUD (the bare body), CTH_ (clothes), ROB_ (robes).
+; plate and mail: the textures say where
+table	worn	paint	other	(?<![a-z])(arm|boo|glv)_(mas|hvy|dwp|med)
+; an add-in's plate (the Blood Dragon armour: its project is ARM_BDA)
+table	worn	paint	other	(?<![a-z])arm_bda
+; leather: studs and buckles, if it has them
+table	worn	paint	leather	(?<![a-z])(arm|boo|glv)_lgt
+table	worn	skin	-	(?<![a-z])arm_nud
+; clothes, robes, the children
+table	worn	cloth	-	(?<![a-z])(cth|rob|chd)_
+; the mages' cowls (the project is ROB_ENC)
+table	worn	paint	cloth	(?<![a-z])hlh_g\d
+; the light helmets: leather caps
+table	worn	paint	leather	(?<![a-z])hlh_l\d
+; the crown: gold, painted with a grey mirror, which the rule takes for paint
+table	worn	metal	-	(?<![a-z])hlh_crn|crown
+; helmets
+table	worn	paint	other	(?<![a-z])hl[fh]_|(?<![a-z])hmf_
+
+; The creatures (c_, cn_, cb_, ch_ on Character.mat). Bare bodies but for these.
+; and a whole figure baked into one sheet for a crowd
+table	creatures	other	-	default|^mat_\d|baked|_bak_|mediumred
+; the sylvans' trunks
+table	creatures	wood	-	grandoak|_(bdy|bra)_(gra|wsv)
+; the stone golem, Shale
+table	creatures	stone	-	cn_golem(?![a-z])|_stga|_sng|sng_
+; a wraith of ash
+table	creatures	other	-	ashwr
+; the skeleton: bone, and the rule found metal on its skull
+table	creatures	other	-	_skl
+; the arcane horror: a skeleton in a robe
+table	creatures	cloth	-	_arc(?![a-z])|_arh(?![a-z])
+; A head is never asked of the paint. Seen 2026-10-12: the rule marked the armoured
+; ogre's horns, a hurlock's teeth, a genlock's wet face and the revenant's hood, and
+; left the revenant's mail; only one genlock's crest came out right.
+; a skull in a hood and mail
+table	creatures	other	-	_hed_rev
+table	creatures	skin	-	^ch_|_hed_
+; the bodies of those that wear plate: hurlocks, genlocks, the Disciples, the armoured
+; ogre, the revenant (and its sword and shield), the steel golem, Duncan
+table	creatures	paint	skin	hlk|dshulok|glk|_dis|_aog|_low_
+table	creatures	paint	other	_rev|golemb|_stgb|bdy_dun
+table	creatures	skin	-	^c[bn]?_
+
+; Weapons: w_<kind>_<which>.
+table	weapons	other	-	default|_msk(?![a-z])
+; the ogre's boulder
+table	weapons	stone	-	w_bld_
+; staffs, wands and arrows are wood, and quivers leather, whatever their paint: a pale
+; staff with a high gloss came out three quarters metal, a quiver's stitching as studs
+table	weapons	wood	-	w_(stf|wnd|arr)_
+table	weapons	leather	-	w_qui_
+; bows: some have a metal grip or limbs
+table	weapons	paint	wood	w_(sbw|lbw|cbw)_
+; shields
+table	weapons	paint	wood	w_shd_
+; blades, axes, maces, mauls
+table	weapons	paint	other	w_
+
+; Props and level surfaces (Prop.mat, Static.mat), by the words in their names. A word is
+; written as its makers ran it together (cratelarge, bedlrgwood, canldeholder); a word here
+; may be a regular expression, and (?<![a-z]) keeps a short one from being found inside a
+; longer one. What was seen in the review sheets and changed a line is said beside it.
+; not things at all: defaults, placeholders, the toolset's own, effects' meshes
+table	things	other	-	default_ placeholder grey_dif gray50 (?<![a-z])tools_ test_sphere gizmo ^mesh(?![a-z]) ^fx_ zz_ textureatlas ^palette ^cs_ ^darkspawn
+table	things	ice	-	ice(wall|_mesh)
+table	things	other	-	black0 blacksquare dwi_black dci_black prp_black (?<![a-z])water waterpool poolwater pool_water liquid lprop blood slime snow mousnow
+; the clear solids (CLEAR): crystal and raw lyrium, cut stones, and glassware. A dish
+; or a pot of lyrium, its dust and a lamp of it are not crystal; a window is as often
+; a wall with one painted in it, and a mirror wants its own look: all left unknown.
+table	things	crystal	-	cryst lyrium01 lyriumball
+table	things	gem	-	gem\d ruby
+table	things	glass	-	glass vial bottle decanter phylact
+table	things	other	-	lyrium mirror(?!bronze) window skybeam apparatus spirtapp spiritapp
+; the dead, and what grows in the Deep Roads
+table	things	other	-	corps deadbody dead(ox|halla) hang(ing)?(fe)?male hurlockhead bonepile bnepile bneple bones skull eaten fleshpod fleshtile tileflash cocoon eggsac msac msask eggs_ tentical dragonegg nugplatter rstnug hngingnug hanging_nug spider sipder web totem drkspstuf barrdrksp dstools tooltorture torture_tools bonfire fire0 curio reliquary sextant sexant turk cage_?human tub(?![a-z]) p_tub wash_?basin
+; food, wax, ash, earth, paper and paint
+table	things	other	-	food bread cheese fish(?!ing|net|_net|_carv|carv) meat fruit (?<![a-z])pie(?![a-z]) pumpkin cabbage garlic pepper veggie vegetable candled?(?![a-z_]) ash(es|e)(?![a-z]) bonfireash dirt sand(?![a-z]) filth trash footpri paint poster map(01|_01)?(?![a-z]) lake_map scidraw science_drawing recipe book scrol prt_ portrait
+; iron and steel, bronze, brass, pewter, gold: things that are metal through
+; (an armour stand is not here: it is a stand of planks, seen 2026-10-12)
+table	things	metal	-	(?<!hro_)anvil(?!_?lyr|_floor|_wall|_?base) chain shackle grate goldmetal blackiron ironblack dwmetal dwmet(?![a-z]) fci_metal prp_metal metal_0?1 metallatch wallarch(iron|bar) cabinet_?steel chest_?iron
+table	things	metal	-	cauldron couldron pewter brasstorch mirrorbronze goblet gobwyrm coal_?pan incen(t|se) trpblade bladetrap trptciblade trpbladetci bird_?cage tongs cog[co]?\d canldeholdermetal candlemetal crown
+; a suit of armour, weapons in a rack, a blade with a wooden grip: painted as the worn
+; and the wielded are, so the textures say where the metal is
+table	things	paint	other	armorsuit medarm medboo hmf_ coin
+; (a rack of bows is wood; the smith's tools are drawn on a white ground that the rule
+; took for the metal, and are left)
+table	things	other	-	wpnpage blacksmith
+table	things	paint	wood	wpn(axe|d?sword|barrel) sword swrd butcher_knife hammer tree_?saw gong chand\d chand_ portcullis
+; wood that a word for cloth would otherwise take
+table	things	wood	-	wood_?(and)?_?rope tci_wood tent_?pole
+; cloth, rope and stuffing
+table	things	cloth	-	cloth clth rug(?![a-z]) rug(blue|red|green|end) dwfrug carp(et)?(?![a-z]) bluecarp redcarp tapestr curt banner flag falg tent(?!ical) canvas tarp sack bedding bed_?roll pillow matress rags bandage rope net(01|_01)(?![a-z]) fish_?net couch straw_?mat
+table	things	leather	-	leather fur(?!n) hide bridal whip saddle dryingrack
+; things that grow
+table	things	foliage	-	leaf leaves lv(?![a-z]) brdl shrb frond ivy plant flower shrub(?!bark) moss(?!tile) grass herb(?!o) tomato pine_?ne ter_pine needle hay(?![a-z]) haystack heystack hay_bale haybale straw scarecrow small_?tree treeline branch
+; stone that a wooden word would otherwise take: the dwarves' doors and furniture, the
+; Tevinter benches and tables of the mages' tower, marble and stone tables
+table	things	stone	-	door\w*dwa?r?f dwarf_door dwfsecretdoor doorcitydwf orz_ent prp_dni_ dw_torch demon_torch tev(bench|table|desk|chair|wartable|pot|statu) dw_?(bench|table|chair|bed|box|couch|chest|slab|vat|amph|oven|sarco|floorart|rubble|rock|carving) table_?stone bench_?marble stone_well stnwell bath_?stone rock_topiary rcktopiary d[cw]i_throne dwi_beam doorwy tvetower rubptc
+; wood
+table	things	wood	-	wood log(?!hain) bark tree stump root plank beam barrel barr(?![a-z]) crate cask keg table chair chra desk shelf shlve shelve slf\d bkslf bkshlf shlfs cabinet armoire dresser vanity bed(?!ding|_?roll|room) bunk door _dr(?![a-z]) gate gt_ cart wagon waggon carriage boat buoy float ladder lader fence fnc stool bucket bowl cup plate_?wood throne pulpit pew(?![a-z]) loom scaf stage stg(ladder|stair) sign sighn bridge(?!cobble|rocks|stone|trims|wall) pole plough wheel trough saw_?horse hitching (?<!c)rack coff chest chst easel stall stand stn?d watchtower hermithut aravel instrument musinst toy basket washboard chopping chopblock butcher_?board lever panel platform trapdoor coop dummy stretcher feeder spit invention woodendragon carving(?!\d) pinewall eci_wall cage torch scale ballista market_ wpn(bow|quiver) chantry_?altar ferldnaltar ferelden_altar germaltar german_altar head_?base statuferel ferelden_statue wall_?carv chamber_?pot iroof interiorroof
+; stone, and what a wall or a floor is where its name says no more
+table	things	stone	-	stone stn rock rck marble brick cobble statu stat(mnstr|paragn|andraste) paragon pillar grave tomb sarco altar wall floor stair trim plaster stucco concrete cave boulder rubble slab carv fountain fnt\d well(?![a-z]) wellint bath pedestal head_?base idol sundial grindstone oven forge fire_?pit fire0 cliff mountain mount(?![a-z]) vista vis_mt ruin arch ceiling igrnd egrnd ground roof eagle demonhead tci_dh plug support lavark lavapan amph vat(?![a-z]) urn vase pot(?![a-z])|pot\d|pot_|potcook jar jug dish doll pkr circle drak fort castle city bldng blding pal_ estate estwall doorwy ter_ terfade fade_?rock face_rock fie_ fei_ fadportal sulf steamvent magicrock mage(stat|c) goldmage dwhead dbone silver sconce sonce brazier registry mage01
+
+; A tileset's one sheet, <code>_master: walls, floors, beams and fittings in one texture.
+; It is classed by what most of it is, which is the tileset's fabric, and its iron is missed.
+tileset	stone	tti tci tce tve tvi tvm tfi fca fci fce fdi fne ftr chi che cav cai cdr dni dci dce dne ace vst hro fie fei
+tileset	wood	fhi fti fvi fve fhe dsi dse ave vki ppm
+
+; The footstep sound a level material carries (mml_iSoundMaterialType), where it is one
+; that names a class. Most are 0, and a 5 is on wood as often as a builder forgot it.
+sound	1	wood
+sound	2	cloth
+sound	3	foliage
+sound	4	foliage
+sound	5	stone
+sound	13	metal
+sound	15	cloth
+
+; A prop that wears a weapon's texture, or a suit's or a helmet's, is classed as it.
+wielded	w_(lsw|gsw|dgr|axe|gax|mal|mce|shd|sbw|lbw|cbw|stf|wnd|qui|arr)_
+worn_texture	(p[nmf]|prp)_(arm|boo|glv|hlf|hlh)_
+
+; The clear solids, and how much light goes more slowly in each than in air (its index of
+; refraction: window glass 1.5, quartz 1.55, corundum, a ruby or a sapphire, 1.77, ice 1.31;
+; any handbook of optics). What such a thing mirrors face on is ((n - 1) / (n + 1)) squared,
+; and it is smooth. The game's textures cannot say either: a crystal's and an ice wall's
+; masks have no gloss at all (0.00 to 0.05, a power of 1 to 13: read 2026-10-12), being
+; painted to glow and not to shine, and by them the model drew a crystal as matte as chalk.
+; So for these the table says what they are and the shader takes the substance's mirror
+; and the top of the game's own scale of gloss (CLEAR_POWER) in place of the mask's.
+clear	glass	0.0400
+clear	crystal	0.0465
+clear	gem	0.0773
+clear	ice	0.0180
+clear_power	256.00

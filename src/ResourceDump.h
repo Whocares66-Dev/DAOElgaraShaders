@@ -1,8 +1,8 @@
 // Writes files of the game's out as the game itself reads them, for the tools
 // that are run on a developer's machine: the add-ins' archives are enciphered
 // with a key of each add-in's own (ERF V2.2, flags 0x21: read 2026-10-12), so
-// tools\material_table.py cannot read their material objects and textures
-// from disk as it reads the game's own, and the game can.
+// the table's tool (elgarashaders_materials) cannot read their material
+// objects and textures from disk as it reads the game's own, and the game can.
 //
 // Asked for by a file beside the DLL, `dump.txt`, a file's name a line
 // (`h_cailanprca_0.mao`; `?name` only asks whether the game has it, and

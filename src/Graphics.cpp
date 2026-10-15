@@ -35,6 +35,7 @@
 // - Anisotropic filtering, which the game has no setting for.
 //
 // What it does goes to elgarashaders.log.
+#include "MaterialPatch.h"
 #include "ResourceDump.h"
 
 #include "dao/Addresses.h"
@@ -1226,6 +1227,7 @@ extern "C" __declspec(dllexport) bool __cdecl DAOLib_Load(const dao::LoaderInfo 
         return false;
     }
     ReadChosen(dao::Module::OwnFolder());
+    materialpatch::Start(dao::Module::OwnFolder());
     KeepLookRegisters();
     if (!g_setPartitions.Attach(dao::addr::kShadowMaps_SetPartitions, &SetPartitions))
     {
@@ -1237,5 +1239,6 @@ extern "C" __declspec(dllexport) bool __cdecl DAOLib_Load(const dao::LoaderInfo 
     dao::OnFrame(&KeepLens);
     dao::OnFrame(&ApplyOptions);
     dao::OnFrame(&resourcedump::Poll);
+    dao::OnFrame(&materialpatch::LogCounts);
     return true;
 }

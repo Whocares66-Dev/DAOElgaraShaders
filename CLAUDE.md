@@ -16,9 +16,13 @@ The bar, since 2026-10-11: "something on the quality of a Minecraft visual overh
 
 ```
 src/Graphics.cpp     the plugin: its options, the Direct3D detours, the 16-bit scene, the shadow maps' size
-src/ResourceDump.*   the add-ins' files read through the game, for tools/material_table.py
+src/MaterialPatch.*  the table's answers added to each material object as the game reads it (DAOLib's resources::OnLoad)
+src/materials/       the metal rule, the names, the lines a material is given, the table and its tool (elgarashaders_materials)
+src/ResourceDump.*   the add-ins' files read through the game, for tools/dump_addins.py
 shaders/             what the game's shaders are given: *.hlsl, SMAA, and build_shaders.py, which rebuilds the game's shaders with them
-data/materials.ini   what each material is made of
+data/materials.ini   what each material is made of (lines `; by hand` are kept by every run of the tool)
+data/material_names.txt  the tables a material is classed by its names with, edited by hand
+tests/               Catch2 over src/materials; its [game] cases read the install
 tools/               build.ps1, deploy.ps1, shader_hlsl.py (the game's compiled shaders back to HLSL) and its test
 extern/DAOLib        the library, a submodule
 dev/                 notes

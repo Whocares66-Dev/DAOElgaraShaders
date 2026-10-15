@@ -3,7 +3,18 @@
     "name": "daoelgarashaders",
     "version-string": "0.1.0",
     "dependencies": [
+        {
+            "name": "catch2"
+        },
+        {
+            "name": "directxtex",
+            "default-features": false
+        },
         "detours",
+        {
+            "name": "pcre2",
+            "default-features": false
+        },
         "spdlog"
     ]
 }

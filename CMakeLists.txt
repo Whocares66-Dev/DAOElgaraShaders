@@ -56,6 +56,24 @@ add_subdirectory(
 # and tools/check-powershell.ps1.
 include("${ELGARA_DAOLIB}/cmake/Quality.cmake")
 
+# Which texels of a material are metal, from its textures (issue 19): the
+# table tool's rule in C++, touching neither the game nor the process, for
+# the plugin to work out a material the table does not know.
+add_library(
+    elgara_materials
+    STATIC
+    src/materials/TextureRule.cpp
+    src/materials/Answers.cpp
+    src/materials/Names.cpp
+    src/materials/Said.cpp
+)
+target_include_directories(elgara_materials PUBLIC src)
+# The names' tables are Python's regular expressions (lookbehind among them),
+# which PCRE2 reads as Python does and std::regex does not.
+find_package(pcre2 CONFIG REQUIRED)
+target_link_libraries(elgara_materials PRIVATE PCRE2::8BIT)
+dao_apply_warnings(elgara_materials)
+
 # ---------------------------------------------------------------------------
 # elgarashaders.dll -- the plugin, a folder of its own:
 # build\<preset>\daolib\plugins\elgarashaders\ has the dll, its pdb and,
@@ -63,8 +81,28 @@ include("${ELGARA_DAOLIB}/cmake/Quality.cmake")
 # its own override folder. tools/deploy.ps1 copies the
 # folder as it is.
 # ---------------------------------------------------------------------------
-add_daolib_plugin(elgarashaders SOURCES src/Graphics.cpp src/ResourceDump.cpp)
+add_daolib_plugin(
+    elgarashaders
+    SOURCES src/Graphics.cpp src/MaterialPatch.cpp src/ResourceDump.cpp
+)
+target_link_libraries(elgarashaders PRIVATE elgara_materials)
 dao_apply_warnings(elgarashaders)
+
+# The materials' table (data/materials.ini) made from the game, and given to
+# the plugin as answers and maps (src/materials/Table.h, issue 19), over
+# DAOLib's install index: elgarashaders_materials table | objects | why.
+add_library(elgara_materials_table STATIC src/materials/Table.cpp)
+target_link_libraries(
+    elgara_materials_table
+    PUBLIC elgara_materials DAOLib::core
+)
+dao_apply_warnings(elgara_materials_table)
+add_executable(elgarashaders_materials src/materials/TableTool.cpp)
+target_link_libraries(
+    elgarashaders_materials
+    PRIVATE elgara_materials_table shell32 ole32
+)
+dao_apply_warnings(elgarashaders_materials)
 
 # The shaders, a chain and a material are the game's own, changed: made on
 # every build from the install's shaders.erf into the plugin's override
@@ -86,33 +124,59 @@ if(Python3_Interpreter_FOUND)
 endif()
 
 # What each material is, as the game reads it: data/materials.ini made into
-# material objects' overrides and metalness maps beside the shaders
-# (tools/material_table.py --objects), when the table or the tool changes.
-if(Python3_Interpreter_FOUND)
-    add_custom_command(
-        OUTPUT "${CMAKE_BINARY_DIR}/materials.stamp"
-        COMMAND
-            "${CMAKE_COMMAND}" -E env "DAOLIB_TOOLS=${ELGARA_DAOLIB}/tools"
-            "${Python3_EXECUTABLE}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/tools/material_table.py" --objects
-            "${CMAKE_BINARY_DIR}/daolib/plugins/elgarashaders/override"
-        COMMAND
-            "${CMAKE_COMMAND}" -E touch "${CMAKE_BINARY_DIR}/materials.stamp"
-        DEPENDS
-            "${CMAKE_CURRENT_SOURCE_DIR}/data/materials.ini"
-            "${CMAKE_CURRENT_SOURCE_DIR}/tools/material_table.py"
-        COMMENT "elgarashaders: the materials' table, as the game reads it"
-        VERBATIM
-    )
-    add_custom_target(
+# answers and metalness maps in the plugin's folder (elgarashaders_materials
+# objects), when the table, the names' tables or the tool changes.
+add_custom_command(
+    OUTPUT "${CMAKE_BINARY_DIR}/materials.stamp"
+    COMMAND
+        "$<TARGET_FILE:elgarashaders_materials>" objects
+        "${CMAKE_BINARY_DIR}/daolib/plugins/elgarashaders" --ini
+        "${CMAKE_CURRENT_SOURCE_DIR}/data/materials.ini" --names
+        "${CMAKE_CURRENT_SOURCE_DIR}/data/material_names.txt" --addins
+        "${CMAKE_CURRENT_SOURCE_DIR}/build/addins"
+    COMMAND "${CMAKE_COMMAND}" -E touch "${CMAKE_BINARY_DIR}/materials.stamp"
+    DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/data/materials.ini"
+        "${CMAKE_CURRENT_SOURCE_DIR}/data/material_names.txt"
         elgarashaders_materials
-        ALL
-        DEPENDS "${CMAKE_BINARY_DIR}/materials.stamp"
-    )
+    COMMENT "elgarashaders: the materials' table, as the game reads it"
+    VERBATIM
+)
+# Not part of a debug build's own: the tool unoptimised takes fifteen minutes
+# and more over the game's textures where the release build's takes one
+# (2026-10-15), and a debug build is for the linters and a debugger, not
+# what is deployed. `--target elgarashaders_answers` makes them there too.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(ELGARA_ANSWERS_IN_ALL "")
+else()
+    set(ELGARA_ANSWERS_IN_ALL ALL)
 endif()
+add_custom_target(
+    elgarashaders_answers
+    ${ELGARA_ANSWERS_IN_ALL}
+    DEPENDS "${CMAKE_BINARY_DIR}/materials.stamp"
+)
+
+enable_testing()
+
+# The materials' rule, names, lines and table (tests/test_materials.cpp); its
+# [game] cases read the installed game, and are skipped where there is none.
+find_package(Catch2 3 CONFIG REQUIRED)
+add_executable(elgarashaders_tests tests/test_materials.cpp)
+target_link_libraries(
+    elgarashaders_tests
+    PRIVATE elgara_materials_table Catch2::Catch2WithMain
+)
+target_compile_definitions(
+    elgarashaders_tests
+    PRIVATE
+        ELGARA_NAMES_FILE="${CMAKE_CURRENT_SOURCE_DIR}/data/material_names.txt"
+)
+dao_apply_warnings(elgarashaders_tests)
+include(Catch)
+catch_discover_tests(elgarashaders_tests)
 
 # The Python tools' own tests (tools/test_*.py), where there is a Python.
-enable_testing()
 if(Python3_Interpreter_FOUND)
     add_test(
         NAME python_tools

@@ -1,24 +1,60 @@
-"""The add-ins' material objects and their textures, out of the running game: python dump_addins.py <plugin folder> [out]
+"""The add-ins' material objects and their textures, out of the running game:
+    python dump_addins.py <plugin folder> [out] [--tool <elgarashaders_materials.exe>]
 The add-ins' archives are enciphered, so the table's tool cannot read them from disk; the game can, and the plugin's
 developer switch (src/ResourceDump.cpp) writes what a list names. In three asks of the game, which must be running
 with a campaign loaded on the plugin folder given:
   1. every material object's name the game has (`*mao`);
   2. those of them that the add-ins' enciphered archives name: read and written out;
   3. the textures those name (diffuse, specular mask, normal map, tint mask): the same.
-What is written is copied into [out], build/addins unless said: the folder tools/material_table.py reads as the
+What is written is copied into [out], build/addins unless said: the folder elgarashaders_materials reads as the
 add-ins'. An add-in whose module is not the loaded campaign's is not the game's to read then (243 of 782 names in
 the main campaign, 2026-10-12): its materials stay out of the table until it is read out of its own campaign."""
 
 import os
-import re
 import shutil
+import subprocess
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import material_table as mt
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+arguments = sys.argv[1:]
+tool = os.path.join(REPO, "build", "release", "elgarashaders_materials.exe")
+if "--tool" in arguments:
+    at = arguments.index("--tool")
+    tool = arguments[at + 1]
+    del arguments[at : at + 2]
+plugin = arguments[0]
+out = arguments[1] if len(arguments) > 1 else os.path.join(REPO, "build", "addins")
 
-plugin, out = sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else mt.ADDINS
+# What the game hands over is what it reads, and the plugin's answers patch a
+# material object as it is read (src/MaterialPatch.cpp), as rewritten objects
+# in its override folder once replaced it: a dump taken so is the plugin's
+# output, keyed by a hash the game never reads, and its materials drawn as no
+# metal (252 of 539, the dump of 2026-10-12; seen 2026-10-15). The plugin the
+# game runs on for a dump has neither.
+if os.path.exists(os.path.join(plugin, "materials.answers")):
+    raise SystemExit(
+        f"{plugin} has materials.answers: run the game for a dump on a plugin folder without it"
+    )
+override = os.path.join(plugin, "override")
+if os.path.isdir(override) and any(
+    n.lower().endswith(".mao") for n in os.listdir(override)
+):
+    raise SystemExit(
+        f"{override} has material objects: run the game for a dump on a plugin folder without them"
+    )
+
+
+def tool_lines(*words):
+    """What elgarashaders_materials says, a line each (src/materials/TableTool.cpp)."""
+    answer = subprocess.run(
+        [tool, *words], capture_output=True, text=True, cwd=REPO, check=False
+    )
+    if answer.returncode != 0:
+        raise SystemExit(
+            f"{os.path.basename(tool)} {' '.join(words)}: {answer.stderr.strip()}"
+        )
+    return [line.strip() for line in answer.stdout.splitlines() if line.strip()]
 
 
 def ask(lines, wait=600):
@@ -48,8 +84,7 @@ with open(
     os.path.join(plugin, "names.mao.txt"), encoding="ascii", errors="replace"
 ) as f:
     has = {line.strip() for line in f if line.strip()}
-game = mt.Game(mt.GAME, addins=None)
-enciphered = {name + ".mao" for names in game.unread.values() for name in names}
+enciphered = set(tool_lines("enciphered"))
 wanted = sorted(has & enciphered)
 print(
     f"the game has {len(has)} material objects; the enciphered archives name {len(enciphered)}, and {len(wanted)} of those are the game's now"
@@ -58,23 +93,9 @@ answer = ask(wanted)
 got = [line for line in answer if not line.startswith(";")]
 print(f"material objects written: {len(got)} of {len(wanted)}")
 dumped = os.path.join(plugin, "dump")
-textures = set()
-for name in got:
-    with open(os.path.join(dumped, name), encoding="latin-1") as f:
-        text = f.read()
-    for slot, resource in re.findall(
-        r'<Texture Name="([^"]+)" ResName="([^"]*)"', text
-    ):
-        if (
-            slot
-            in ("mml_tDiffuse", "mml_tSpecularMask", "mml_tNormalMap", "mml_tTintMask")
-            and resource
-        ):
-            textures.add(resource.lower())
-on_disk = set(game.textures)
-need = sorted(t for t in textures if t not in on_disk)
+need = tool_lines("unreadable", dumped)
 print(
-    f"they name {len(textures)} textures; {len(textures) - len(need)} are in the clear on disk; {len(need)} are asked of the game"
+    f"they name {len(need)} textures not in the clear on disk, which are asked of the game"
 )
 answer = ask(need, wait=1800)
 got_textures = [line for line in answer if not line.startswith(";")]
@@ -88,5 +109,5 @@ print(
     f"{len(got) + len(got_textures)} files in {out}: {sum(os.path.getsize(os.path.join(out, n)) for n in os.listdir(out)) / 1e6:.0f} MB"
 )
 print(
-    "The build writes them as the game reads them when the table or its tool changes: delete build/<preset>/materials.stamp for the first time."
+    "The build gives them to the plugin when the table or its tool changes: delete build/<preset>/materials.stamp for the first time."
 )

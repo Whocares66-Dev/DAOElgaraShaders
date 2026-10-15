@@ -1713,7 +1713,7 @@ def main(argv):
     # no longer does would still be what the game draws with (five tree
     # shaders of a change since taken out were found so, 2026-10-11).
     # But for the materials' maps, which are another step's
-    # (tools/material_table.py --objects, and its list of what it wrote): the
+    # (elgarashaders_materials objects, and its list of what it wrote): the
     # sweep took them every build and that step runs only when its table
     # changes, so every part-metal material named a map that was not there
     # (found 2026-10-12).
