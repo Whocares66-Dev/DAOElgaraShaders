@@ -1,8 +1,8 @@
 // The anti-aliasing's first pass (smaa.hlsl): where the picture has an edge.
 // Red is an edge on a pixel's left, green one above it, by the difference in
 // colour, not in brightness alone, which misses an edge between two colours
-// equally bright. A pixel with no edge is not written, so the chain clears
-// the target first.
+// equally bright. A pixel with no edge is not written, so the target is
+// cleared every frame (its autoclear, smaa.py).
 //
 // It is also the anti-aliasing's switch (smaa.py's SWITCH): with fDaoSmaa at
 // 0 no pixel is written, the second pass finds no edge to weigh, and the last

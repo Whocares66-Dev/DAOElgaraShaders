@@ -10,10 +10,15 @@ write_files for the rest. The grade then reads PICTURE in place of the
 game's BackBufferCopy.
 
 What the chain is asked for that the game's own chains show it has
-(read 2026-10-10 in postprocesseffects.erf): a target cleared as it is bound
-(da_bssrdf's `bind ... at 0 clear R0G0B0A0`), which the first pass needs
-because it writes edges only; and a target's size given to a pass
-(da_dof's `fWindowWidth = DOFBlurredA.width`).
+(read 2026-10-10 in postprocesseffects.erf): a target's size given to a pass
+(da_dof's `fWindowWidth = DOFBlurredA.width`); and a target cleared every
+frame, which the first pass needs because it writes edges only: the
+target's own `autoclear` (da_distortion's DistortionMask), which the engine
+clears at the end of the world's drawing, before the chain runs. A filter's
+`bind ... clear R0G0B0A0`, as da_bssrdf has it, clears nothing: the bind's
+parser skips it (DAOLib's Framebuffer.cpp, read in the exe 2026-10-15), and
+with it SMAA switched off on the options screen kept blending by the last
+frame's edges (1.71% of the tavern's pixels, a debug view of the blend).
 """
 
 import os
@@ -34,7 +39,7 @@ SWITCH = "DaoSmaa"
 # picture.
 CHAIN_RESOURCES = f"""
         <float id="{SWITCH}" value="0.0" range="0.0 1.0" expose="true" />
-        <target id="DaoSmaaEdges" width="BACKBUFFER_WIDTH" height="BACKBUFFER_HEIGHT" format="A8R8G8B8" shared="true"/>
+        <target id="DaoSmaaEdges" width="BACKBUFFER_WIDTH" height="BACKBUFFER_HEIGHT" format="A8R8G8B8" shared="true" autoclear="0 0 0 0"/>
         <target id="DaoSmaaWeights" width="BACKBUFFER_WIDTH" height="BACKBUFFER_HEIGHT" format="A8R8G8B8" shared="true"/>
         <target id="DaoSmaaPicture" width="BACKBUFFER_WIDTH" height="BACKBUFFER_HEIGHT" format="A8R8G8B8" shared="true"/>"""
 
@@ -44,7 +49,7 @@ CHAIN_FILTERS = f"""<filter id="Dao Smaa Edges" library="DAEffects" material="HS
                 f{SWITCH} = {SWITCH}
                 fWidth  = DaoSmaaEdges.width
                 fHeight = DaoSmaaEdges.height
-                bind DaoSmaaEdges at 0 clear R0G0B0A0
+                bind DaoSmaaEdges at 0
                 run semantic DaoSmaaEdges
             </filter>
 
