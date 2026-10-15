@@ -28,7 +28,7 @@ sampler2D smpScene : register(s2);
 
 // Values of the chain (build_shaders.py's LOOK), set from graphics.ini and by
 // the options screen's slider.
-float fDaoOcclusion;       // how dark, 0 for none: twice this is the power the openness is raised to
+float fDaoOcclusion;       // how dark, 0 for none, 1 the openness as found: the power it is raised to
 float fDaoOcclusionRadius; // metres around a point that can shade it
 // The picture's width and height on a plane one unit in front of the eye
 // (Graphics.cpp's KeepLens, each frame), which the first form of this pass
@@ -164,7 +164,17 @@ float4 main(float2 uv : TEXCOORD0, float2 pixel : VPOS) : COLOR0
     // where the search is wrong it is not to be black. (0.45 while the pass
     // shaded the lights' own light too; it shades the ambient share alone
     // since issue 8, and a wrong answer costs a lit surface little.)
-    open = max(pow(saturate(open / kDaoAoSlices), 2 * fDaoOcclusion), kDaoAoLeast);
+    //
+    // The openness found is what a point sees of an even light, and that is
+    // the answer: raised to no power at the slider's High. It was raised to
+    // twice the slider's value from 2026-10-12, set when the pass darkened
+    // the whole picture and kept when it came to shade the ambient share
+    // alone, so High cubed it: on Grey Warden plate in Redcliffe by day a
+    // true 0.91 became 0.75, and the occlusion alone darkened the figure by
+    // 13% with the ground beside it unchanged, a grey veil over every
+    // armoured figure out of doors (photo cam, one save, 2026-10-15; the
+    // user: "seems like ao is broken").
+    open = max(pow(saturate(open / kDaoAoSlices), fDaoOcclusion), kDaoAoLeast);
     // Too far for the radius to span two pixels: nothing to tell there.
     open = reach < 2 * texel.y ? 1 : open;
     open = lerp(open, 1, saturate(here.z / kDaoAoFar));

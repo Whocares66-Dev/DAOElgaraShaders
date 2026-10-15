@@ -1508,12 +1508,58 @@ def with_bounded_bloom(shader):
     above white is the tone curve's to bring down (grade.hlsl)."""
     read = shader.find(r"^texld r\d+, t\d+, s0$")
     register = re.match(r"texld (r\d+),", shader.statements[read].asm).group(1)
-    shader.insert(read, [f"{register} = saturate({register});"])
+    # The mask is the picture times its alpha, and with the ambient occlusion
+    # on the alpha is our ambient share (look.hlsl's DaoShare), not the
+    # game's: a figure's two thirds took a third of its bloom, and the figure
+    # was a tenth darker for the occlusion being on with nothing occluded
+    # (Grey Warden plate in Redcliffe by day, the occlusion's power set to 0;
+    # 2026-10-15). The alpha is taken as 1 then, a solid surface's in
+    # vanilla; the plugin says when (da_bloom's DaoAlphaIsShare,
+    # with_bloom_switch). What is blended is blended by its own alpha, as
+    # ever: this is the mask's reading of the finished picture alone.
+    shader.insert(
+        read,
+        [
+            f"{register} = saturate({register});",
+            f"{register}.w = lerp({register}.w, 1, saturate(fDaoAlphaIsShare));",
+        ],
+    )
     # And what it writes: the mask is the picture's brightness plus the
     # chain's Brightness, over 1 for anything half bright, and was cut at 1
     # by the eight bits it was written into. Bounding what it reads alone
     # changed nothing (seen the same day).
     shader.insert(len(shader.statements) - 1, ["oC0 = saturate(oC0);"])
+
+
+def with_bloom_switch(effect, material):
+    """The game's bloom (da_bloom.ffx.xml) and its material (dabloom.mat.xml)
+    given one value of ours, DaoAlphaIsShare, which the plugin sets while
+    the ambient occlusion is on and the mask passes read (with_bounded_bloom)."""
+    effect, count = re.subn(
+        r"(\n\s*)</resources>",
+        r'\1    <float id="DaoAlphaIsShare" value="0.0" range="0.0 1.0" expose="true" animatable="true" />\1</resources>',
+        effect,
+        count=1,
+    )
+    if count != 1:
+        raise SystemExit("da_bloom.ffx.xml: no resources")
+    effect, count = re.subn(
+        r"(\n(\s*)fContrast\s*=\s*Contrast)",
+        r"\1\n\2fDaoAlphaIsShare = DaoAlphaIsShare",
+        effect,
+    )
+    if count != 1:
+        raise SystemExit(
+            f"da_bloom.ffx.xml: {count} filters hand fContrast, one was looked for"
+        )
+    material, count = re.subn(
+        r'(\n(\s*)<Parameter Type = "Float" Name = "fContrast" Default = "[^"]*"/>)',
+        r'\1\n\2<Parameter Type="Float" Name="fDaoAlphaIsShare" Default="0.0"/>',
+        material,
+    )
+    if count != 2:
+        raise SystemExit(f"dabloom.mat.xml: {count} mask passes, two were looked for")
+    return effect, material
 
 
 def with_scattered_share(shader):
@@ -1673,6 +1719,9 @@ def changes_for(stem, listing, show):
         preamble += ours("grade.hlsl")
     if stem in BLOOM_MASKS:
         changes.append(with_bounded_bloom)
+        # A shader of model 2, which reaches no register of look.hlsl's: the
+        # switch is a value of the bloom's own (with_bloom_switch).
+        preamble += "float fDaoAlphaIsShare;\n"
     if stem in PROPS:
         changes += [with_ambient_relief, without_cut]
         preamble += ours("look.hlsl") + ours("bake.hlsl")
@@ -1738,9 +1787,19 @@ def main(argv):
     )
     if antialias:
         smaa.write_files(out)
+    bloom, bloom_material = with_bloom_switch(
+        script_commands.erf_entries(os.path.join(data, "postprocesseffects.erf"))[
+            "da_bloom.ffx.xml"
+        ].decode("utf-8-sig"),
+        script_commands.erf_entries(os.path.join(data, "materials.erf"))[
+            "dabloom.mat.xml"
+        ].decode("utf-8-sig"),
+    )
     for name, text in (
         ("da_hsvmatrix.ffx.xml", chain),
         ("hslmatrix.mat.xml", material),
+        ("da_bloom.ffx.xml", bloom),
+        ("dabloom.mat.xml", bloom_material),
     ):
         with open(os.path.join(out, name), "w", encoding="utf-8", newline="") as f:
             f.write(text)

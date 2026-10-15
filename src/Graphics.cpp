@@ -87,7 +87,11 @@ bool g_smaa = true; // SMAA beside the game's own anti-aliasing, or not
 // The two sliders, each a stop of its list (the user, 2026-10-12: "implement
 // gtao, and add an option / slider for it. also add one for anisotropic
 // filtering").
-constexpr std::array<float, 4> kOcclusionStops{0.0F, 0.5F, 1.0F, 1.5F}; // Off, Low, Medium, High
+// The occlusion's is the power its openness is raised to (occlusion.hlsl):
+// High is the openness as found, what a point sees of an even light, and
+// Medium and Low less than that. They were twice 0.5, 1 and 1.5 until
+// 2026-10-15, which made High the cube of it.
+constexpr std::array<float, 4> kOcclusionStops{0.0F, 1.0F / 3.0F, 2.0F / 3.0F, 1.0F}; // Off, Low, Medium, High
 constexpr std::array<const wchar_t *, 4> kOcclusionNames{L"Off", L"Low", L"Medium", L"High"};
 constexpr std::array<int, 5> kAnisotropyStops{0, 2, 4, 8, 16};
 constexpr std::array<const wchar_t *, 5> kAnisotropyNames{L"Off", L"2x", L"4x", L"8x", L"16x"};
@@ -854,6 +858,7 @@ void WatchForDevice()
 }
 
 constexpr std::wstring_view kChain = L"da_hsvmatrix";  // the chain build_shaders.py puts our values in
+constexpr std::wstring_view kBloom = L"da_bloom";      // the game's bloom, given one value of ours
 constexpr int kKeepEvery = 30;                         // frames between looks at the chain
 constexpr const char *kChosenFile = "graphics.chosen"; // what is chosen, kept between sessions
 constexpr std::wstring_view kSmaa = L"DaoSmaa";        // the chain's switch for its anti-aliasing (smaa.py)
@@ -928,16 +933,22 @@ void KeepChosen()
     }
 }
 
-// Sets one value of the chain if it is not that already. A chain that has no
-// such value (a build without the pass that reads it) is left alone.
-void Keep(std::wstring_view name, float value, std::string_view key)
+// Sets one value of an effect if it is not that already. An effect that has
+// no such value (a build without the pass that reads it) is left alone.
+void Keep(std::wstring_view effect, std::wstring_view name, float value, std::string_view key)
 {
-    const std::optional<float> now = dao::framebuffer::Value(kChain, name);
+    const std::optional<float> now = dao::framebuffer::Value(effect, name);
     if (now && std::abs(*now - value) > 0.0001F)
     {
-        dao::framebuffer::SetValue(kChain, name, value);
-        spdlog::info("the chain's {} is {}", key, value);
+        dao::framebuffer::SetValue(effect, name, value);
+        spdlog::info("{} is {}", key, value);
     }
+}
+
+// One of our chain's values (da_hsvmatrix).
+void Keep(std::wstring_view name, float value, std::string_view key)
+{
+    Keep(kChain, name, value, "the chain's " + std::string(key));
 }
 
 // One of the chain's values kept at what it is to be, with nothing said: for
@@ -1104,6 +1115,11 @@ void ApplyOptions()
     Keep(L"DaoHighlights", highlights ? 1.0F : 0.0F, "Highlights");
     Keep(L"DaoOcclusion", kOcclusionStops.at(static_cast<std::size_t>(g_occlusionStop.load(std::memory_order_relaxed))),
          "Occlusion");
+    // The picture's alpha holds the ambient share while the occlusion is on,
+    // and the game's bloom reads it as its own (build_shaders.py's
+    // with_bounded_bloom): its mask takes the alpha as 1 then.
+    Keep(kBloom, L"DaoAlphaIsShare", g_occlusionStop.load(std::memory_order_relaxed) > 0 ? 1.0F : 0.0F,
+         "the bloom's AlphaIsShare");
     Keep(kSmaa, g_smaa ? 1.0F : 0.0F, "Smaa");
     KeepLookRegisters();
 }
