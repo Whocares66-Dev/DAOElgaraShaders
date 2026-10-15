@@ -56,6 +56,31 @@ add_subdirectory(
 # and tools/check-powershell.ps1.
 include("${ELGARA_DAOLIB}/cmake/Quality.cmake")
 
+# Our shaders formatted as the C++ is, by clang-format, which takes HLSL as C++
+# (Quality.cmake's targets are DAOLib's and know only src, tests and
+# examples; these hang from them). shaders/smaa/SMAA.hlsl is its authors' and
+# kept as published.
+file(GLOB ELGARA_HLSL CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/shaders/*.hlsl")
+if(DAO_CLANG_FORMAT AND TARGET format)
+    add_custom_target(
+        format-hlsl
+        COMMAND "${DAO_CLANG_FORMAT}" -i --style=file ${ELGARA_HLSL}
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        COMMENT "Formatting the shaders"
+        VERBATIM
+    )
+    add_custom_target(
+        format-check-hlsl
+        COMMAND
+            "${DAO_CLANG_FORMAT}" --dry-run -Werror --style=file ${ELGARA_HLSL}
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        COMMENT "Checking the formatting of the shaders"
+        VERBATIM
+    )
+    add_dependencies(format format-hlsl)
+    add_dependencies(format-check format-check-hlsl)
+endif()
+
 # Which texels of a material are metal, from its textures (issue 19): the
 # table tool's rule in C++, touching neither the game nor the process, for
 # the plugin to work out a material the table does not know.

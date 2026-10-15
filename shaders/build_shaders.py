@@ -39,6 +39,7 @@ It needs the game (tools/script_commands.py's GAME, or DAO_GAME_DIR) and
 fxc.exe of the Windows SDK; without either it says so and writes nothing.
 """
 
+import collections
 import concurrent.futures
 import glob
 import os
@@ -1473,19 +1474,42 @@ def build(fxc, name, listing, out, changes, preamble, work, named=None):
 
 
 def build_ours(fxc, source, name, out):
-    """One of this folder's own pixel shaders, compiled into `out`."""
-    compile_shader(fxc, "ps_3_0", os.path.join(HERE, source), os.path.join(out, name))
+    """One of this folder's own pixel shaders, compiled into `out`, its
+    warnings errors: they are the shaders' lint."""
+    compile_shader(
+        fxc, "ps_3_0", os.path.join(HERE, source), os.path.join(out, name), strict=True
+    )
 
 
-def compile_shader(fxc, profile, source, compiled):
+# The warnings of the game's shaders rewritten, by shader: reported, not
+# errors, their code being partly the game's, decompiled.
+THEIR_WARNINGS = {}
+
+
+def compile_shader(fxc, profile, source, compiled, strict=False):
     done = subprocess.run(
-        [fxc, "/nologo", "/T", profile, "/E", "main", "/Fo", compiled, source],
+        [
+            fxc,
+            "/nologo",
+            "/T",
+            profile,
+            "/E",
+            "main",
+            "/Fo",
+            compiled,
+            *(["/WX"] if strict else []),
+            source,
+        ],
         capture_output=True,
         text=True,
         check=False,
     )
+    said = (done.stdout + done.stderr).strip()
     if done.returncode != 0:
-        raise shader_hlsl.ShaderError((done.stdout + done.stderr).strip())
+        raise shader_hlsl.ShaderError(said)
+    warnings = [line for line in said.splitlines() if "warning X" in line]
+    if warnings:
+        THEIR_WARNINGS[os.path.basename(compiled)] = warnings
 
 
 def ours(name):
@@ -1939,6 +1963,16 @@ def main(argv):
             failed += 1
             print(f"build_shaders: {name}: {e}", file=sys.stderr)
     print(f"build_shaders: {built} shaders in {out}, {failed} failed")
+    if THEIR_WARNINGS:
+        codes = collections.Counter(
+            re.search(r"warning (X\d+)", w).group(1)
+            for ws in THEIR_WARNINGS.values()
+            for w in ws
+        )
+        print(
+            f"build_shaders: the game's shaders rewritten warn in {len(THEIR_WARNINGS)} of them: "
+            + ", ".join(f"{code} {count}x" for code, count in codes.most_common())
+        )
     whole = sum(1 for _, spread, falloff in MATERIALS_REACHED if spread and falloff)
     print(
         f"build_shaders: materials in {len(MATERIALS_REACHED)} shaders, {whole} of them whole: "
