@@ -81,9 +81,16 @@ constexpr std::int32_t kMapSize = 2048; // texels a side, with Improved shadows 
 // screen's callbacks and the frame's are. Each is read where it is needed
 // by the drawing thread through what is handed on from it (g_look,
 // g_anisotropy), and the shadow maps' size by the engine as it starts.
-std::atomic<bool> g_materials{true};
-std::atomic<bool> g_shadows{true};
-bool g_smaa = true; // SMAA beside the game's own anti-aliasing, or not
+// Each option's default: what a new player has, and what the options
+// screen's Restore Defaults gives back (DAOLib #140).
+constexpr bool kMaterialsByDefault = true;
+constexpr bool kShadowsByDefault = true;
+constexpr bool kSmaaByDefault = true;
+constexpr int kOcclusionByDefault = 3;  // High
+constexpr int kAnisotropyByDefault = 4; // 16x
+std::atomic<bool> g_materials{kMaterialsByDefault};
+std::atomic<bool> g_shadows{kShadowsByDefault};
+bool g_smaa = kSmaaByDefault; // SMAA beside the game's own anti-aliasing, or not
 
 // The two sliders, each a stop of its list (the user, 2026-10-12: "implement
 // gtao, and add an option / slider for it. also add one for anisotropic
@@ -96,8 +103,8 @@ constexpr std::array<float, 4> kOcclusionStops{0.0F, 1.0F / 3.0F, 2.0F / 3.0F, 1
 constexpr std::array<const wchar_t *, 4> kOcclusionNames{L"Off", L"Low", L"Medium", L"High"};
 constexpr std::array<int, 5> kAnisotropyStops{0, 2, 4, 8, 16};
 constexpr std::array<const wchar_t *, 5> kAnisotropyNames{L"Off", L"2x", L"4x", L"8x", L"16x"};
-std::atomic<int> g_occlusionStop{3};  // High
-std::atomic<int> g_anisotropyStop{4}; // 16x
+std::atomic<int> g_occlusionStop{kOcclusionByDefault};
+std::atomic<int> g_anisotropyStop{kAnisotropyByDefault};
 
 // One of the sun's shadow maps as the engine is asked for it.
 // Notes on Partition: read 2026-10-10 in the function that asks (0x00455580):
@@ -1132,8 +1139,8 @@ void ApplyOptions()
 constexpr const wchar_t *kOptionsTitle = L"Elgara Shaders";
 
 // A checkbox kept in graphics.chosen.
-dao::options::Toggle Checkbox(std::atomic<bool> &on, const wchar_t *name, const wchar_t *label, const wchar_t *tooltip,
-                              const char *said)
+dao::options::Toggle Checkbox(std::atomic<bool> &on, bool byDefault, const wchar_t *name, const wchar_t *label,
+                              const wchar_t *tooltip, const char *said)
 {
     dao::options::Toggle toggle;
     toggle.name = name;
@@ -1147,12 +1154,13 @@ dao::options::Toggle Checkbox(std::atomic<bool> &on, const wchar_t *name, const 
         KeepChosen();
         return wanted;
     };
+    toggle.defaultValue = byDefault;
     return toggle;
 }
 
 // A slider over a list of stops kept in graphics.chosen.
 template <std::size_t N>
-dao::options::Choice StopSlider(std::atomic<int> &stop, const std::array<const wchar_t *, N> &names,
+dao::options::Choice StopSlider(std::atomic<int> &stop, int byDefault, const std::array<const wchar_t *, N> &names,
                                 const wchar_t *name, const wchar_t *label, const wchar_t *tooltip, const char *said)
 {
     dao::options::Choice slider;
@@ -1168,6 +1176,7 @@ dao::options::Choice StopSlider(std::atomic<int> &stop, const std::array<const w
         KeepChosen();
         return wanted;
     };
+    slider.defaultValue = byDefault;
     return slider;
 }
 
@@ -1184,21 +1193,24 @@ void AddToOptions()
         KeepChosen();
         return wanted;
     };
+    smaa.defaultValue = kSmaaByDefault;
     if (!dao::options::AddSection(
             kOptionsTitle,
-            {Checkbox(g_materials, L"GraphicsMaterials", L"Improved materials",
+            {Checkbox(g_materials, kMaterialsByDefault, L"GraphicsMaterials", L"Improved materials",
                       L"Metal, gilt and polished stone reflect as what they are made of, and normal maps shape the "
                       L"light in shade and indoors",
                       "improved materials"),
-             Checkbox(g_shadows, L"GraphicsShadows", L"Improved shadows",
+             Checkbox(g_shadows, kShadowsByDefault, L"GraphicsShadows", L"Improved shadows",
                       L"Softer, finer shadows, which fall on characters too; their finer maps are made as the game "
                       L"starts",
                       "improved shadows"),
              smaa},
-            {StopSlider(g_occlusionStop, kOcclusionNames, L"GraphicsOcclusion", L"Ambient occlusion",
-                        L"Shade in corners and creases and under things (GTAO)", "ambient occlusion"),
-             StopSlider(g_anisotropyStop, kAnisotropyNames, L"GraphicsAnisotropic", L"Anisotropic filtering",
-                        L"Keeps textures sharp where they are seen at a slant", "anisotropic filtering")},
+            {StopSlider(g_occlusionStop, kOcclusionByDefault, kOcclusionNames, L"GraphicsOcclusion",
+                        L"Ambient occlusion", L"Shade in corners and creases and under things (GTAO)",
+                        "ambient occlusion"),
+             StopSlider(g_anisotropyStop, kAnisotropyByDefault, kAnisotropyNames, L"GraphicsAnisotropic",
+                        L"Anisotropic filtering", L"Keeps textures sharp where they are seen at a slant",
+                        "anisotropic filtering")},
             dao::options::Column::Right, dao::options::Tab::Video))
     {
         spdlog::warn("the options screen did not take the section");
