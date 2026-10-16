@@ -1,9 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.1.1
 
 - A mod's armor is metal where the game's item data says so: the kind of item (a massive helm, a heavy breastplate) decides a piece's substance, not how its steel was painted. The Grey Warden Runic helm's steel now reflects (#24).
-- Weapons, shields, staves, bows and quivers: each part (blade, grip, guard, face, straps, fittings) is metal or not whole, from the model's own meshes, reviewed piece by piece. No more specks on blades, metal grips or wooden crossbows' steel missed (#24).
+- Weapons, shields, staves, bows and quivers: each part (blade, grip, guard, face, straps, fittings) is metal or not whole, from the model's own meshes, reviewed piece by piece. Blades are no longer flecked by painted wear, grips and hafts are no longer metal, and the metal fittings of crossbows and staves are no longer missed (#24).
 
 ## 0.1.0
 
