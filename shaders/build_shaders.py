@@ -1705,6 +1705,25 @@ def with_ambient_share(shader):
     shader.insert(len(shader.statements) - 1, said)
 
 
+# The shaders that write their alpha as a sum they do not clamp, which can
+# pass 1 (issue 25): found 2026-10-16 by listing every one of shaders.erf's
+# of model 3. Of the 69 that write an alpha unclamped, the rest multiply
+# values of 0..1, take a minimum or choose between constants, which cannot
+# leave 0..1.
+SUMMED_ALPHA = ("water0", "water0nospec", "physics1", "water_wireframe")
+
+
+def with_alpha_clamped(shader):
+    """The alpha clamped to 0..1 as the shader leaves it, as the game's own
+    target of eight bits clamped it before blending (issue 25). In the 16-bit
+    scene nothing does: the water's alpha, its blend factor, is more than 1
+    where the moon's highlight lies on it (water0.psh's `mad oC0.w, r0.x,
+    r2.w, r1.y`), and Lake Calenhad by night was a white glare with rainbow
+    fringes, the lake under the water taken away. Its colour is left as the
+    shader writes it."""
+    shader.insert(len(shader.statements) - 1, ["oC0.w = saturate(oC0.w);"])
+
+
 def changes_for(stem, listing, show):
     """What this build changes in one of the game's pixel shaders: the
     functions that change it, and the HLSL they call."""
@@ -1762,6 +1781,9 @@ def changes_for(stem, listing, show):
     # (alpha_as), and nothing where none is said.
     if with_materials in changes:
         changes += [with_scattered_share, with_ambient_share]
+    # The alpha clamped, last: whatever else wrote it.
+    if stem in SUMMED_ALPHA:
+        changes.append(with_alpha_clamped)
     return changes, preamble
 
 
