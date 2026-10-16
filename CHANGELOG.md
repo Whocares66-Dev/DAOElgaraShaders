@@ -6,4 +6,4 @@
 - Improved materials: metal reflects its surroundings, leather, cloth and stone stay matte; the game's, its DLC's and Awakening's materials come with the plugin.
 - Materials from mods worked out as the game starts, in the main menu, and given in the same session.
 - Restore Defaults on the Video tab gives the five options back (DAOLib #140).
-- Needs a DAOLib newer than 0.2.0 (#124, #135, #137, #138, #140).
+- Needs DAOLib 0.3.0 or newer.
