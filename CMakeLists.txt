@@ -161,7 +161,15 @@ endif()
 
 # What each material is, as the game reads it: data/materials.ini made into
 # answers and metalness maps in the plugin's folder (elgarashaders_materials
-# objects), when the table, the names' tables or the tool changes.
+# objects), when the table, the names' tables, the add-ins' dump or the tool
+# changes. The dump (build/addins, tools/dump_addins.py) is outside git, and
+# put in or changed after a build it was not read again until the stamp was
+# taken away by hand (2026-10-16): its files are the step's inputs too.
+file(
+    GLOB ELGARA_ADDINS_DUMP
+    CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/build/addins/*"
+)
 add_custom_command(
     OUTPUT "${CMAKE_BINARY_DIR}/materials.stamp"
     COMMAND
@@ -175,6 +183,7 @@ add_custom_command(
         "${CMAKE_CURRENT_SOURCE_DIR}/data/materials.ini"
         "${CMAKE_CURRENT_SOURCE_DIR}/data/material_names.txt"
         "${CMAKE_CURRENT_SOURCE_DIR}/data/material_parts.ini"
+        ${ELGARA_ADDINS_DUMP}
         elgarashaders_materials
     COMMENT "elgarashaders: the materials' table, as the game reads it"
     VERBATIM
