@@ -24,9 +24,9 @@ shaders/             what the game's shaders are given: *.hlsl, SMAA, and build_
 data/materials.ini   what each material is made of (lines `; by hand` are kept by every run of the tool)
 data/material_names.txt  the tables a material is classed by its names with, edited by hand
 tests/               Catch2 over src/materials; its [game] cases read the install
-tools/               build.ps1, deploy.ps1, shader_hlsl.py (the game's compiled shaders back to HLSL) and its test
+tools/               build.ps1, deploy.ps1, package.ps1 and release.ps1 (the zip and a release, dev/RELEASING.md), dump_addins.py, shader_hlsl.py (the game's compiled shaders back to HLSL) and its test
 extern/DAOLib        the library, a submodule
-dev/                 notes
+dev/                 notes, RELEASING.md, TESTING.md (what is seen in the game)
 ```
 
 The plugin is `elgarashaders`: `build\<preset>\daolib\plugins\elgarashaders\` is its whole folder (the DLL, `override\` with the rebuilt shaders, and `graphics.chosen`, the options as the player last set them). Its log is `Documents\BioWare\Dragon Age\daolib\elgarashaders.log` (on this machine under OneDrive).
