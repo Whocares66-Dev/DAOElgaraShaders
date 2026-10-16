@@ -147,6 +147,13 @@ function Get-PreviousZip {
 # release unless -AllowDropped says it is meant.
 function Compare-WithPrevious([hashtable] $Now, [string] $PreviousZip, [bool] $Sizes) {
     $before = Get-ZipContent $PreviousZip
+    if (-not $Sizes) {
+        # A dry run's build tree has not been packaged: the documents package.ps1 adds, the
+        # plugin folder's own .md and .txt, are not the build's to have.
+        foreach ($key in @($before.Keys)) {
+            if ($key -match '^bin_ship/daolib/plugins/elgarashaders/[^/]+\.(md|txt)$') { $before.Remove($key) }
+        }
+    }
     $gone = @($before.Keys | Where-Object { -not $Now.ContainsKey($_) } | Sort-Object)
     $new = @($Now.Keys | Where-Object { -not $before.ContainsKey($_) } | Sort-Object)
     $changed = @($Now.Keys | Where-Object {
