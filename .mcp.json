@@ -9,6 +9,13 @@
       "args": [
         "${ELUVIAN_DIR:-C:/project/DAOEluvianMCP}/tools/eluvian_bridge.py"
       ]
+    },
+    "ghilana": {
+      "command": "${ELUVIAN_DIR:-C:/project/DAOEluvianMCP}/build/ghilana-release/ghilana.exe",
+      "args": [
+        "--instance",
+        "elgara-agent"
+      ]
     }
   }
 }
