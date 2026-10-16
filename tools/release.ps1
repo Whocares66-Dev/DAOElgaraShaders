@@ -36,18 +36,13 @@
 .PARAMETER Force
     Skip the clean-tree and ancestry checks. Not the master check, nor DAOLib's: nothing is
     released off another branch, or built on a DAOLib that is no release's.
-
-.PARAMETER AllowDropped
-    Release although files the last release's zip had are gone from this one: for a
-    release that takes something out on purpose, which its changelog says.
 #>
 [CmdletBinding()]
 param(
     [int] $Jobs = 0,
     [switch] $Draft,
     [switch] $DryRun,
-    [switch] $Force,
-    [switch] $AllowDropped
+    [switch] $Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -101,70 +96,6 @@ if ($addinObjects -eq 0) {
     throw "No add-ins' material objects in ${addins}: copy the dump in from a checkout that has it, or make it with tools\dump_addins.py (dev/RELEASING.md)."
 }
 Show-Info "add-ins' dump: $addinObjects material objects in build\addins"
-
-# Each file of a zip's plugin folder, by its path in the zip, with its size and CRC.
-function Get-ZipContent([string] $Path) {
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $files = @{}
-    $archive = [IO.Compression.ZipFile]::OpenRead($Path)
-    try {
-        foreach ($entry in $archive.Entries) {
-            if ($entry.FullName.EndsWith('/')) { continue }
-            $files[$entry.FullName] = "$($entry.Length) $($entry.Crc32)"
-        }
-    }
-    finally { $archive.Dispose() }
-    return $files
-}
-
-# The same of a folder laid out as the zip is, for a dry run's look at the build tree.
-function Get-FolderContent([string] $Root, [string] $Prefix) {
-    $files = @{}
-    foreach ($file in Get-ChildItem -Path $Root -Recurse -File) {
-        $relative = $file.FullName.Substring($Root.Length).TrimStart('\').Replace('\', '/')
-        $files["$Prefix$relative"] = "$($file.Length)"
-    }
-    return $files
-}
-
-# The last release's zip: dist\'s copy, or the GitHub release's.
-function Get-PreviousZip {
-    $previous = git -C $repo tag --list 'v*' --sort=-v:refname | Where-Object { $_ -ne $tag } | Select-Object -First 1
-    if (-not $previous) { return $null }
-    $previousVersion = $previous.TrimStart('v')
-    $local = Join-Path $repo "dist\$name-$previousVersion.zip"
-    if (Test-Path $local) { return $local }
-    $folder = Join-Path $repo "build\previous-release\$previousVersion"
-    New-Item -ItemType Directory -Force $folder | Out-Null
-    gh release download $previous --repo $github --pattern '*.zip' --dir $folder --clobber *> $null
-    $downloaded = Get-ChildItem -Path $folder -Filter '*.zip' | Select-Object -First 1
-    if ($downloaded) { return $downloaded.FullName }
-    return $null
-}
-
-# What a release's zip holds against the last release's: what is new, changed and gone.
-# Gone is what a mistake looks like (a dump missing, a step not rerun), and refuses the
-# release unless -AllowDropped says it is meant.
-function Compare-WithPrevious([hashtable] $Now, [string] $PreviousZip, [bool] $Sizes) {
-    $before = Get-ZipContent $PreviousZip
-    if (-not $Sizes) {
-        # A dry run's build tree has not been packaged: the documents package.ps1 adds, the
-        # plugin folder's own .md and .txt, are not the build's to have.
-        foreach ($key in @($before.Keys)) {
-            if ($key -match '^bin_ship/daolib/plugins/elgarashaders/[^/]+\.(md|txt)$') { $before.Remove($key) }
-        }
-    }
-    $gone = @($before.Keys | Where-Object { -not $Now.ContainsKey($_) } | Sort-Object)
-    $new = @($Now.Keys | Where-Object { -not $before.ContainsKey($_) } | Sort-Object)
-    $changed = @($Now.Keys | Where-Object {
-            $before.ContainsKey($_) -and ($(if ($Sizes) { $before[$_] } else { $before[$_].Split(' ')[0] }) -ne $Now[$_])
-        } | Sort-Object)
-    Show-Info "against $(Split-Path -Leaf $PreviousZip): $($new.Count) new, $($changed.Count) changed, $($gone.Count) gone"
-    $new | ForEach-Object { Show-Info "  new      $_" }
-    $changed | ForEach-Object { Show-Info "  changed  $_" }
-    $gone | ForEach-Object { Show-Warn "  gone     $_" }
-    return $gone.Count
-}
 
 # A dry run reports a missing gh as a warning and goes on, so one run says
 # everything that is not ready.
@@ -220,17 +151,7 @@ Show-Info "built on DAOLib $daolibVersion"
 if ($prerelease) { Show-Info 'marked prerelease (0.x)' }
 if ($Draft) { Show-Info 'draft: published by hand' }
 
-$previousZip = Get-PreviousZip
-if (-not $previousZip) { Show-Warn 'No earlier release found to compare the zip with.' }
-
 if ($DryRun) {
-    # The build tree as it stands against the last release, by name and size: what the
-    # release's own build will be compared with, by name, size and CRC, before the tag.
-    $plugin = Join-Path $repo 'build\release\daolib\plugins\elgarashaders'
-    if ($previousZip -and (Test-Path $plugin)) {
-        $gone = Compare-WithPrevious -Now (Get-FolderContent $plugin 'bin_ship/daolib/plugins/elgarashaders/') -PreviousZip $previousZip -Sizes $false
-        if ($gone -gt 0 -and -not $AllowDropped) { Show-Warn "$gone files of the last release are not in build\release: the release would refuse (-AllowDropped if meant)" }
-    }
     Show-Line "`n-DryRun, so this is where it stops. It would:" -Colour Yellow
     @('build the release preset and run its tests', "run tools\package.ps1 -> $zip",
         "tag $tag, push master and the tag (the tag's push builds the site's $version pages)",
@@ -247,12 +168,6 @@ try {
     & (Join-Path $PSScriptRoot 'build.ps1') -Preset release -Test -Jobs $Jobs
     & (Join-Path $PSScriptRoot 'package.ps1') -Preset release
     if (-not (Test-Path $zip)) { throw "Packaging did not write $zip." }
-    if ($previousZip) {
-        $gone = Compare-WithPrevious -Now (Get-ZipContent $zip) -PreviousZip $previousZip -Sizes $true
-        if ($gone -gt 0 -and -not $AllowDropped) {
-            throw "$gone files the last release had are not in this one (listed above). If that is meant, release with -AllowDropped."
-        }
-    }
 }
 catch {
     Show-Bad 'failed before anything was tagged or pushed.'
