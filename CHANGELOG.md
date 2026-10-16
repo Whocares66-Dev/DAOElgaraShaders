@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2
+
+- Water is drawn as the game draws it: lakes and rivers were a white or electric-blue glare with rainbow fringes in places, worst by night (Lake Calenhad's docks) and also by day (Redcliffe's lake), whatever the options were (#25).
+
 ## 0.1.1
 
 - A mod's armor is metal where the game's item data says so: the kind of item (a massive helm, a heavy breastplate) decides a piece's substance, not how its steel was painted. The Grey Warden Runic helm's steel now reflects (#24).
