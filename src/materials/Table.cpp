@@ -214,7 +214,9 @@ std::optional<std::tuple<std::string, std::string, std::string_view>> TableLine(
 struct MapWork
 {
     std::string material;
-    std::tuple<std::string, std::string, bool> key; // specular, diffuse, plate
+    // specular, diffuse, plate, and the material's own name where its map is its parts' (one
+    // texture drawn by a dagger's islands and a level's prop is two maps)
+    std::tuple<std::string, std::string, bool, std::string> key;
     std::optional<Picture> map;
 };
 
@@ -222,7 +224,7 @@ struct MapWork
 // the material's own where another key has that name.
 std::map<std::string, std::string> NameMaps(const std::vector<MapWork> &works)
 {
-    std::map<std::string, std::tuple<std::string, std::string, bool>> claimed;
+    std::map<std::string, std::tuple<std::string, std::string, bool, std::string>> claimed;
     std::map<std::string, std::string> out;
     for (const MapWork &work : works)
     {
@@ -232,7 +234,13 @@ std::map<std::string, std::string> NameMaps(const std::vector<MapWork> &works)
         }
         std::string name = MapName(std::get<0>(work.key));
         const auto found = claimed.find(name);
-        if (found != claimed.end() && found->second != work.key)
+        if (!std::get<3>(work.key).empty())
+        {
+            // a map made from a piece's parts is that piece's alone: a level's prop drawn with the
+            // same texture (chainspike, with a darkspawn dagger's) claimed its name first
+            name = Lower(work.material) + "_parts_m.dds";
+        }
+        else if (found != claimed.end() && found->second != work.key)
         {
             name = Lower(work.material) + "_m.dds";
         }
@@ -284,9 +292,12 @@ void InParallel(std::size_t count, const std::function<void(std::size_t)> &work)
     }
 }
 
-MapWork KeyOf(const MaterialObject &object, const std::string &label)
+MapWork KeyOf(const MaterialObject &object, const std::string &label, bool parts)
 {
-    return {label, {object.Texture("mml_tSpecularMask"), object.Texture("mml_tDiffuse"), object.Plate()}, std::nullopt};
+    return {
+        label,
+        {object.Texture("mml_tSpecularMask"), object.Texture("mml_tDiffuse"), object.Plate(), parts ? object.name : ""},
+        std::nullopt};
 }
 
 } // namespace
@@ -406,6 +417,18 @@ std::unique_ptr<Catalogue> Catalogue::Load(const std::filesystem::path &game, co
     return out;
 }
 
+Files Catalogue::FilesOf() const
+{
+    Files files;
+    for (const auto &[campaign, index] : indexes_)
+    {
+        files.campaigns.emplace_back(campaign, index.get());
+    }
+    files.bytes = [this](const std::string &file, const std::string &campaign) { return Bytes(file, campaign); };
+    files.readOut = addins_;
+    return files;
+}
+
 void Catalogue::AddReadOut()
 {
     std::error_code failed;
@@ -505,9 +528,77 @@ ImageOf ImagesOf(const Catalogue &catalogue, const std::string &campaign)
     return [&catalogue, held](const std::string &resource) { return catalogue.Image(resource, *held); };
 }
 
+std::size_t Catalogue::LoadParts(const PartsFixes &fixes)
+{
+    const Files files = FilesOf();
+    const Inventory inventory = TakeInventory(files);
+    const auto kinds = KindsOf(inventory);
+    for (const auto &[object, chunks] : inventory.meshes)
+    {
+        // held: every chunk in a weapon's model (w_...), whose parts are islands of their own
+        const bool held = std::ranges::all_of(chunks, [](const auto &chunk) { return chunk.first.starts_with("w_"); });
+        const auto material = materials_.find(object);
+        if (!held || material == materials_.end())
+        {
+            continue;
+        }
+        const auto texels = MapOf(material->second.main.object, ImagesOf(*this, material->second.main.campaign));
+        if (!texels)
+        {
+            continue;
+        }
+        const auto meshes = UvMeshesOf(files, chunks);
+        const Islands islands = IslandsOf(meshes, texels->metal.width, texels->metal.height);
+        if (islands.count == 0)
+        {
+            continue;
+        }
+        const auto kind = kinds.find(object);
+        const auto fixed = fixes.find(object);
+        parts_.emplace(object, PartsMap(islands, kind == kinds.end() ? Kind::None : kind->second, &texels->metal,
+                                        fixed == fixes.end() ? std::vector<std::string>{} : fixed->second));
+    }
+    return parts_.size();
+}
+
+std::optional<MetalMap> Catalogue::MetalOf(const Copy &copy) const
+{
+    if (const auto part = parts_.find(copy.object.name); part != parts_.end())
+    {
+        double sum = 0;
+        for (const float v : part->second.values)
+        {
+            sum += v;
+        }
+        return MetalMap{part->second, sum / static_cast<double>(std::max<std::size_t>(1, part->second.values.size()))};
+    }
+    return MapOf(copy.object, ImagesOf(*this, copy.campaign));
+}
+
 Classed Classify(const Catalogue &catalogue, const Names &names, const Copy &copy)
 {
-    return Classify(copy.object, names, ImagesOf(catalogue, copy.campaign));
+    Classed out = Classify(copy.object, names, ImagesOf(catalogue, copy.campaign));
+    // A held piece's class is its parts': none, or mixed with their map (texels no island covers are not drawn).
+    if (const auto *parts = catalogue.Parts(copy.object.name))
+    {
+        const auto metal = std::ranges::count_if(parts->values, [](float v) { return v >= 0.5F; });
+        const auto all = static_cast<std::ptrdiff_t>(parts->values.size());
+        if (metal == 0)
+        {
+            if (out.cls == "metal" || out.cls == "mixed")
+            {
+                out.cls = "other";
+            }
+            out.map.reset();
+        }
+        else
+        {
+            out.cls = "mixed";
+            out.map = *parts;
+        }
+        out.share = static_cast<double>(metal) / static_cast<double>(std::max<std::ptrdiff_t>(1, all));
+    }
+    return out;
 }
 
 std::map<std::string, Hand> ReadHands(const std::filesystem::path &ini)
@@ -599,10 +690,11 @@ std::vector<MapWork> Settled(const Catalogue &catalogue, const std::vector<const
         {
             row.cls = hand->second.cls;
         }
-        MapWork work = KeyOf(materials[i]->main.object, materials[i]->name);
+        MapWork work = KeyOf(materials[i]->main.object, materials[i]->name,
+                             catalogue.Parts(materials[i]->main.object.name) != nullptr);
         if (row.cls == "mixed" && !row.map)
         {
-            if (auto map = MapOf(materials[i]->main.object, ImagesOf(catalogue, materials[i]->main.campaign)))
+            if (auto map = catalogue.MetalOf(materials[i]->main))
             {
                 row.share = map->share;
                 row.map = std::move(map->metal);
@@ -723,11 +815,12 @@ void WorkOut(const Catalogue &catalogue, const Names &names, Work &work)
     {
         work.cls = Classify(catalogue, names, *work.copy).cls;
     }
-    work.map = KeyOf(work.copy->object, work.another ? work.name + "#" + Hex(work.hash) : work.name);
+    work.map = KeyOf(work.copy->object, work.another ? work.name + "#" + Hex(work.hash) : work.name,
+                     catalogue.Parts(work.copy->object.name) != nullptr);
     const ImageOf image = ImagesOf(catalogue, work.copy->campaign);
     if (work.cls == "mixed")
     {
-        if (auto map = MapOf(work.copy->object, image))
+        if (auto map = catalogue.MetalOf(*work.copy))
         {
             work.map.map = std::move(map->metal);
         }

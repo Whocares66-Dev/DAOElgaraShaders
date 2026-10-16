@@ -93,6 +93,8 @@ add_library(
     src/materials/Said.cpp
     src/materials/Learn.cpp
     src/materials/Kind.cpp
+    src/materials/Islands.cpp
+    src/materials/Parts.cpp
     src/materials/Items.cpp
 )
 target_include_directories(elgara_materials PUBLIC src)
@@ -172,6 +174,7 @@ add_custom_command(
     DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/data/materials.ini"
         "${CMAKE_CURRENT_SOURCE_DIR}/data/material_names.txt"
+        "${CMAKE_CURRENT_SOURCE_DIR}/data/material_parts.ini"
         elgarashaders_materials
     COMMENT "elgarashaders: the materials' table, as the game reads it"
     VERBATIM

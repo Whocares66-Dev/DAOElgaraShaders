@@ -7,6 +7,9 @@
 //                                                       rule's share and the class, and its copies
 //   elgarashaders_materials enciphered [type] [options] the files of a type (mao unless said) some copy
 //                                                       of is in an enciphered archive, a line each
+//   elgarashaders_materials islands <regex>@<folder>   the islands of each material object the regex names
+//                                                       (Islands.h), at 256 a side, and each island's
+//                                                       default, into the folder: the review sheets'
 //   elgarashaders_materials unreadable <folder>         the textures the material objects in a folder name
 //                                                       that the install has no copy of to read with no
 //                                                       game, a line each (tools/dump_addins.py asks both)
@@ -16,11 +19,14 @@
 // of the running game by tools/dump_addins.py, where the install's are enciphered).
 //
 // What tools/material_table.py did in Python until 2026-10-15 (Table.h has why it went).
+#include "materials/Islands.h"
+#include "materials/Items.h"
 #include "materials/Table.h"
 
 #include <ShlObj.h>
 #include <Windows.h>
 
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -100,7 +106,8 @@ std::optional<Settings> Parse(int argc, char **argv)
             return std::nullopt;
         }
     }
-    const bool wantsArgument = out.command == "objects" || out.command == "why" || out.command == "unreadable";
+    const bool wantsArgument =
+        out.command == "objects" || out.command == "why" || out.command == "unreadable" || out.command == "islands";
     const bool bare = out.command == "table" || out.command == "enciphered";
     // enciphered's type is optional: material objects unless one is given
     if (out.command == "enciphered" && out.argument.empty())
@@ -212,6 +219,97 @@ int Unreadable(const materials::Catalogue &catalogue, const std::filesystem::pat
     return failed ? 1 : 0;
 }
 
+// Each material object a regular expression names: its islands, from the full
+// detail's meshes drawn with it, at 256 a side into a folder, and defaults.txt:
+// a line an object, its kind, then each island's default (m or n) and the texel
+// rule's share over it. What data/material_parts.ini is reviewed against.
+// An island map as the review sheets read it: width, height and count, then
+// a 32-bit label a texel.
+void WriteIslands(const materials::Islands &islands, const std::filesystem::path &path)
+{
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    const std::array<std::int32_t, 3> head{static_cast<std::int32_t>(islands.width),
+                                           static_cast<std::int32_t>(islands.height), islands.count};
+    out.write(reinterpret_cast<const char *>(head.data()), sizeof head);
+    out.write(reinterpret_cast<const char *>(islands.label.data()),
+              static_cast<std::streamsize>(islands.label.size()) * static_cast<std::streamsize>(sizeof(int)));
+}
+
+// The texel rule's map of a material at 256 a side, or none.
+std::optional<materials::Picture> TexelsOf(const materials::Catalogue &catalogue, const std::string &object)
+{
+    const auto found = catalogue.Materials().find(object);
+    if (found == catalogue.Materials().end())
+    {
+        return std::nullopt;
+    }
+    const auto made =
+        materials::MapOf(found->second.main.object, materials::ImagesOf(catalogue, found->second.main.campaign));
+    return made ? std::optional(materials::Resized(made->metal, 256, 256)) : std::nullopt;
+}
+
+int IslandsReport(const materials::Catalogue &catalogue, const std::string &argument)
+{
+    // <regex>@<folder>: the regex may hold any character but the last @
+    const auto at = argument.rfind('@');
+    if (at == std::string::npos)
+    {
+        std::cerr << "islands takes <regex>@<folder>\n";
+        return 2;
+    }
+    const std::string pattern = argument.substr(0, at);
+    const std::filesystem::path folder = argument.substr(at + 1);
+    const auto files = catalogue.FilesOf();
+    const auto inventory = materials::TakeInventory(files);
+    const auto kinds = materials::KindsOf(inventory);
+    const std::regex wanted(pattern);
+    std::filesystem::create_directories(folder);
+    std::ofstream defaults(folder / "defaults.txt", std::ios::binary | std::ios::trunc);
+    for (const auto &[object, chunks] : inventory.meshes)
+    {
+        if (!std::regex_search(object, wanted))
+        {
+            continue;
+        }
+        const auto islands = materials::IslandsOf(materials::UvMeshesOf(files, chunks), 256, 256);
+        const auto texels = TexelsOf(catalogue, object);
+        const auto shares = materials::IslandShares(islands, texels ? &*texels : nullptr);
+        const auto kind = kinds.contains(object) ? kinds.at(object) : materials::Kind::None;
+        defaults << object << '\t' << materials::NameOf(kind);
+        for (std::size_t i = 0; i < shares.size(); ++i)
+        {
+            defaults << '\t' << i << ':' << (materials::DefaultMetal(kind, shares[i]) ? 'm' : 'n') << ':' << shares[i];
+        }
+        defaults << '\n';
+        WriteIslands(islands, folder / (object + ".islands"));
+        std::cout << object << "\t" << islands.count << " islands\n";
+    }
+    return 0;
+}
+
+// The files of a type some copy of is in an enciphered archive, a line each.
+int Enciphered(const materials::Catalogue &catalogue, const std::string &type)
+{
+    for (const auto &name : catalogue.Enciphered("." + type))
+    {
+        std::cout << name << "\n";
+    }
+    return 0;
+}
+
+// The held pieces' maps from their parts and the corrections beside the
+// table (issue 24), before anything is classed.
+void LoadParts(materials::Catalogue &catalogue, const std::filesystem::path &file)
+{
+    std::vector<std::string> unread;
+    const auto fixes = materials::ReadParts(file, unread);
+    for (const auto &line : unread)
+    {
+        std::cerr << file.filename().string() << ": a line not read: " << line << "\n";
+    }
+    std::cerr << catalogue.LoadParts(fixes) << " held pieces mapped by their parts\n";
+}
+
 int Run(int argc, char **argv)
 {
     const auto settings = Parse(argc, argv);
@@ -219,7 +317,7 @@ int Run(int argc, char **argv)
     {
         std::cerr
             << "elgarashaders_materials table | objects <plugin folder> | why <regex> | enciphered [type] |"
-               " unreadable <folder>"
+               " islands <regex>@<folder> | unreadable <folder>"
                " [--game <install>] [--documents <folder>] [--ini <table>] [--names <tables>] [--addins <folder>]\n";
         return 2;
     }
@@ -237,13 +335,14 @@ int Run(int argc, char **argv)
         std::cerr << error << "\n";
         return 2;
     }
+    LoadParts(*catalogue, settings->ini.parent_path() / "material_parts.ini");
     if (settings->command == "enciphered")
     {
-        for (const auto &name : catalogue->Enciphered("." + settings->argument))
-        {
-            std::cout << name << "\n";
-        }
-        return 0;
+        return Enciphered(*catalogue, settings->argument);
+    }
+    if (settings->command == "islands")
+    {
+        return IslandsReport(*catalogue, settings->argument);
     }
     if (settings->command == "unreadable")
     {

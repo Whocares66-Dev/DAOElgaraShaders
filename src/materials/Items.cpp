@@ -243,6 +243,19 @@ class Models
         return {out.begin(), out.end()};
     }
 
+    // By material object, the full detail's mesh chunks read so far.
+    std::vector<Drawn> TakeMeshes()
+    {
+        std::vector<Drawn> out;
+        out.reserve(meshes_.size());
+        for (const auto &[object, chunks] : meshes_)
+        {
+            out.push_back({object, {chunks.begin(), chunks.end()}});
+        }
+        meshes_.clear();
+        return out;
+    }
+
   private:
     const std::set<std::string> &Objects(const std::string &file, const std::string &campaign)
     {
@@ -259,6 +272,7 @@ class Models
         {
             return read_.emplace(file, std::move(objects)).first->second;
         }
+        const std::string meshFile = Lowered(Narrow(hierarchy->meshFile));
         for (const auto &node : hierarchy->nodes)
         {
             if (!node.mesh || node.mesh->material.empty())
@@ -267,12 +281,18 @@ class Models
             }
             const std::string object = Lowered(Narrow(node.mesh->material));
             objects.insert(object);
+            // the full detail's chunks: the texture's islands are read from them
+            if (file.ends_with("_0.mmh"))
+            {
+                meshes_[object].insert({meshFile, Narrow(node.mesh->chunk)});
+            }
         }
         return read_.emplace(file, std::move(objects)).first->second;
     }
 
     const Files &files_;
     std::map<std::string, std::set<std::string>> read_;
+    std::map<std::string, std::set<Chunk>> meshes_;
 };
 
 // Who draws a base item's model, so the files it is drawn from: bitm_base
@@ -433,6 +453,38 @@ Inventory TakeInventory(const Files &files)
                 done.insert(file);
                 out.items.push_back(std::move(*item));
             }
+        }
+    }
+    out.meshes = models.TakeMeshes();
+    return out;
+}
+
+std::vector<UvMesh> UvMeshesOf(const Files &files, const std::vector<Chunk> &chunks)
+{
+    std::vector<UvMesh> out;
+    const std::string main = files.campaigns.empty() ? std::string() : files.campaigns.front().first;
+    for (const auto &[file, chunkName] : chunks)
+    {
+        // the main campaign's copy, else another's (Files::bytes looks in each)
+        const auto bytes = files.bytes(file, main);
+        const auto gff = bytes ? dao::core::gff4::File::Parse(*bytes) : std::nullopt;
+        const auto mesh = gff ? dao::core::model::MeshOf(*gff) : std::nullopt;
+        for (const auto &chunk : mesh ? mesh->chunks : std::vector<dao::core::model::Chunk>{})
+        {
+            const auto *uv = chunk.Find(dao::core::model::Usage::TexCoord, 0);
+            if (Narrow(chunk.name) != chunkName || uv == nullptr)
+            {
+                continue;
+            }
+            UvMesh one;
+            const auto values = dao::core::model::Floats(chunk, *uv);
+            one.uv.reserve(values.size());
+            for (const auto &value : values)
+            {
+                one.uv.push_back({value[0], value[1]});
+            }
+            one.triangles = dao::core::model::Indices(chunk);
+            out.push_back(std::move(one));
         }
     }
     return out;

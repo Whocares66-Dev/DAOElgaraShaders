@@ -7,8 +7,10 @@
 // which copy of a file the game takes, in each campaign the install has.
 #pragma once
 
+#include "materials/Items.h"
 #include "materials/Learn.h"
 #include "materials/Names.h"
+#include "materials/Parts.h"
 #include "materials/TextureRule.h"
 
 #include <cstdint>
@@ -80,6 +82,20 @@ class Catalogue
     // Whether any campaign has a copy of a file it can read with no game.
     [[nodiscard]] bool Readable(const std::string &resource) const;
 
+    // The files as the inventory reads them (Items.h): these campaigns, these bytes.
+    [[nodiscard]] Files FilesOf() const;
+    // The held pieces' maps made from their parts (Parts.h): every material object a weapon,
+    // shield, staff, bow or quiver is drawn with, with the corrections given. Returns how many.
+    std::size_t LoadParts(const PartsFixes &fixes);
+    // A held piece's parts map, or null.
+    [[nodiscard]] const Picture *Parts(const std::string &material) const
+    {
+        const auto found = parts_.find(material);
+        return found == parts_.end() ? nullptr : &found->second;
+    }
+    // A material's metal map: its parts' where it has them, else the texel rule's.
+    [[nodiscard]] std::optional<MetalMap> MetalOf(const Copy &copy) const;
+
   private:
     Catalogue();
     // The add-ins' material objects read out of the running game, where the
@@ -93,6 +109,7 @@ class Catalogue
     std::vector<std::pair<std::string, std::unique_ptr<dao::core::install::Index>>> indexes_;
     std::filesystem::path addins_;
     std::map<std::string, Material> materials_;
+    std::map<std::string, Picture> parts_;
 };
 
 // A copy classed (Learn.h's Classify) with its textures as its campaign takes them.

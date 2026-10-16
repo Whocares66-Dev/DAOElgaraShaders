@@ -4,9 +4,11 @@
 // cases tagged [game] read the installed game (DAO_GAME_DIR, or GOG's) and
 // pass with nothing asked where it is not there.
 #include "materials/Answers.h"
+#include "materials/Islands.h"
 #include "materials/Kind.h"
 #include "materials/Learn.h"
 #include "materials/Names.h"
+#include "materials/Parts.h"
 #include "materials/Said.h"
 #include "materials/Table.h"
 #include "materials/TextureRule.h"
@@ -14,6 +16,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -591,4 +594,95 @@ TEST_CASE("a metal kind is metal whole, its texels not asked", "[kind]")
     REQUIRE(learned);
     CHECK(learned->cls == "metal");
     CHECK(learned->map.empty());
+}
+
+namespace
+{
+
+// Two squares of two triangles each, side by side in texture space and joined
+// at no vertex: two islands.
+std::vector<materials::UvMesh> TwoSquares()
+{
+    materials::UvMesh mesh;
+    mesh.uv = {{0.0F, 0.0F}, {0.5F, 0.0F}, {0.5F, 1.0F}, {0.0F, 1.0F},
+               {0.5F, 0.0F}, {1.0F, 0.0F}, {1.0F, 1.0F}, {0.5F, 1.0F}};
+    mesh.triangles = {0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7};
+    return {mesh};
+}
+
+} // namespace
+
+TEST_CASE("a texture's islands are its triangles joined by vertex", "[parts]")
+{
+    // the squares' shared edge is the same coordinates in two vertices each: one island, as a model's
+    // seams in texture space are
+    const auto joined = materials::IslandsOf(TwoSquares(), 8, 8);
+    CHECK(joined.count == 1);
+    // pulled apart, two
+    auto apart = TwoSquares();
+    for (std::size_t v = 4; v < 8; ++v)
+    {
+        apart[0].uv[v][0] += 0.01F;
+    }
+    const auto two = materials::IslandsOf(apart, 8, 8);
+    REQUIRE(two.count == 2);
+    CHECK(two.label[(4 * 8) + 1] == 0);
+    CHECK(two.label[(4 * 8) + 6] == 1);
+    // every texel is covered
+    CHECK(std::ranges::count(two.label, -1) == 0);
+}
+
+TEST_CASE("a held piece's parts: its kind, the texels' majority, and the hand's corrections", "[parts]")
+{
+    auto apart = TwoSquares();
+    for (std::size_t v = 4; v < 8; ++v)
+    {
+        apart[0].uv[v][0] += 0.01F;
+    }
+    const auto islands = materials::IslandsOf(apart, 8, 8);
+    // the texel rule: the left island a third metal, the right two thirds
+    materials::Picture texels{8, 8, 1, std::vector<float>(64, 0.0F)};
+    for (std::uint32_t y = 0; y < 8; ++y)
+    {
+        for (std::uint32_t x = 0; x < 8; ++x)
+        {
+            const std::uint32_t rows = x < 4 ? 3 : 6;
+            texels.values[(y * 8) + x] = y < rows ? 1.0F : 0.0F;
+        }
+    }
+    const auto at = [](const materials::Picture &map, std::uint32_t x, std::uint32_t y) {
+        return map.values[(y * 8) + x];
+    };
+    // no kind: each island as most of it is
+    const auto plain = materials::PartsMap(islands, materials::Kind::None, &texels, {});
+    CHECK(at(plain, 1, 7) == 0.0F);
+    CHECK(at(plain, 1, 0) == 0.0F); // a metal texel in an island that is not
+    CHECK(at(plain, 6, 7) == 1.0F); // and the other way
+    // a metal kind: all of it
+    const auto metal = materials::PartsMap(islands, materials::Kind::Metal, &texels, {});
+    CHECK(std::ranges::count(metal.values, 1.0F) == 64);
+    // corrections in order: the left metal, then the right not, then the right the texels' own
+    CHECK(at(materials::PartsMap(islands, materials::Kind::None, &texels, {"+0"}), 1, 7) == 1.0F);
+    CHECK(at(materials::PartsMap(islands, materials::Kind::Metal, &texels, {"1"}), 6, 0) == 0.0F);
+    const auto own = materials::PartsMap(islands, materials::Kind::None, &texels, {"~1"});
+    CHECK(at(own, 6, 0) == 1.0F);
+    CHECK(at(own, 6, 7) == 0.0F);
+    CHECK(std::ranges::count(materials::PartsMap(islands, materials::Kind::None, &texels, {"=m", "0"}).values, 1.0F) ==
+          32);
+}
+
+TEST_CASE("the parts' corrections are read a line a change", "[parts]")
+{
+    const auto file = std::filesystem::temp_directory_path() / "elgara_parts_test.ini";
+    {
+        std::ofstream out(file);
+        out << "; a comment\nw_a 0,3\nw_a +2 ; why\nw_b =m\nw_c\nw_d x,y\n";
+    }
+    std::vector<std::string> errors;
+    const auto fixes = materials::ReadParts(file, errors);
+    std::filesystem::remove(file);
+    REQUIRE(fixes.contains("w_a"));
+    CHECK(fixes.at("w_a") == std::vector<std::string>{"0,3", "+2"});
+    CHECK(fixes.at("w_b") == std::vector<std::string>{"=m"});
+    CHECK(errors.size() == 2); // w_c says no change, w_d's are no numbers
 }

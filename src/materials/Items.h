@@ -3,9 +3,11 @@
 // (Kind.h), the model its variation table gives it, and the material objects
 // that model's meshes are drawn with. The game has no metalness of its own (no
 // field says a texel or a material is metal, read 2026-10-15); a material
-// object's class is worked out from its items' kind.
+// object's class is worked out from its items' kind, and a held piece's metal
+// map from its meshes' islands (Parts.h).
 #pragma once
 
+#include "materials/Islands.h"
 #include "materials/Kind.h"
 
 #include <cstddef>
@@ -45,9 +47,20 @@ struct Item
     std::vector<std::string> objects; // the material objects its model's meshes are drawn with, sorted
 };
 
+// A mesh chunk drawn with a material object: the model's .msh and the chunk's name.
+using Chunk = std::pair<std::string, std::string>;
+
+// A material object and the full detail's mesh chunks drawn with it, sorted.
+struct Drawn
+{
+    std::string object;
+    std::vector<Chunk> chunks;
+};
+
 struct Inventory
 {
     std::vector<Item> items;
+    std::vector<Drawn> meshes; // by material object, sorted
 };
 
 // Reads every campaign's items, tables and models.
@@ -55,5 +68,8 @@ Inventory TakeInventory(const Files &files);
 
 // Each material object's kind: the one every item drawn with it agrees on, None where they differ.
 std::map<std::string, Kind> KindsOf(const Inventory &inventory);
+
+// The texture coordinates and triangles of mesh chunks, read through `files`.
+std::vector<UvMesh> UvMeshesOf(const Files &files, const std::vector<Chunk> &chunks);
 
 } // namespace materials
