@@ -12,12 +12,16 @@
 #include "materials/Learn.h"
 #include "materials/Names.h"
 
+#include "materials/Items.h"
+
 #include "dao/ClientExoApp.h"
 #include "dao/GameModes.h"
 #include "dao/Log.h"
 #include "dao/Resources.h"
+#include "dao/core/Install.h"
 #include "dao/generated/ScriptApi.h"
 
+#include <Windows.h>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -31,6 +35,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <ranges>
 #include <set>
 #include <shared_mutex>
 #include <string>
@@ -50,6 +55,11 @@ using Clock = std::chrono::steady_clock;
 // answers (elgarashaders_materials objects).
 constexpr std::string_view kNamesFile = "materials.names";
 constexpr std::string_view kLearnedFile = "learned.answers";
+// The rule a learned file was worked out by, its first line's: a file of
+// another is set aside and its materials worked out again. 2: the item
+// data's kinds (issue 24, 2026-10-16), which made the Runic helm, learned
+// by its texels alone, no metal.
+constexpr std::string_view kRule = "; rule 2";
 // The game thread's time a frame for our reads, at least one read a frame
 // while any is waiting.
 constexpr std::chrono::microseconds kBudget{2000};
@@ -91,6 +101,14 @@ std::vector<std::pair<std::string, std::string>> g_pending;
 std::mutex g_jobsMutex;
 std::condition_variable g_jobsReady;
 std::deque<std::shared_ptr<Job>> g_jobs; // by pointer: a Job is never copied or moved
+
+// What the install's items say each material object is made of (Items.h),
+// read from disk as the plugin starts: a player's mods are in the clear on
+// disk, and the add-ins' enciphered ones are the shipped table's already.
+std::mutex g_kindsMutex;
+std::condition_variable g_kindsReady;
+bool g_kindsDone = false;
+std::map<std::string, materials::Kind> g_kinds;
 
 // The game thread's own.
 std::optional<dao::GameMode> g_lastMode;
@@ -170,6 +188,66 @@ bool WriteWhole(const std::filesystem::path &path, std::span<const std::byte> by
     return !error;
 }
 
+// The install's items read from disk and their material objects' kinds
+// taken (a few seconds, off the game's threads); then the waiting worker
+// is let go.
+void TakeKinds()
+{
+    const auto started = Clock::now();
+    std::map<std::string, materials::Kind> kinds;
+    try
+    {
+        std::wstring exe(MAX_PATH, L'\0');
+        exe.resize(GetModuleFileNameW(nullptr, exe.data(), static_cast<DWORD>(exe.size())));
+        // the exe is <game>\bin_ship\DAOrigins.exe; the documents folder is the log folder's parent
+        const std::filesystem::path game = std::filesystem::path(exe).parent_path().parent_path();
+        const auto index = dao::core::install::Index::Build(game, dao::LogDirectory().parent_path());
+        if (index)
+        {
+            materials::Files files;
+            files.campaigns.emplace_back("Single Player", index.get());
+            files.bytes = [&index](const std::string &file,
+                                   const std::string &) -> std::optional<std::vector<std::byte>> {
+                const auto *copies = index->Find(file);
+                if (copies != nullptr)
+                {
+                    for (const auto &copy : *copies)
+                    {
+                        if (index->Readable(copy))
+                        {
+                            return index->Read(copy);
+                        }
+                    }
+                }
+                return std::nullopt;
+            };
+            kinds = materials::KindsOf(materials::TakeInventory(files));
+        }
+    }
+    catch (const std::exception &error)
+    {
+        spdlog::warn("materials: the items' kinds were not read: {}", error.what());
+    }
+    const std::size_t metal = std::ranges::count(kinds | std::views::values, materials::Kind::Metal);
+    spdlog::info("materials: the items say what {} material objects are made of ({} metal), read in {:.1f} s",
+                 kinds.size(), metal, std::chrono::duration<double>(Clock::now() - started).count());
+    {
+        const std::lock_guard lock(g_kindsMutex);
+        g_kinds = std::move(kinds);
+        g_kindsDone = true;
+    }
+    g_kindsReady.notify_all();
+}
+
+// A material object's kind, once the items are read (the worker waits for them).
+materials::Kind KindOf(const std::string &material)
+{
+    std::unique_lock lock(g_kindsMutex);
+    g_kindsReady.wait(lock, [] { return g_kindsDone; });
+    const auto found = g_kinds.find(material);
+    return found == g_kinds.end() ? materials::Kind::None : found->second;
+}
+
 void Work(const Job &job)
 {
     const materials::ImageOf image = [&job](const std::string &resource) -> std::optional<materials::Picture> {
@@ -180,7 +258,8 @@ void Work(const Job &job)
     // A learned map is named by its material and its copy, never by its
     // mask as the table's are: two mods' copies of one name may differ.
     const std::string mapFile = job.material.name + "_" + hex.substr(0, 8) + "_m.dds";
-    const auto learned = materials::Learn(job.material.name, job.material.text, g_names, image, mapFile);
+    const auto learned =
+        materials::Learn(job.material.name, job.material.text, g_names, image, mapFile, KindOf(job.material.name));
     if (!learned)
     {
         return;
@@ -196,7 +275,8 @@ void Work(const Job &job)
         std::ofstream out(g_folder / kLearnedFile, std::ios::binary | std::ios::app);
         if (fresh)
         {
-            out << "; Materials the shipped table does not know, worked out in play by the table's rule\n"
+            out << kRule << "\n"
+                << "; Materials the shipped table does not know, worked out in play by the table's rule\n"
                    "; (src/MaterialLearn.cpp): as materials.answers, a line a copy, by its bytes' hash.\n";
         }
         out << line;
@@ -441,7 +521,18 @@ void Start(const std::filesystem::path &plugin)
     }
     if (const auto known = ReadText(g_folder / kLearnedFile))
     {
-        g_known.Parse(*known);
+        if (known->starts_with(kRule))
+        {
+            g_known.Parse(*known);
+        }
+        else
+        {
+            // learned by an older rule: kept aside, and its materials worked out again
+            std::error_code moved;
+            std::filesystem::rename(g_folder / kLearnedFile, g_folder / "learned.answers.old", moved);
+            spdlog::info("materials: {} was worked out by an older rule; its materials are worked out again",
+                         kLearnedFile);
+        }
     }
     // Watched: a map written as the game runs is found within a few frames
     // (the engine lists a watched folder again every fifth frame).
@@ -450,6 +541,7 @@ void Start(const std::filesystem::path &plugin)
         spdlog::warn("materials: the game did not take {}, so learned maps are not found", g_maps.string());
     }
     spdlog::info("materials: {} learned in earlier sessions, in {}", g_known.Count(), g_folder.string());
+    std::thread(&TakeKinds).detach();
     std::thread(&Worker).detach();
     g_learning = true;
 }

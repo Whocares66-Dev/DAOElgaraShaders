@@ -8,6 +8,7 @@
 // or the process: the textures come in through `ImageOf`.
 #pragma once
 
+#include "materials/Kind.h"
 #include "materials/Names.h"
 #include "materials/TextureRule.h"
 
@@ -48,7 +49,14 @@ struct Classed
     std::optional<Picture> map;
 };
 
-Classed Classify(const MaterialObject &object, const Names &names, const ImageOf &image);
+// `kind` is what the item data says the pieces drawn with it are made of
+// (Kind.h): a metal kind is metal whole, with no map and no texel's say;
+// any other kind, or none, leaves it to the names and the texels. The
+// table gives none: its materials keep the texels' maps, which are looked
+// at (issue 24); a material learned in play, a mod's, has no such map, and
+// its kind is the better say (the Runic helm's steel, painted dimmer than
+// vanilla's, is no metal to its texels).
+Classed Classify(const MaterialObject &object, const Names &names, const ImageOf &image, Kind kind = Kind::None);
 
 // What a material is given, worked out: its class, the lines (empty where
 // it is given nothing), and its map's file and bytes where it is mixed and
@@ -65,6 +73,6 @@ struct Learned
 // works out one it does. `mapFile` names its map, where it has one; nullopt
 // where the text is no solid material object.
 std::optional<Learned> Learn(const std::string &name, std::string_view text, const Names &names, const ImageOf &image,
-                             const std::string &mapFile);
+                             const std::string &mapFile, Kind kind = Kind::None);
 
 } // namespace materials

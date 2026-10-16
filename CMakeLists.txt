@@ -92,6 +92,8 @@ add_library(
     src/materials/Names.cpp
     src/materials/Said.cpp
     src/materials/Learn.cpp
+    src/materials/Kind.cpp
+    src/materials/Items.cpp
 )
 target_include_directories(elgara_materials PUBLIC src)
 # The names' tables are Python's regular expressions (lookbehind among them),

@@ -65,10 +65,18 @@ std::optional<Bumps> BumpsOf(const MaterialObject &object, const ImageOf &image)
     return MeasureBumps(*picture);
 }
 
-Classed Classify(const MaterialObject &object, const Names &names, const ImageOf &image)
+Classed Classify(const MaterialObject &object, const Names &names, const ImageOf &image, Kind kind)
 {
     Classed out;
     out.verdict = names.ByName(object);
+    // A piece the item data says is metal is metal all over: its texels' say
+    // is not asked, since a mod's steel painted dimmer than vanilla's fell
+    // through it (the Runic helm, issue 24).
+    if (kind == Kind::Metal)
+    {
+        out.cls = "metal";
+        return out;
+    }
     bool ragged = false;
     if (out.verdict.cls == kPaint)
     {
@@ -88,14 +96,14 @@ Classed Classify(const MaterialObject &object, const Names &names, const ImageOf
 }
 
 std::optional<Learned> Learn(const std::string &name, std::string_view text, const Names &names, const ImageOf &image,
-                             const std::string &mapFile)
+                             const std::string &mapFile, Kind kind)
 {
     const auto object = ReadMaterialObject(name, text);
     if (!object || !object->Solid())
     {
         return std::nullopt;
     }
-    Classed classed = Classify(*object, names, image);
+    Classed classed = Classify(*object, names, image, kind);
     Learned out;
     out.cls = classed.cls;
     if (classed.map)

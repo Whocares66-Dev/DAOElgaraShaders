@@ -4,6 +4,7 @@
 // cases tagged [game] read the installed game (DAO_GAME_DIR, or GOG's) and
 // pass with nothing asked where it is not there.
 #include "materials/Answers.h"
+#include "materials/Kind.h"
 #include "materials/Learn.h"
 #include "materials/Names.h"
 #include "materials/Said.h"
@@ -552,4 +553,42 @@ TEST_CASE("a material worked out in play is worked out as the table works it out
     CHECK(blind->said.find("mml_fDaoMetal") == std::string::npos);
     // what is no material object, or no solid one, is not worked out
     CHECK_FALSE(materials::Learn("x", "<Effect/>", names, materials::ImagesOf(*TheGame(), "Single Player"), "m.dds"));
+}
+
+TEST_CASE("the kind of item says what a piece is made of, read per slot", "[kind]")
+{
+    using materials::Kind;
+    using materials::KindOf;
+    // worn: Type 4; ArmorType 1 light ... 5 cloth; EquippableSlots 16 chest, 32 head, 64 feet, 128 hands
+    CHECK(KindOf({4, 4, 16}) == Kind::Metal);       // a massive chest
+    CHECK(KindOf({4, 4, 32}) == Kind::Metal);       // a massive helm (the Runic one)
+    CHECK(KindOf({4, 3, 16}) == Kind::Mixed);       // a heavy chest: plate, mail and leather
+    CHECK(KindOf({4, 3, 32}) == Kind::Metal);       // a heavy helm
+    CHECK(KindOf({4, 3, 128}) == Kind::Metal);      // heavy gloves
+    CHECK(KindOf({4, 2, 16}) == Kind::Mixed);       // a medium chest: leather with plate or mail
+    CHECK(KindOf({4, 2, 32}) == Kind::Metal);       // a medium helm: a steel cap
+    CHECK(KindOf({4, 2, 64}) == Kind::Mixed);       // medium boots
+    CHECK(KindOf({4, 1, 16}) == Kind::Leather);     // light
+    CHECK(KindOf({4, 5, 16}) == Kind::Cloth);       // clothing, robes
+    CHECK(KindOf({4, 5, 32}) == Kind::Cloth);       // a mage's hood
+    CHECK(KindOf({2, 0, 3}) == Kind::Metal);        // a longsword
+    CHECK(KindOf({7, 0, 4}) == Kind::Leather);      // arrows: the quiver is drawn
+    CHECK(KindOf({3, 0, 2}) == Kind::None);         // a shield: wood or steel
+    CHECK(KindOf({5, 0, 1}) == Kind::None);         // a staff: wood or metal
+    CHECK(KindOf({6, 0, 1}) == Kind::None);         // a bow
+    CHECK(KindOf({4, 1, 524288}) == Kind::Leather); // the dog's collar is worn too, but draws no part
+}
+
+TEST_CASE("a metal kind is metal whole, its texels not asked", "[kind]")
+{
+    const auto &names = TheNames();
+    // a helm painted with steel dimmer than vanilla's, which the texels alone call no metal
+    const std::string text = R"(<MaterialObject Name="X"><Material Name="Character.mat"/>
+<Texture Name="mml_tDiffuse" ResName="none_d.dds"/><Texture Name="mml_tSpecularMask" ResName="none_s.dds"/>
+</MaterialObject>)";
+    const auto none = [](const std::string &) -> std::optional<materials::Picture> { return std::nullopt; };
+    const auto learned = materials::Learn("pn_hlf_test", text, names, none, "m.dds", materials::Kind::Metal);
+    REQUIRE(learned);
+    CHECK(learned->cls == "metal");
+    CHECK(learned->map.empty());
 }

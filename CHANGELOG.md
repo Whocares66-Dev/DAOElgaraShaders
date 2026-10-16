@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- A mod's armor is metal where the game's item data says so: the kind of item (a massive helm, a heavy breastplate) decides a piece's substance, not how its steel was painted. The Grey Warden Runic helm's steel now reflects (#24).
+
 ## 0.1.0
 
 - Five options on the Video tab, each switching as the game runs: Improved materials, Improved shadows, SMAA, ambient occlusion (Off to High) and anisotropic filtering (Off to 16x).

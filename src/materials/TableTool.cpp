@@ -5,8 +5,8 @@
 //                                                       into a plugin's folder, from the table as it stands
 //   elgarashaders_materials why <regex> [options]       each material so named: what its names say, the
 //                                                       rule's share and the class, and its copies
-//   elgarashaders_materials enciphered [options]        the material objects some copy of is in an
-//                                                       enciphered archive, a line each
+//   elgarashaders_materials enciphered [type] [options] the files of a type (mao unless said) some copy
+//                                                       of is in an enciphered archive, a line each
 //   elgarashaders_materials unreadable <folder>         the textures the material objects in a folder name
 //                                                       that the install has no copy of to read with no
 //                                                       game, a line each (tools/dump_addins.py asks both)
@@ -102,6 +102,11 @@ std::optional<Settings> Parse(int argc, char **argv)
     }
     const bool wantsArgument = out.command == "objects" || out.command == "why" || out.command == "unreadable";
     const bool bare = out.command == "table" || out.command == "enciphered";
+    // enciphered's type is optional: material objects unless one is given
+    if (out.command == "enciphered" && out.argument.empty())
+    {
+        out.argument = "mao";
+    }
     if ((!bare && !wantsArgument) || (wantsArgument && out.argument.empty()))
     {
         return std::nullopt;
@@ -213,7 +218,7 @@ int Run(int argc, char **argv)
     if (!settings)
     {
         std::cerr
-            << "elgarashaders_materials table | objects <plugin folder> | why <regex> | enciphered |"
+            << "elgarashaders_materials table | objects <plugin folder> | why <regex> | enciphered [type] |"
                " unreadable <folder>"
                " [--game <install>] [--documents <folder>] [--ini <table>] [--names <tables>] [--addins <folder>]\n";
         return 2;
@@ -234,7 +239,7 @@ int Run(int argc, char **argv)
     }
     if (settings->command == "enciphered")
     {
-        for (const auto &name : catalogue->Enciphered(".mao"))
+        for (const auto &name : catalogue->Enciphered("." + settings->argument))
         {
             std::cout << name << "\n";
         }
