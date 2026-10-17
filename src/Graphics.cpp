@@ -38,6 +38,7 @@
 #include "MaterialLearn.h"
 #include "MaterialPatch.h"
 #include "Outdoors.h"
+#include "Probes.h"
 #include "ResourceDump.h"
 
 #include "dao/Addresses.h"
@@ -1349,6 +1350,7 @@ extern "C" __declspec(dllexport) bool __cdecl DAOLib_Load(const dao::LoaderInfo 
     materiallearn::Start(dao::Module::OwnFolder());
     materialpatch::Start(dao::Module::OwnFolder());
     KeepLookRegisters();
+    probes::Install();
     if (!g_setPartitions.Attach(dao::addr::kShadowMaps_SetPartitions, &SetPartitions))
     {
         spdlog::warn("the shadow maps keep the game's size: no detour");

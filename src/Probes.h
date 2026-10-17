@@ -1,0 +1,32 @@
+// A figure's light probes baked from the level's own files (ProbeBaker.h) in
+// place of the level's one: out of doors, with Sunlit figures on, a figure
+// takes the light of the baked probes nearest it, mixed, where vanilla gives
+// every figure of a level the one probe the level has. A level's own probe is
+// a photograph taken at one place; a baked probe is that photograph reckoned
+// again where the figure stands, darker under trees and beside a shaded wall,
+// lighter beside a sunlit one.
+//
+// Ported from the dev branch (its Graphics.cpp, 2026-10-11), without what it
+// did for levels lit again and the look's sliders.
+#pragma once
+
+#include <array>
+
+namespace probes
+{
+
+// Places the detours and starts the baker. False where a detour could not be
+// placed: the plugin goes on, with the level's own probes.
+bool Install();
+
+// Whether figures take the baked probes now: the game thread's word, out of
+// doors with Sunlit figures on (Outdoors.cpp). Without, a figure has the
+// engine's own probe's light back at its next choice of lights.
+void Want(bool on);
+
+// The sun the ground sends back, for the baked probes' bounce: the way to the
+// sun (a unit vector, z up) and its colour on the ground times the ground's
+// reflectance; none for nothing sent. The game thread's word (Outdoors.cpp).
+void SunBounce(const std::array<float, 3> &toSun, const std::array<float, 3> &sent);
+
+} // namespace probes

@@ -1,5 +1,7 @@
 #include "Outdoors.h"
 
+#include "Probes.h"
+
 #include "dao/Atmosphere.h"
 #include "dao/Camera.h"
 #include "dao/ClientExoApp.h"
@@ -298,11 +300,33 @@ void KeepAir()
     const bool sunny = sun && std::max({sun->color[0], sun->color[1], sun->color[2]}) > 0;
     const float rule = SunlitFigures() && sunny ? kSunlitFills : 1;
     g_fills = g_outdoors ? std::clamp(Tuned("Fills").value_or(rule), 0.0F, 1.0F) : 1;
+    probes::Want(g_outdoors && SunlitFigures() && Tuned("Probes").value_or(1) > 0);
 }
 
 // The area's sun: on figures the ground's, with Sunlit figures on out of
 // doors; and as the tuning file says, on the ground times its `Sun`, on
 // figures times its `SunOnFigures`.
+// What the sunlit ground sends back, for the baked probes (Probes.h): the
+// sun on the ground times the area's earth reflectance, the sky model's own
+// number (0.19 in Redcliffe), out of doors.
+void KeepSunBounce(const dao::atmosphere::Sunlight &sun)
+{
+    const std::optional<dao::atmosphere::Sky> sky = dao::atmosphere::AreaOwnSky();
+    std::array<float, 3> toSun{-sun.direction[0], -sun.direction[1], -sun.direction[2]};
+    const float length = std::hypot(toSun[0], toSun[1], toSun[2]);
+    std::array<float, 3> sent{};
+    if (g_outdoors && sky && length > 0)
+    {
+        const float reflectance = std::clamp(sky->earthReflectance, 0.0F, 1.0F);
+        for (std::size_t c = 0; c < 3; ++c)
+        {
+            toSun.at(c) /= length;
+            sent.at(c) = reflectance * sun.color.at(c);
+        }
+    }
+    probes::SunBounce(toSun, sent);
+}
+
 void KeepSun()
 {
     const std::optional<dao::atmosphere::Sunlight> own = dao::atmosphere::AreaOwnSunlight();
@@ -316,9 +340,10 @@ void KeepSun()
     const bool oneSun = g_outdoors && SunlitFigures();
     for (std::size_t channel = 0; channel < 3; ++channel)
     {
-        sun.characterColor.at(channel) = (oneSun ? sun.color.at(channel) : sun.characterColor.at(channel)) * figures;
         sun.color.at(channel) *= ground;
+        sun.characterColor.at(channel) = (oneSun ? sun.color.at(channel) : sun.characterColor.at(channel)) * figures;
     }
+    KeepSunBounce(sun);
     if (sun == dao::atmosphere::CurrentSunlight())
     {
         return;

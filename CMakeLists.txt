@@ -121,9 +121,17 @@ add_daolib_plugin(
         src/MaterialLearn.cpp
         src/ResourceDump.cpp
         src/Outdoors.cpp
+        src/ProbeBaker.cpp
+        src/Probes.cpp
 )
 target_link_libraries(elgarashaders PRIVATE elgara_materials)
 dao_apply_warnings(elgarashaders)
+
+# The plugin's baker of light probes as a command of its own: a level baked
+# with no game running, to look at what it makes and how long it takes.
+add_executable(elgarashaders_bake src/BakeTool.cpp src/ProbeBaker.cpp)
+target_link_libraries(elgarashaders_bake PRIVATE DAOLib::daolib)
+dao_apply_warnings(elgarashaders_bake)
 
 # The materials' table (data/materials.ini) made from the game, and given to
 # the plugin as answers and maps (src/materials/Table.h, issue 19), over
