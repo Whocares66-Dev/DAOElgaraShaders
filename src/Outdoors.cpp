@@ -162,7 +162,11 @@ float g_fills = 1;
 // deep orange on the ground in the Korcari Wilds, gray and cyan in Haven.
 // (Two rules before this one kept the fills at a half, with the sun on figures
 // at a fixed 1.3, which left figures 13 to 29 in 100 darker where the sun is
-// weak, or given what the fills lost.)
+// weak, or given what the fills lost.) Half of them was given back for an
+// afternoon of 2026-10-17, and in a building's shadow in the Dalish camp
+// Alistair was 54.7 of 255 where the ground about his feet was 41.1; with no
+// fills and no sun on him, 41.0 against 41.0: the probes light a figure as
+// the bake lights the ground, and nothing can shade a fill.
 constexpr float kSunlitFills = 0;
 bool g_wantedSunlit = false;
 
