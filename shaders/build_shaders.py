@@ -1780,7 +1780,19 @@ DEPTH_VERTICES = [
 # level's shadows are in its lightmaps, fixed where they were baked.
 SHADOW_VERTICES = [
     (name + ".vsh.fxo", "daoshadow_" + name + ".vsh.fxo")
-    for name in ("terrain2", "static1", "static3", "spt_branch")
+    for name in (
+        "terrain1",
+        "terrain2",
+        "terrain3",
+        "static1",
+        "static1_relief",
+        "static2",
+        "static3",
+        "prop1",
+        "prop2",
+        "instancing1",
+        "spt_branch",
+    )
 ] + [
     # A tree's fronds and leaves, cut out by their texture as they are drawn
     # (shadow_cut.hlsl): the variant keeps the texture's place.

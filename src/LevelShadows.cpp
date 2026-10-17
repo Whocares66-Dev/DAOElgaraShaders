@@ -830,9 +830,17 @@ void Measure(IDirect3DDevice9 *device)
     ReadMeasured(device, batch);
 }
 
+// The light an effect's light's maps are being drawn for, its place and
+// reach: what is drawn into them comes within its reach (DrawEffectShadows).
+std::optional<std::array<float, 4>> g_drawingFor;
+
 // Whether a draw's bounds lie wholly outside the shadow map's slice: to one
-// side of it, or beyond its far end. What lies nearer the sun than its near
-// end is drawn, pressed onto that end, and so is a draw not measured.
+// side of it, or beyond its far end; or, for an effect's light's maps, out of
+// the light's reach. What lies nearer the sun than its near end is drawn,
+// pressed onto that end, and so is a draw not measured. Each side is a plane
+// of the map's clip space (x against -w and w, and so on), which a map's
+// matrix with a perspective, an effect's light's, keeps as one: x over w is
+// not, for a corner behind the light.
 bool Outside(const LevelDraw &draw)
 {
     if (!draw.bounds)
@@ -840,6 +848,21 @@ bool Outside(const LevelDraw &draw)
         return false;
     }
     const std::array<float, 6> &b = *draw.bounds;
+    if (g_drawingFor)
+    {
+        // The nearest point of the bounds to the light, against its reach.
+        const std::array<float, 4> &light = *g_drawingFor;
+        float away = 0;
+        for (std::size_t axis = 0; axis < 3; ++axis)
+        {
+            const float d = std::max({b.at(axis) - light.at(axis), 0.0F, light.at(axis) - b.at(axis + 3)});
+            away += d * d;
+        }
+        if (away > light[3] * light[3])
+        {
+            return true;
+        }
+    }
     std::array<int, 5> beyond{}; // all corners: left of -1, right of 1, below, above, past the far end
     for (int corner = 0; corner < 8; ++corner)
     {
@@ -851,15 +874,12 @@ bool Outside(const LevelDraw &draw)
             q.at(row) = (g_partition.at(row * 4) * p[0]) + (g_partition.at((row * 4) + 1) * p[1]) +
                         (g_partition.at((row * 4) + 2) * p[2]) + g_partition.at((row * 4) + 3);
         }
-        const float w = q[3] != 0 ? q[3] : 1;
-        const float x = q[0] / w;
-        const float y = q[1] / w;
-        const float z = q[2] / w;
-        beyond[0] += x < -1 ? 1 : 0;
-        beyond[1] += x > 1 ? 1 : 0;
-        beyond[2] += y < -1 ? 1 : 0;
-        beyond[3] += y > 1 ? 1 : 0;
-        beyond[4] += z > 1 ? 1 : 0;
+        const float w = q[3];
+        beyond[0] += q[0] < -w ? 1 : 0;
+        beyond[1] += q[0] > w ? 1 : 0;
+        beyond[2] += q[1] < -w ? 1 : 0;
+        beyond[3] += q[1] > w ? 1 : 0;
+        beyond[4] += q[2] > w ? 1 : 0;
     }
     return std::ranges::any_of(beyond, [](int all) { return all == 8; });
 }
@@ -1216,6 +1236,20 @@ static void Lend(IDirect3DDevice9 *device, DWORD sampler, Lent &lent = g_lent, I
     SetSampler(device, sampler, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
 }
 
+// A draw of the level's own into the picture kept, to be drawn into the
+// shadow maps.
+static void NoteLevel(IDirect3DDevice9 *device, IDirect3DVertexShader9 *shader, D3DPRIMITIVETYPE type, INT base,
+                      UINT least, UINT vertices, UINT first, UINT count)
+{
+    if (const auto game = g_gameShaders.find(shader); game != g_gameShaders.end())
+    {
+        if (IDirect3DVertexShader9 *variant = VariantOf(device, game->second.hash))
+        {
+            Note(device, variant, game->second, type, base, least, vertices, first, count);
+        }
+    }
+}
+
 static void PictureDrawing(IDirect3DDevice9 *device, IDirect3DVertexShader9 *shader, D3DPRIMITIVETYPE type, INT base,
                            UINT least, UINT vertices, UINT first, UINT count)
 {
@@ -1238,13 +1272,7 @@ static void PictureDrawing(IDirect3DDevice9 *device, IDirect3DVertexShader9 *sha
             }
         }
     }
-    if (const auto game = g_gameShaders.find(shader); game != g_gameShaders.end())
-    {
-        if (IDirect3DVertexShader9 *variant = VariantOf(device, game->second.hash))
-        {
-            Note(device, variant, game->second, type, base, least, vertices, first, count);
-        }
-    }
+    NoteLevel(device, shader, type, base, least, vertices, first, count);
 }
 
 void Drawing(IDirect3DDevice9 *device, bool picture, D3DPRIMITIVETYPE type, INT base, UINT least, UINT vertices,
@@ -1265,6 +1293,10 @@ void Drawing(IDirect3DDevice9 *device, bool picture, D3DPRIMITIVETYPE type, INT 
         if (g_wanted.load(std::memory_order_relaxed))
         {
             PictureDrawing(device, shader, type, base, least, vertices, first, count);
+        }
+        else if (g_effectsWanted.load(std::memory_order_relaxed))
+        {
+            NoteLevel(device, shader, type, base, least, vertices, first, count);
         }
         EffectsDrawing(device);
     }
@@ -2015,7 +2047,9 @@ static std::pair<std::array<float, 3>, float> FigureBounds(const FigureDraw &dra
 static bool DrawEffectShadows(IDirect3DDevice9 *device)
 {
     const std::vector<std::array<float, 4>> &lights = effectlights::Handed();
-    if (lights.empty() || !MakeEffectAtlas(device))
+    // The level is drawn by the sun's maps' own shaders (MakeCopying's cast
+    // and cut), made there once whatever drew first.
+    if (lights.empty() || !MakeEffectAtlas(device) || !MakeCopying(device))
     {
         return false;
     }
@@ -2025,6 +2059,11 @@ static bool DrawEffectShadows(IDirect3DDevice9 *device)
         return false;
     }
     g_saved->Capture();
+    if (!g_measuredThisFrame)
+    {
+        Measure(device);
+        g_measuredThisFrame = true;
+    }
     std::array<IDirect3DSurface9 *, 2> targets{};
     IDirect3DSurface9 *depth = nullptr;
     IDirect3DSurface9 *atlas = nullptr;
@@ -2061,6 +2100,14 @@ static bool DrawEffectShadows(IDirect3DDevice9 *device)
                 device->SetViewport(&viewport);
                 device->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, 0xFFFFFFFF, 1.0F, 0);
                 const cascades::Matrix clip = EffectFace(place, face);
+                // The level's own surfaces within the light's reach (a wall
+                // between the light and what is behind it), then the figures.
+                g_partition = clip;
+                g_drawingFor = place;
+                DrawLevel(device, false);
+                DrawLevel(device, true);
+                g_drawingFor.reset();
+                device->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED);
                 for (std::size_t at = 0; at < g_figureDraws.size(); ++at)
                 {
                     const auto &[centre, reach] = bounds[at];
@@ -2074,6 +2121,12 @@ static bool DrawEffectShadows(IDirect3DDevice9 *device)
                     }
                 }
             }
+        }
+        std::error_code error;
+        if (!g_dumpAsked.empty() && std::filesystem::exists(g_dumpAsked, error))
+        {
+            DumpMap(device, atlas, "effects");
+            std::filesystem::remove(g_dumpAsked, error);
         }
         atlas->Release();
     }
