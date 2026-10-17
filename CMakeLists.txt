@@ -226,8 +226,10 @@ add_executable(
     tests/test_materials.cpp
     tests/test_cascades.cpp
     tests/test_reflected.cpp
+    tests/test_shadercode.cpp
     src/Cascades.cpp
     src/Reflected.cpp
+    src/ShaderCode.cpp
 )
 target_link_libraries(
     elgarashaders_tests

@@ -30,4 +30,8 @@ std::vector<Constant> ConstantsOf(const std::vector<std::byte> &code);
 // Returns the first register of the constant of this name, if the table names it.
 std::optional<UINT> RegisterOf(const std::vector<std::byte> &code, std::string_view name);
 
+// Returns whether a pixel shader's code writes its colour output `index`
+// (oC0, oC1, ...): whether an instruction has it for its destination.
+bool WritesColour(const std::vector<std::byte> &code, UINT index);
+
 } // namespace shadercode
