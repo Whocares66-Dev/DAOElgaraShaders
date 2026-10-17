@@ -1578,8 +1578,7 @@ constexpr float kShadowLift = 0.3F;
 // Hands the lift its value: none with Improved lighting off.
 void KeepLift()
 {
-    Keep(L"DaoLift", g_lighting.load(std::memory_order_relaxed) ? outdoors::Tune("Lift", kShadowLift) : 0.0F,
-         "Lift");
+    Keep(L"DaoLift", g_lighting.load(std::memory_order_relaxed) ? outdoors::Tune("Lift", kShadowLift) : 0.0F, "Lift");
 }
 
 // Hands the shaders what the scene says (out of doors or not: the fills,
