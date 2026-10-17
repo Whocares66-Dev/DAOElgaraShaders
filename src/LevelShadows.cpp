@@ -331,6 +331,11 @@ bool g_passLastFrame = false;
 // near map on (its smpShadowPartition1, or a face's and hair's
 // smpShadowPart1), which is given the atlas.
 std::unordered_map<IDirect3DPixelShader9 *, DWORD> g_receivers;
+// The passes that read the maps for the air (haze_pass.hlsl's smpDaoSunMaps),
+// by the sampler they read them on; and whether the receivers' registers
+// were set for one, to be set back after its draw.
+std::unordered_map<IDirect3DPixelShader9 *, DWORD> g_air;
+bool g_airSet = false;
 
 // What a receiver's draw had on the sampler it is given the atlas on, given
 // back when the draw is done (Drawn). The engine keeps the sampler states it
@@ -1077,6 +1082,7 @@ void Created(const DWORD *code, IDirect3DVertexShader9 *shader)
 
 static bool DrawAtlas(IDirect3DDevice9 *device);
 static void SetReceivers(IDirect3DDevice9 *device);
+static void SetReceiversFor(IDirect3DDevice9 *device, bool picture);
 
 // Lets go of what a figure's draw held.
 static void Let(FigureDraw &draw)
@@ -1173,6 +1179,25 @@ static void EngineDrawing(IDirect3DDevice9 *device, UINT partition, D3DPRIMITIVE
 // A draw into the picture: if it receives the sun's shadow, the atlas drawn
 // at the first such draw of the frame, after the engine's shadow pass, and
 // given to it; if it is the level's own, the draw kept.
+// The atlas lent to the draw about to be made on `sampler`, read point by
+// point; Drawn gives back what was there.
+static void Lend(IDirect3DDevice9 *device, DWORD sampler)
+{
+    g_lent.lent = true;
+    g_lent.sampler = sampler;
+    device->GetTexture(sampler, &g_lent.texture);
+    for (std::size_t at = 0; at < kLentStates.size(); ++at)
+    {
+        device->GetSamplerState(sampler, kLentStates.at(at), &g_lent.states.at(at));
+    }
+    device->SetTexture(sampler, g_atlas);
+    SetSampler(device, sampler, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+    SetSampler(device, sampler, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+    SetSampler(device, sampler, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+    SetSampler(device, sampler, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+    SetSampler(device, sampler, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+}
+
 static void PictureDrawing(IDirect3DDevice9 *device, IDirect3DVertexShader9 *shader, D3DPRIMITIVETYPE type, INT base,
                            UINT least, UINT vertices, UINT first, UINT count)
 {
@@ -1191,20 +1216,7 @@ static void PictureDrawing(IDirect3DDevice9 *device, IDirect3DVertexShader9 *sha
             }
             if (g_atlasReady)
             {
-                const DWORD sampler = receiver->second;
-                g_lent.lent = true;
-                g_lent.sampler = sampler;
-                device->GetTexture(sampler, &g_lent.texture);
-                for (std::size_t at = 0; at < kLentStates.size(); ++at)
-                {
-                    device->GetSamplerState(sampler, kLentStates.at(at), &g_lent.states.at(at));
-                }
-                device->SetTexture(sampler, g_atlas);
-                SetSampler(device, sampler, D3DSAMP_MINFILTER, D3DTEXF_POINT);
-                SetSampler(device, sampler, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
-                SetSampler(device, sampler, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
-                SetSampler(device, sampler, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
-                SetSampler(device, sampler, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+                Lend(device, receiver->second);
             }
         }
     }
@@ -1242,8 +1254,37 @@ void UseSamplerState(SetSamplerStateFn set)
     g_setSampler = set;
 }
 
+void Air(IDirect3DDevice9 *device)
+{
+    IDirect3DPixelShader9 *pixel = nullptr;
+    device->GetPixelShader(&pixel);
+    if (pixel == nullptr)
+    {
+        return;
+    }
+    pixel->Release();
+    const auto air = g_air.find(pixel);
+    if (air == g_air.end())
+    {
+        return;
+    }
+    // The pass is drawn after the picture, into a target of the chain's, but
+    // reads the maps the picture was drawn with.
+    g_airSet = true;
+    SetReceiversFor(device, true);
+    if (g_atlasReady)
+    {
+        Lend(device, air->second);
+    }
+}
+
 void Drawn(IDirect3DDevice9 *device)
 {
+    if (g_airSet)
+    {
+        g_airSet = false;
+        SetReceivers(device);
+    }
     if (!g_lent.lent)
     {
         return;
@@ -1262,12 +1303,12 @@ void Drawn(IDirect3DDevice9 *device)
 
 static bool g_drawsPictureNow = true; // the device's first target is the frame's own picture
 
-// The receivers' registers as they are to be now: ours where the maps are
-// fitted to the view and the picture is the frame's own, else off.
-static void SetReceivers(IDirect3DDevice9 *device)
+// The receivers' registers: ours where the maps are fitted to the view and
+// what is drawn reads them for the frame's own picture (`picture`), else off.
+static void SetReceiversFor(IDirect3DDevice9 *device, bool picture)
 {
     std::array<float, kReceiverRegisters * 4> data{};
-    if (g_wanted.load(std::memory_order_relaxed) && g_drawsPictureNow && g_atlasReady && g_cascades[0])
+    if (g_wanted.load(std::memory_order_relaxed) && picture && g_atlasReady && g_cascades[0])
     {
         // Each map's texture matrix's first three rows, by rows, to its own
         // tile's 0 to 1: they are square to the sun, and their fourth row is
@@ -1289,6 +1330,12 @@ static void SetReceivers(IDirect3DDevice9 *device)
         }
     }
     device->SetPixelShaderConstantF(kReceiverRegister, data.data(), kReceiverRegisters);
+}
+
+// The receivers' registers as they are to be now.
+static void SetReceivers(IDirect3DDevice9 *device)
+{
+    SetReceiversFor(device, g_drawsPictureNow);
 }
 
 // The maps fitted to the view for this frame, at its first draw of the
@@ -1826,6 +1873,11 @@ void CreatedPixel(const DWORD *code, IDirect3DPixelShader9 *shader)
         return;
     }
     g_receivers.erase(shader); // the last made here's alone (Created)
+    g_air.erase(shader);
+    if (const std::optional<UINT> sampler = RegisterOf(CodeOf(code), "smpDaoSunMaps"))
+    {
+        g_air[shader] = *sampler;
+    }
     // The near map's name: the Character material's, or the Face's and the
     // HairAlpha's own (build_shaders.py's SHADOW_MAPS). Until 2026-10-16 only
     // the first was looked for, and every face and hair read whatever the

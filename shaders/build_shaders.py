@@ -1139,7 +1139,28 @@ LOOK = [
     ("DaoSunG", "haze", 0.0, 0, 16),
     ("DaoSunB", "haze", 0.0, 0, 16),
     ("DaoHazeG", "haze", 0.7, -1, 1),
-    ("DaoHazeShow", "haze", 0.0, 0, 1),
+    # The fog's intensity (the area's fog_intensity: the engine keeps
+    # exp(-(intensity d)^2) of a surface's light at d metres), and the
+    # camera's place and axes in the world, for the sun's shadows in the
+    # air (haze_pass.hlsl's DaoSunInAir).
+    ("DaoFogIntensity", "haze", 0.0, 0, 1),
+    # The most of a surface's light the fog takes (the area's fog_cap), and the
+    # fog's zenith, in degrees: the sky fogs itself less as it rises.
+    ("DaoFogCap", "haze", 1.0, 0, 1),
+    ("DaoFogZenith", "haze", 45.0, 0, 90),
+    ("DaoEyeX", "haze", 0.0, -1000000, 1000000),
+    ("DaoEyeY", "haze", 0.0, -1000000, 1000000),
+    ("DaoEyeZ", "haze", 0.0, -1000000, 1000000),
+    ("DaoRightX", "haze", 1.0, -1, 1),
+    ("DaoRightY", "haze", 0.0, -1, 1),
+    ("DaoRightZ", "haze", 0.0, -1, 1),
+    ("DaoDownX", "haze", 0.0, -1, 1),
+    ("DaoDownY", "haze", 0.0, -1, 1),
+    ("DaoDownZ", "haze", -1.0, -1, 1),
+    ("DaoAheadX", "haze", 0.0, -1, 1),
+    ("DaoAheadY", "haze", 1.0, -1, 1),
+    ("DaoAheadZ", "haze", 0.0, -1, 1),
+    ("DaoHazeShow", "haze", 0.0, 0, 2),
 ]
 
 

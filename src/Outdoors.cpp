@@ -509,14 +509,32 @@ void KeepHaze()
     Set(L"DaoSunX", toSun[0]);
     Set(L"DaoSunY", toSun[1]);
     Set(L"DaoSunZ", toSun[2]);
+    // The camera's place and its axes in the world (the turn's rows), for the
+    // sun's shadows in the air (haze_pass.hlsl's DaoSunInAir).
+    const dao::Vector eye = camera->Position();
+    Set(L"DaoEyeX", eye.x);
+    Set(L"DaoEyeY", eye.y);
+    Set(L"DaoEyeZ", eye.z);
+    Set(L"DaoRightX", (*turn)[0][0]);
+    Set(L"DaoRightY", (*turn)[0][1]);
+    Set(L"DaoRightZ", (*turn)[0][2]);
+    Set(L"DaoDownX", (*turn)[1][0]);
+    Set(L"DaoDownY", (*turn)[1][1]);
+    Set(L"DaoDownZ", (*turn)[1][2]);
+    Set(L"DaoAheadX", (*turn)[2][0]);
+    Set(L"DaoAheadY", (*turn)[2][1]);
+    Set(L"DaoAheadZ", (*turn)[2][2]);
     const SkyHaze haze = g_haze;
     // The colour the engine fogs surfaces towards, which the pass takes away
-    // again where it gives the air's light.
+    // again where it gives the air's light, and how fast it thickens.
     if (const std::optional<dao::atmosphere::Sky> now = dao::atmosphere::CurrentSky())
     {
         Set(L"DaoFogR", now->fogRed);
         Set(L"DaoFogG", now->fogGreen);
         Set(L"DaoFogB", now->fogBlue);
+        Set(L"DaoFogIntensity", now->fogIntensity);
+        Set(L"DaoFogCap", now->fogCap);
+        Set(L"DaoFogZenith", now->fogZenith);
     }
     Set(L"DaoAirR", haze.air[0]);
     Set(L"DaoAirG", haze.air[1]);

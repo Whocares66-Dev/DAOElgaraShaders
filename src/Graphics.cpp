@@ -1029,7 +1029,10 @@ HRESULT __stdcall Draw(IDirect3DDevice9 *device, D3DPRIMITIVETYPE type, UINT fir
     {
         LogDraw(device, count);
     }
-    return g_draw.Original()(device, type, first, count);
+    levelshadows::Air(device);
+    const HRESULT result = g_draw.Original()(device, type, first, count);
+    levelshadows::Drawn(device);
+    return result;
 }
 
 HRESULT __stdcall DrawIndexed(IDirect3DDevice9 *device, D3DPRIMITIVETYPE type, INT base, UINT least, UINT vertices,
@@ -1041,6 +1044,7 @@ HRESULT __stdcall DrawIndexed(IDirect3DDevice9 *device, D3DPRIMITIVETYPE type, I
         LogDraw(device, count);
     }
     levelshadows::Drawing(device, g_drawsPicture, type, base, least, vertices, first, count);
+    levelshadows::Air(device);
     if (g_extraPasses > 0)
     {
         DrawExtraPasses(device, type, base, least, vertices, first, count);
