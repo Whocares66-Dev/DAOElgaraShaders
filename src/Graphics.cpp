@@ -49,6 +49,7 @@
 #include "dao/Addresses.h"
 #include "dao/Camera.h"
 #include "dao/ClientExoApp.h"
+#include "dao/Events.h"
 #include "dao/Frame.h"
 #include "dao/Framebuffer.h"
 #include "dao/GameModes.h"
@@ -1581,6 +1582,19 @@ void KeepLift()
          "Lift");
 }
 
+// Hands the shaders what the scene says (out of doors or not: the fills,
+// the shadows, the sun on figures) on the frame it changes, not at the next
+// of ApplyOptions's looks. For dao::OnFrame, after outdoors::Poll.
+void KeepWithScene()
+{
+    static int seen = 0;
+    if (const int now = outdoors::Changes(); now != seen)
+    {
+        seen = now;
+        KeepLookRegisters();
+    }
+}
+
 // Keeps the chain's values at the options', and the registers. The chain is
 // asked each time, since a new game or a reload of the chain would put its
 // values back to their own.
@@ -1753,5 +1767,12 @@ extern "C" __declspec(dllexport) bool __cdecl DAOLib_Load(const dao::LoaderInfo 
     dao::OnFrame(&materialpatch::LogCounts);
     dao::OnFrame(&materiallearn::Poll);
     dao::OnFrame(&outdoors::Poll);
+    dao::OnFrame(&KeepWithScene);
+    for (const dao::script::EventType type :
+         {dao::script::EventType::GamemodeChange, dao::script::EventType::ArealoadPostloadexit,
+          dao::script::EventType::ArealoadsavePostloadexit})
+    {
+        dao::events::OnScriptEvent(type, [](dao::ObjectId, const dao::CScriptEvent &) { outdoors::SceneChanged(); });
+    }
     return true;
 }

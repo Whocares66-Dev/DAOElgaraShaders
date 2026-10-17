@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <charconv>
 #include <cmath>
 #include <cstddef>
@@ -568,17 +569,50 @@ void Want(bool on)
     }
 }
 
+// Whether the scene was out of doors at the last look (OutOfDoors), how many
+// times that has changed, and whether the scene has just changed (the game's
+// mode, an area loaded: SceneChanged), so that the next frame looks at once.
+// The party picker is a scene of its own, with no terrain, opened over a camp
+// out of doors, and for the half second to the next look its figures were lit
+// as the camp's, by the moon with no fills, near black, and came up in two
+// steps as the looks caught up (seen 2026-10-17; the user: "at first
+// everything looks dark before the lighting is applied").
+namespace
+{
+std::optional<bool> g_seenOutdoors;
+std::atomic<int> g_changes{0};
+bool g_lookNow = false;
+} // namespace
+
 void Poll()
 {
     KeepHaze();
-    if (++g_frames % kEvery != 0)
+    if (++g_frames % kEvery != 0 && !g_lookNow)
     {
         return;
     }
+    const bool asked = g_lookNow;
+    g_lookNow = false;
     WatchArea();
     KeepTune();
     KeepAir();
     KeepSun();
+    const bool outdoors = OutOfDoors();
+    if (asked || g_seenOutdoors != outdoors)
+    {
+        g_seenOutdoors = outdoors;
+        g_changes.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void SceneChanged()
+{
+    g_lookNow = true;
+}
+
+int Changes()
+{
+    return g_changes.load(std::memory_order_relaxed);
 }
 
 } // namespace outdoors

@@ -60,7 +60,17 @@ float Tune(std::string_view key, float otherwise);
 
 // Logs the area's own light when it changes, keeps the air's light and the
 // tuning file's. For dao::OnFrame: the atmosphere is read and set on the
-// game's thread.
+// game's thread. Looked at every half second, and on the frame after
+// SceneChanged.
 void Poll();
+
+// Says the scene has just changed: the game's mode (the party picker opened
+// or closed) or an area loaded. Call on the game's thread.
+void SceneChanged();
+
+// How many times the scene has changed (SceneChanged) or gone from out of
+// doors to not or back (Poll): what was worked out from it is to be handed on
+// again when this moves.
+int Changes();
 
 } // namespace outdoors
