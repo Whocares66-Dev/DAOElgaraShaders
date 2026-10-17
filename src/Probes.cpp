@@ -1,6 +1,9 @@
 #include "Probes.h"
 
+#include "GameFolder.h"
+#include "LevelShadows.h"
 #include "ProbeBaker.h"
+#include "Reflected.h"
 
 #include "dao/Addresses.h"
 #include "dao/Hook.h"
@@ -88,12 +91,14 @@ dao::Detour<StateFillFn> g_stateFill;
 dao::Detour<OpenArchiveFn> g_openArchive;
 
 std::atomic<bool> g_wanted{false};
-// The sun as the ground sends it back, the game thread's word (SunBounce):
-// the way to it and its colour times the ground's reflectance. Under a lock:
-// read as a light state fills.
+// The sun's colour on the ground, the game thread's word (SunBounce). Under a
+// lock: read as a light state fills.
 std::mutex g_sunLock;
-std::array<float, 3> g_toSun{};
 std::array<float, 3> g_sunSent{};
+// How far from a figure the level's sunlit patches are gathered, in metres:
+// ground past it, under 6 degrees below the horizon of a figure's middle a
+// metre up, lights only its sides, and those little.
+constexpr float kBounceReach = 10;
 
 struct ScoredProbe
 {
@@ -105,12 +110,16 @@ thread_local void *t_figuresManager = nullptr; // the manager choosing a figure'
 thread_local std::vector<ScoredProbe> *t_probesScored = nullptr;
 
 std::mutex g_blendsLock;
-// A light state's mix, and the sunlit surfaces its probes see, by their
-// facing (ProbeBaker.h's sunFacing), mixed alike.
+// A light state's mix, where its figure was, and the light the level's
+// sunlit patches send it there, with what that was gathered from: the
+// patches' generation and the sun as sent.
 struct Blend
 {
     Irradiance light{};
-    std::optional<std::array<Irradiance, 3>> facing;
+    std::array<float, 3> place{};
+    Irradiance bounce{};
+    std::uint64_t bounceOf = ~std::uint64_t{0};
+    std::array<float, 3> bounceSent{};
 };
 std::unordered_map<void *, Blend> g_blends; // by light state, under g_blendsLock
 std::unordered_set<void *> g_statesWritten; // the light states whose matrices are ours now
@@ -177,46 +186,6 @@ std::uintptr_t __fastcall ProbeScore(void *node, int unused, const float *place,
     return result;
 }
 
-using Facing = std::array<std::vector<dao::core::probes::Near>, 3>;
-
-// Each of the probes `Nearest` added to `lights` from `first` on, its sunlit
-// surfaces by their facing, by its place in the room's probes.
-void AddFacing(const probebaker::Room &room, const std::vector<dao::core::probes::Near> &lights, std::size_t first,
-               Facing &facing)
-{
-    if (room.sunFacing.size() != 3 * room.probes.size())
-    {
-        return;
-    }
-    for (std::size_t at = first; at < lights.size(); ++at)
-    {
-        const auto index =
-            static_cast<std::size_t>((reinterpret_cast<const std::byte *>(lights[at].light) -
-                                      reinterpret_cast<const std::byte *>(room.probes.front().light.data())) /
-                                     static_cast<std::ptrdiff_t>(sizeof(dao::core::probes::Probe)));
-        for (std::size_t axis = 0; axis < 3; ++axis)
-        {
-            facing.at(axis).push_back({lights[at].score, room.sunFacing.at((3 * index) + axis).data()});
-        }
-    }
-}
-
-// The three facings mixed as the probes are, or none.
-std::optional<std::array<Irradiance, 3>> MixFacing(Facing &facing)
-{
-    std::array<Irradiance, 3> mixed{};
-    for (std::size_t axis = 0; axis < 3; ++axis)
-    {
-        const std::optional<Irradiance> part = dao::core::probes::Mix(facing.at(axis));
-        if (!part)
-        {
-            return std::nullopt;
-        }
-        mixed.at(axis) = *part;
-    }
-    return mixed;
-}
-
 // Keeps the mix for the light state whose probes were just chosen into
 // `group`, for a figure at `place`: the nearest baked probes of each room of
 // the level's own probes that scored for it, mixed. With none scored and a
@@ -232,12 +201,7 @@ void KeepBlend(void *group, const std::vector<ScoredProbe> &scored, const float 
         return;
     }
     thread_local std::vector<dao::core::probes::Near> lights;
-    thread_local Facing facing;
     lights.clear();
-    for (auto &axis : facing)
-    {
-        axis.clear();
-    }
     // The rooms as they are now, held while their probes' light is pointed at.
     const std::shared_ptr<const probebaker::Rooms> rooms = probebaker::AllRooms();
     if (rooms)
@@ -246,20 +210,16 @@ void KeepBlend(void *group, const std::vector<ScoredProbe> &scored, const float 
         {
             if (const probebaker::Room *room = RoomOf(*rooms, probe.node); room != nullptr && !room->probes.empty())
             {
-                const std::size_t first = lights.size();
                 probebaker::Nearest(*room, place, lights);
-                AddFacing(*room, lights, first, facing);
             }
         }
     }
     const std::optional<Irradiance> mix = lights.empty() ? std::nullopt : dao::core::probes::Mix(lights);
-    const std::optional<std::array<Irradiance, 3>> faced =
-        mix && facing[0].size() == lights.size() ? MixFacing(facing) : std::nullopt;
     void *state = static_cast<std::byte *>(group) - kStateProbes;
     const std::scoped_lock lock(g_blendsLock);
     if (mix)
     {
-        g_blends[state] = {*mix, faced};
+        g_blends[state] = Blend{.light = *mix, .place = {place[0], place[1], place[2]}};
     }
     else
     {
@@ -299,32 +259,39 @@ std::uintptr_t __fastcall ChooseFromList(void *list, int unused, void *place, fl
     return result;
 }
 
-// The light the sunlit ground sends a figure: each sunlit surface the probes
-// see sends back the ground's reflectance of the sun on it, the sun's colour
-// times how squarely it falls there (its facing by the way to the sun). The
-// engine's own bake has none of this: the sun is laid on surfaces as they are
-// drawn, and the level's probes were made from its baked light alone.
-void AddSunBounce(const std::array<Irradiance, 3> &facing, Irradiance &light)
+// The light the level's sunlit patches send a figure at `place`: from the
+// near map's patches, or the far one's where the near one does not reach.
+// The engine's own bake has none of this: the sun is laid on surfaces as they
+// are drawn, and the level's probes were made from its baked light alone.
+Irradiance Bounce(const std::array<float, 3> &place, const std::array<float, 3> &sent)
 {
-    std::array<float, 3> toSun{};
+    dao::core::probes::Coefficients light{};
+    // The second map first: the first's 8 m are narrower than the reach.
+    for (const std::size_t map : {std::size_t{1}, std::size_t{0}})
+    {
+        const std::shared_ptr<const reflected::Patches> patches = reflected::Kept(map);
+        if (patches && reflected::Gather(*patches, place, kBounceReach, sent, light))
+        {
+            break;
+        }
+    }
+    return dao::core::probes::Matrices(light);
+}
+
+// A blend's bounce, gathered again if the patches or the sun have changed.
+void KeepBounce(Blend &blend)
+{
     std::array<float, 3> sent{};
     {
         const std::scoped_lock lock(g_sunLock);
-        toSun = g_toSun;
         sent = g_sunSent;
     }
-    for (std::size_t channel = 0; channel < 3; ++channel)
+    const std::uint64_t generation = reflected::Generation();
+    if (blend.bounceOf != generation || blend.bounceSent != sent)
     {
-        for (std::size_t term = 0; term < 16; ++term)
-        {
-            const std::size_t at = (channel * 16) + term;
-            float faced = 0;
-            for (std::size_t axis = 0; axis < 3; ++axis)
-            {
-                faced += toSun.at(axis) * facing.at(axis).at(at);
-            }
-            light.at(at) += sent.at(channel) * faced;
-        }
+        blend.bounce = Bounce(blend.place, sent);
+        blend.bounceOf = generation;
+        blend.bounceSent = sent;
     }
 }
 
@@ -336,10 +303,11 @@ std::uintptr_t __fastcall StateFill(void *state, int unused, std::uintptr_t argu
         if (const auto found = g_blends.find(state);
             found != g_blends.end() && g_wanted.load(std::memory_order_relaxed))
         {
+            KeepBounce(found->second);
             mix = found->second.light;
-            if (found->second.facing)
+            for (std::size_t at = 0; at < mix->size(); ++at)
             {
-                AddSunBounce(*found->second.facing, *mix);
+                mix->at(at) += found->second.bounce.at(at);
             }
         }
         else if (g_statesWritten.erase(state) != 0)
@@ -356,15 +324,6 @@ std::uintptr_t __fastcall StateFill(void *state, int unused, std::uintptr_t argu
         g_statesWritten.insert(state);
     }
     return result;
-}
-
-// The game's folder: the one its executable's bin_ship is in. Not the
-// plugin's, which a test loads from a folder of its own.
-std::filesystem::path GameFolder()
-{
-    std::wstring exe(MAX_PATH, wchar_t{});
-    exe.resize(GetModuleFileNameW(nullptr, exe.data(), static_cast<DWORD>(exe.size())));
-    return std::filesystem::path(exe).parent_path().parent_path();
 }
 
 std::uintptr_t __fastcall OpenArchive(void *self, int unused, const dao::core::WStringRep *path, std::uintptr_t a2,
@@ -384,6 +343,7 @@ std::uintptr_t __fastcall OpenArchive(void *self, int unused, const dao::core::W
         if (extension == L".rim" && _wcsicmp(file.stem().c_str(), file.parent_path().c_str()) == 0)
         {
             probebaker::Want(GameFolder() / "packages" / "core" / "env" / file);
+            levelshadows::Forget();
         }
     }
     return result;
@@ -406,10 +366,9 @@ bool Install()
     return true;
 }
 
-void SunBounce(const std::array<float, 3> &toSun, const std::array<float, 3> &sent)
+void SunBounce(const std::array<float, 3> &sent)
 {
     const std::scoped_lock lock(g_sunLock);
-    g_toSun = toSun;
     g_sunSent = sent;
 }
 

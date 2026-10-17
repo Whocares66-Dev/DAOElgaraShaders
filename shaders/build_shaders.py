@@ -115,8 +115,45 @@ def with_our_shadow(shader):
     lit = re.match(r"cmp (r\d+\.[xyzw]),", shader.statements[choice].asm).group(1)
     shader.add_input("pixel", "float2", "VPOS")
     shader.insert(
-        choice, [f"if (DAO_SHADOWS > 0) {lit} = DaoShadow({world}.xyz, input.pixel);"]
+        choice,
+        [
+            f"if (DAO_SHADOWS > 0) {lit} = DaoShadow({world}.xyz, input.pixel);",
+            f"daoSunShadow = {lit};",
+        ],
     )
+    with_shadow_show(shader)
+
+
+def with_shadow_show(shader):
+    """A developer's look at the sun's shadow (look.hlsl's DAO_SHADOW_SHOW):
+    the lightmap's alpha, where the bake says the sun reaches, as red, and
+    the shadow maps' answer as green, in place of the surface's colour. A
+    shader with no lightmap shows the maps' answer alone, red as 1."""
+    lightmap = next(
+        (
+            (i, found.group(1))
+            for i, statement in enumerate(shader.statements)
+            if (found := re.match(r"(r\d+) = tex2D\(smpLightmap,", statement.hlsl))
+        ),
+        None,
+    )
+    if lightmap is not None:
+        # Where the shadow maps are fitted to the view, they say where the
+        # sun reaches within their reach, not the lightmap's alpha, which was
+        # baked with the level's own sun and none of its trees (the user,
+        # 2026-10-16: the live sun rules where the two disagree).
+        shader.insert(
+            lightmap[0],
+            [
+                f"daoBakedSun = {lightmap[1]}.w;",
+                f"{lightmap[1]}.w = lerp({lightmap[1]}.w, 1, daoShadowCovered);",
+            ],
+        )
+    shader.insert(
+        len(shader.statements) - 1,
+        ["if (DAO_SHADOW_SHOW > 0) oC0.xyz = float3(daoBakedSun, daoSunShadow, 0);"],
+    )
+    shader.insert(-1, ["float daoBakedSun = 1;", "float daoSunShadow = 1;"])
 
 
 # How far towards the sun from a figure's surface its shadow is asked for, in
@@ -1235,6 +1272,11 @@ OURS = [
     ("haze_pass.hlsl", "daohaze.psh.fxo"),
     ("occlusion.hlsl", "daoocclusion.psh.fxo"),
     ("occlusion_blur.hlsl", "daoocclusionblur.psh.fxo"),
+    ("shadow_cast.hlsl", "daoshadow.psh.fxo"),
+    ("shadow_measure.hlsl", "daomeasure.psh.fxo"),
+    ("shadow_cut.hlsl", "daoshadowcut.psh.fxo"),
+    ("shadow_copy_vertex.hlsl", "daoshadowcopy.vsh.fxo"),
+    ("shadow_copy.hlsl", "daoshadowcopy.psh.fxo"),
 ]
 
 
@@ -1429,6 +1471,108 @@ DEPTH_VERTICES = [
 ]
 
 
+# The level's vertex shaders as the plugin draws the level into the engine's
+# sun shadow maps (Graphics.cpp's level shadows), each (the game's, ours made
+# from it): terrain, buildings and furnishings, and a tree's trunk and
+# branches. Not the distance (vista3.vsh, bakedlowlod.psh): a backdrop of
+# mountains and towers about the level, which in a map fitted to the figures
+# stood nearer the sun than all of them over the whole map (2026-10-16: every
+# sample of both maps at depth 0). The engine draws only figures and what they carry into
+# those maps (pssmmesh.vsh, pssmskinmesh.vsh; traced 2026-10-16), and the
+# level's shadows are in its lightmaps, fixed where they were baked.
+SHADOW_VERTICES = [
+    (name + ".vsh.fxo", "daoshadow_" + name + ".vsh.fxo")
+    for name in ("terrain2", "static1", "static3", "spt_branch")
+] + [
+    # A tree's fronds and leaves, cut out by their texture as they are drawn
+    # (shadow_cut.hlsl): the variant keeps the texture's place.
+    (name + ".vsh.fxo", "daoshadowcut_" + name + ".vsh.fxo")
+    for name in ("spt_fronds", "spt_leafmeshes")
+]
+# The pixel shader they are drawn with (shadow_cast.hlsl).
+SHADOW_PIXEL = "daoshadow.psh.fxo"
+# And the same shaders as a kept draw's bounds are measured by
+# (shadow_measure.hlsl, with_measured_place).
+MEASURE_VERTICES = [
+    (theirs, re.sub(r"^daoshadow(cut)?_", "daomeasure_", ours_))
+    for theirs, ours_ in SHADOW_VERTICES
+]
+
+
+def by_rows(shader, matrix):
+    """Whether a shader takes a matrix's registers as its rows (`dot(M[i],
+    v)`, terrain2.vsh) or as its columns (`M[0] * v.x + M[1] * v.y + ...`,
+    static1.vsh): the game's shaders have both. The engine's shadow pass takes
+    its partition's by rows."""
+    return any(f"dot({matrix}[" in statement.hlsl for statement in shader.statements)
+
+
+def with_cut_shadow_place(shader):
+    """with_shadow_place for a surface cut out by its texture (a tree's
+    fronds and leaves), the texture's place (TEXCOORD0) handed down too."""
+    shader.cut = True
+    with_shadow_place(shader)
+
+
+def with_measured_place(shader):
+    """The shadow place's shader made a measuring one: drawn with the
+    partition's matrix the identity, it hands down the vertex's place in the
+    world (TEXCOORD8), and every vertex is drawn to the one pixel the plugin
+    says (daoMeasureSlot, c244), as a point (LevelShadows.cpp)."""
+    with_shadow_place(shader)
+    shader.insert(len(shader.statements) - 1, ["o0 = daoMeasureSlot;"])
+
+
+def with_shadow_place(shader):
+    """Place each vertex in a sun shadow map: by the partition's matrix the
+    plugin sets (daoPartition, c240 up: the engine's own shadow pass's
+    g_mPSSMPartitionMatrix, the sun's projection of a slice of the view, from
+    the world), and hand that place to the pixel shader (TEXCOORD8). The
+    game's shaders place a vertex by its model's matrix and the view's in one
+    (aur_mWorldViewProj), which is then the partition's times the model's
+    (aur_mWorld); or a tree's by the view's alone, the tree's own code having
+    made its place in the world (g_mViewProjection), which is then the
+    partition's: either way the game's own code, a tree's wind with the
+    rest, places what is drawn, its matrix's registers taken as that shader
+    takes them (by_rows). (The partition's matrix read from c4 in every
+    one of the engine's shadow shaders was a bone's in its skinned one's, and
+    taken for one of the view after its projection, 2026-10-16: it is the
+    world's, read from each shader's own constant table, LevelShadows.cpp.)"""
+    if "aur_mWorldViewProj" in shader.parameters and "aur_mWorld" in shader.parameters:
+        whole, model = (
+            shader.parameters["aur_mWorldViewProj"].name,
+            shader.parameters["aur_mWorld"].name,
+        )
+        if by_rows(shader, whole):
+            matrix = f"mul(daoPartition, {model})"
+        else:
+            matrix = f"mul({model}, transpose(daoPartition))"
+    elif "g_mViewProjection" in shader.parameters:
+        whole = shader.parameters["g_mViewProjection"].name
+        matrix = "daoPartition" if by_rows(shader, whole) else "transpose(daoPartition)"
+    else:
+        raise shader_hlsl.ShaderError("no matrix it places a vertex by")
+    for statement in shader.statements:
+        statement.hlsl = statement.hlsl.replace(whole, "daoShadowMatrix")
+    shader.insert(-1, [f"const float4x4 daoShadowMatrix = {matrix};"])
+    # Only the place is handed down, and a cut-out's texture's place: a shadow
+    # map wants nothing else, and static1.vsh's eleven outputs leave no room
+    # for another.
+    kept = ("POSITION", "TEXCOORD0") if getattr(shader, "cut", False) else ("POSITION",)
+    dropped = [field for field in shader.outputs if not field[2].startswith(kept)]
+    shader.outputs = [field for field in shader.outputs if field[2].startswith(kept)]
+    # What the game's code still writes them as: locals, written and dropped.
+    shader.insert(-1, [f"float4 {register} = 0;" for _, _, _, register, _ in dropped])
+    # What lies beyond the map's depth is pressed onto its ends, not cut
+    # away (shadow_cast.hlsl): the place handed down is the place itself.
+    shader.insert(
+        len(shader.statements) - 1,
+        ["daoShadowPlace = o0;", "o0.z = clamp(o0.z, 0, o0.w);"],
+    )
+    shader.insert(-1, ["float4 daoShadowPlace = 0;"])
+    shader.add_output("daoShadowPlace", "float4", "TEXCOORD8", "daoShadowPlace")
+
+
 # The materials whose depth pass is taken out. A tree's or a bush's leaves
 # are cards, drawn into the picture through their texture's alpha, and into
 # the depth by a pass that reads no texture (Depth_SpeedTree.vsh, which has no
@@ -1551,10 +1695,11 @@ def build(fxc, name, listing, out, changes, preamble, work, named=None):
 
 
 def build_ours(fxc, source, name, out):
-    """One of this folder's own pixel shaders, compiled into `out`, its
-    warnings errors: they are the shaders' lint."""
+    """One of this folder's own shaders, compiled into `out`, its warnings
+    errors: they are the shaders' lint. A vertex shader by its name's .vsh."""
+    profile = "vs_3_0" if ".vsh." in name else "ps_3_0"
     compile_shader(
-        fxc, "ps_3_0", os.path.join(HERE, source), os.path.join(out, name), strict=True
+        fxc, profile, os.path.join(HERE, source), os.path.join(out, name), strict=True
     )
 
 
@@ -2138,10 +2283,32 @@ def main(argv):
     }
     built, failed = 0, 0
     with tempfile.TemporaryDirectory() as work:
-        for (theirs, ours_), change, preamble in [
-            ((theirs, ours_), globals()[change], "")
-            for theirs, ours_, _, change in DEPTH_VERTICES
-        ] + [(DEPTH_PIXEL, depth_pixel_by_texture, "sampler2D smpDecal;\n")]:
+        for (theirs, ours_), change, preamble in (
+            [
+                ((theirs, ours_), globals()[change], "")
+                for theirs, ours_, _, change in DEPTH_VERTICES
+            ]
+            + [(DEPTH_PIXEL, depth_pixel_by_texture, "sampler2D smpDecal;\n")]
+            + [
+                (
+                    (theirs, ours_),
+                    with_cut_shadow_place
+                    if "daoshadowcut_" in ours_
+                    else with_shadow_place,
+                    "row_major float4x4 daoPartition : register(c240);\n",
+                )
+                for theirs, ours_ in SHADOW_VERTICES
+            ]
+            + [
+                (
+                    (theirs, ours_),
+                    with_measured_place,
+                    "row_major float4x4 daoPartition : register(c240);\n"
+                    "float4 daoMeasureSlot : register(c244);\n",
+                )
+                for theirs, ours_ in MEASURE_VERTICES
+            ]
+        ):
             try:
                 listing = list_shader(fxc, theirs, shaders[theirs], work)
                 build(fxc, theirs, listing, out, [change], preamble, work, ours_)

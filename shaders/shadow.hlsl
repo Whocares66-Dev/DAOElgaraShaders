@@ -18,6 +18,18 @@
 // first three and [7].xyz its fourth with a w of 1, [7].w the far map's
 // reach, and [8] the plane that divides the two.
 
+// The plugin's maps, fitted around the camera's focus (LevelShadows.cpp,
+// Cascades.h), four in one atlas that the receivers read on the engine's near
+// map's sampler, map i in the tile at column i % 2 and row i / 2; in
+// registers of their own: map i's texture matrix's first three rows, to its
+// tile's 0 to 1, at [3i..3i+2] (its fourth is 0, 0, 0, 1: they are square to
+// the sun); [12].x 1
+// where they are the plugin's, [12].y how far from what they were fitted
+// around a map is read, as a share of its width; and [13].xyz that point, the
+// camera's focus. Where [12].x is 0, the game's g_vShadowData is read, its
+// maps fitted to its figures.
+float4 daoShadowData[14] : register(c200);
+
 // The penumbra's radius in the world, in metres, and the least it may be in
 // texels of the map, under which the map's own steps show.
 static const float kDaoPenumbra = 0.035;
@@ -35,27 +47,174 @@ static const float2 kDaoDisc[16] = {
     float2(0.14383161, -0.14100790),
 };
 
-// The lit part of a disc around `at` (x, y in the map, z the depth there).
-// `bias` is kDaoBias as the map's depth.
-float DaoShadowMap(sampler2D map, float3 at, float2 turn, float radius, float bias)
+// The depth's slope over a map at `at`, from the three's slopes over the
+// screen; taken where every pixel of a quad runs it.
+float2 DaoSlope(float3 at)
 {
-    // The depth's slope over the map, from the three's slopes over the screen.
     const float3 dx = ddx(at);
     const float3 dy = ddy(at);
     const float det = dx.x * dy.y - dx.y * dy.x;
-    float2 slope = float2(dy.y * dx.z - dx.y * dy.z, dx.x * dy.z - dy.x * dx.z);
-    slope = abs(det) > 1e-12 ? slope / det : 0;
+    const float2 slope = float2(dy.y * dx.z - dx.y * dy.z, dx.x * dy.z - dy.x * dx.z);
+    return abs(det) > 1e-12 ? slope / det : 0;
+}
+
+// The lit part of a disc around `at` (x, y in the map, z the depth there),
+// whose depth has `slope` over the map. `bias` is kDaoBias as the map's depth.
+// The map is at `origin` of the texture, `scale` of it wide: a tile of the
+// atlas, its taps kept in it.
+float DaoShadowMap(sampler2D map, float3 at, float2 slope, float2 turn, float radius, float bias, float2 origin,
+                   float scale)
+{
     const float reach = 2 * radius; // no tap's depth moves further than a surface at 63 degrees would
+    const float edge = 0.5 / DAO_SHADOW_MAP_SIZE;
     float lit = 0;
-    for (int i = 0; i < 16; i++)
+    [loop] for (int i = 0; i < 16; i++)
     {
         const float2 tap =
             float2(kDaoDisc[i].x * turn.x - kDaoDisc[i].y * turn.y, kDaoDisc[i].x * turn.y + kDaoDisc[i].y * turn.x) *
             radius;
-        const float depth = at.z + clamp(dot(tap, slope), -reach, reach) - bias;
-        lit += tex2Dlod(map, float4(at.xy + tap, 0, 0)).x >= depth ? 1.0 : 0.0;
+        const float2 uv = origin + scale * clamp(at.xy + tap, edge, 1 - edge);
+        lit += tex2Dlod(map, float4(uv, 0, 0)).x >= at.z + clamp(dot(tap, slope), -reach, reach) - bias ? 1.0 : 0.0;
     }
     return lit / 16;
+}
+
+// The lit part of a disc around `at` as the game's maps are read.
+float DaoShadowMap(sampler2D map, float3 at, float2 turn, float radius, float bias)
+{
+    return DaoShadowMap(map, at, DaoSlope(at), turn, radius, bias, 0, 1);
+}
+
+// The lit part of a disc around `at` in map `tile` of the atlas.
+float DaoAtlasShadow(int tile, float3 at, float2 turn, float radius, float bias)
+{
+    const float2 origin = float2(tile % 2, tile / 2) * 0.5;
+    return DaoShadowMap(smpShadowPartition1, at, DaoSlope(at), turn, radius, bias, origin, 0.5);
+}
+
+// A point's place in a map (x, y its texture's, z its depth), the disc's
+// radius there and the bias, by the map's matrix's rows.
+void DaoMapPlace(float4 m0, float4 m1, float4 m2, float4 point4, float least, out float3 at, out float radius,
+                 out float bias)
+{
+    const float w = 1;
+    at = float3(dot(m0, point4), dot(m1, point4), dot(m2, point4));
+    at.z = saturate(at.z);
+    radius = max(kDaoPenumbra * length(m0.xyz) / w, least);
+    // A texel's width more than kDaoBias: a map fitted to the view has
+    // texels of centimetres (some 7 in the far one at 2048), where the
+    // game's, fitted to its figures, had millimetres; and a leaf or a blade
+    // at a slant to the sun was shaded by its own neighbour in the map (the
+    // trees over Redcliffe went dark, 2026-10-16).
+    const float texel = 1 / (DAO_SHADOW_MAP_SIZE * length(m0.xyz) / w);
+    bias = (kDaoBias + texel) * length(m2.xyz) / w;
+}
+
+// How much the maps fitted to the view say of where the sun reaches at the
+// point DaoShadow was last asked of: 1 within them, falling to 0 over the
+// last one's edge; what is left the lightmap's alpha says (build_shaders.py's
+// with_our_shadow). 0 where the maps are the game's.
+static float daoShadowCovered = 0;
+
+// How wide the band at a map's edge is over which a point goes over to the
+// next map, as a share of the map's width: a hard edge was a line across the
+// ground where the shadows' detail changed, which moved, and popped, as the
+// camera did (the user, 2026-10-16).
+static const float kDaoBand = 0.1;
+
+// A point's place in one of the maps fitted to the view, with its disc and
+// bias there, and how far it is in: 1 a band's width and a disc's inside the
+// map's edge, 0 at its edge.
+struct DaoInMap
+{
+    float3 at;
+    float radius;
+    float bias;
+    float inside;
+};
+
+// How far a point is looked up off its surface, along its facing towards the
+// sun, in the map's texels: a surface read at its own place in the map is
+// judged by itself, and the ferns' thin cards, at a slant to the sun, shaded
+// themselves dark (the tactical view, 2026-10-16). Off it by a texel and a
+// half, a surface is past its own depth and not past what shades it (normal
+// offset, Holbert 2011).
+static const float kDaoNormalOffset = 1.5;
+
+DaoInMap DaoPlaceIn(int first, float4 point4, float3 facing, float least)
+{
+    DaoInMap placed;
+    const float texel = 1 / (DAO_SHADOW_MAP_SIZE * length(daoShadowData[first].xyz));
+    const float4 offPoint = point4 + float4(facing * (kDaoNormalOffset * texel), 0);
+    DaoMapPlace(daoShadowData[first], daoShadowData[first + 1], daoShadowData[first + 2], offPoint, least, placed.at,
+                placed.radius, placed.bias);
+    // By how far the point is from the focus across the map, not from the
+    // map's edge: a map moves in steps, and its edge, and the change of
+    // detail there, jumped with it as the party walked (the user,
+    // 2026-10-16); the focus moves smoothly, and every map holds all within
+    // daoShadowData[12].y of its width of it.
+    const float4 focus = float4(daoShadowData[13].xyz, 1);
+    const float2 focusAt = float2(dot(daoShadowData[first], focus), dot(daoShadowData[first + 1], focus));
+    const float2 off = abs(placed.at.xy - focusAt);
+    placed.inside = saturate((daoShadowData[12].y - max(off.x, off.y) - 1.5 * placed.radius) / kDaoBand);
+    // And within its depth: a map is as deep along the sun as it is wide, and
+    // a surface nearer the sun than its near side, a hillside over the party,
+    // was clamped to that side and read as lit, a bright patch in the hill's
+    // shade with the fine map's edges (the user, 2026-10-16).
+    const float depth = dot(daoShadowData[first + 2], point4);
+    placed.inside *= saturate(min(depth, 1 - depth) / kDaoBand);
+    return placed;
+}
+
+// The lit part at a point of the world from the maps fitted to the view: the
+// finest that holds it, each of them holding the whole level inside its
+// bounds, going over to the next over a band at its edge; past the last, lit,
+// where the level's own lightmaps say what is shadowed. A map is chosen by
+// what holds the point, not by how far ahead of the camera it is: the
+// tactical camera looks down from 15 to 25 m, and the party's ground was
+// read from the far map, its texels a hand wide (the user, 2026-10-16:
+// "blocky & pixelated").
+float DaoViewShadow(float4 point4, float3 facing, float2 turn, float least)
+{
+    daoShadowCovered = 1;
+    const DaoInMap in0 = DaoPlaceIn(0, point4, facing, least);
+    if (in0.inside >= 1)
+    {
+        return DaoAtlasShadow(0, in0.at, turn, in0.radius, in0.bias);
+    }
+    const DaoInMap in1 = DaoPlaceIn(3, point4, facing, least);
+    float lit = 1;
+    float covered = 0;
+    if (in1.inside < 1)
+    {
+        const DaoInMap in2 = DaoPlaceIn(6, point4, facing, least);
+        if (in2.inside < 1)
+        {
+            const DaoInMap in3 = DaoPlaceIn(9, point4, facing, least);
+            if (in3.inside > 0)
+            {
+                lit = lerp(1, DaoAtlasShadow(3, in3.at, turn, in3.radius, in3.bias), in3.inside);
+                covered = in3.inside;
+            }
+        }
+        if (in2.inside > 0)
+        {
+            lit = lerp(lit, DaoAtlasShadow(2, in2.at, turn, in2.radius, in2.bias), in2.inside);
+            covered = lerp(covered, 1, in2.inside);
+        }
+    }
+    if (in1.inside > 0)
+    {
+        lit = lerp(lit, DaoAtlasShadow(1, in1.at, turn, in1.radius, in1.bias), in1.inside);
+        covered = lerp(covered, 1, in1.inside);
+    }
+    if (in0.inside > 0)
+    {
+        lit = lerp(lit, DaoAtlasShadow(0, in0.at, turn, in0.radius, in0.bias), in0.inside);
+        covered = lerp(covered, 1, in0.inside);
+    }
+    daoShadowCovered = covered;
+    return lit;
 }
 
 // The lit part at a point of the world, as the game's shaders choose between
@@ -68,6 +227,16 @@ float DaoShadow(float3 world, float2 pixel)
     const float angle = 6.2831853 * frac(52.9829189 * frac(dot(pixel, float2(0.06711056, 0.00583715))));
     const float2 turn = float2(cos(angle), sin(angle));
     const float least = kDaoLeastTexels / DAO_SHADOW_MAP_SIZE;
+    if (daoShadowData[12].x > 0)
+    {
+        // The surface's facing from its own slopes over the screen, turned
+        // to the sun's side: the side a surface is looked up off.
+        const float3 across = cross(ddx(world), ddy(world));
+        const float3 toSun = -normalize(daoShadowData[2].xyz);
+        float3 facing = dot(across, across) > 0 ? normalize(across) : toSun;
+        facing = dot(facing, toSun) < 0 ? -facing : facing;
+        return DaoViewShadow(point4, facing, turn, least);
+    }
 
     const float nearW = dot(g_vShadowData[3], point4);
     float3 nearAt =

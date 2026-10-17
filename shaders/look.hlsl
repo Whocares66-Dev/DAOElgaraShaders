@@ -36,6 +36,11 @@ float4 daoLook[4] : register(c220);
 // picture's own roll-off could keep its colour (grade.hlsl). With the scene
 // in a 16-bit target and Improved materials on, the roll-off has it.
 #define DAO_UNCUT daoLook[1].y
+// A developer's look at the sun's shadow (build_shaders.py's
+// with_shadow_show): 1 has a surface that receives it show the lightmap's
+// word of where the sun reaches as red and the shadow maps' as green, yellow
+// where they agree that it does and black where they agree it does not.
+#define DAO_SHADOW_SHOW daoLook[1].z
 float3 DaoCut(float3 colour)
 {
     return lerp(saturate(colour), max(colour, 0), saturate(DAO_UNCUT));

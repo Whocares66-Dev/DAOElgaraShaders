@@ -35,6 +35,8 @@
 // - Anisotropic filtering, which the game has no setting for.
 //
 // What it does goes to elgarashaders.log.
+#include "GameFolder.h"
+#include "LevelShadows.h"
 #include "MaterialLearn.h"
 #include "MaterialPatch.h"
 #include "Outdoors.h"
@@ -69,6 +71,7 @@
 #include <fstream>
 #include <ios>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -88,15 +91,14 @@ constexpr std::int32_t kMapSize = 2048; // texels a side, with Improved shadows 
 constexpr bool kMaterialsByDefault = true;
 constexpr bool kShadowsByDefault = true;
 constexpr bool kSmaaByDefault = true;
-constexpr bool kHazeByDefault = true;
-constexpr bool kSunlitFiguresByDefault = true;
+constexpr bool kLightingByDefault = true;
 constexpr int kOcclusionByDefault = 3;  // High
 constexpr int kAnisotropyByDefault = 4; // 16x
 std::atomic<bool> g_materials{kMaterialsByDefault};
 std::atomic<bool> g_shadows{kShadowsByDefault};
-std::atomic<bool> g_sunlitHaze{kHazeByDefault};             // the air lit by the sun (Outdoors.h)
-std::atomic<bool> g_sunlitFigures{kSunlitFiguresByDefault}; // figures lit more by the sun than the fills
-bool g_smaa = kSmaaByDefault;                               // SMAA beside the game's own anti-aliasing, or not
+// Improved lighting: out of doors one sun lights everything (Outdoors.h, LevelShadows.h, Probes.h)
+std::atomic<bool> g_lighting{kLightingByDefault};
+bool g_smaa = kSmaaByDefault; // SMAA beside the game's own anti-aliasing, or not
 
 // The two sliders, each a stop of its list (the user, 2026-10-12: "implement
 // gtao, and add an option / slider for it. also add one for anisotropic
@@ -152,6 +154,7 @@ constexpr std::size_t kShadowOnFigures = 2;
 constexpr std::size_t kShadows = 3;
 constexpr std::size_t kShadowMapSize = 4;
 constexpr std::size_t kUncut = 5;
+constexpr std::size_t kShadowShow = 6; // look.hlsl's DAO_SHADOW_SHOW, outdoors.tune's ShadowShow
 // The air's light the sky, the clouds and the effects fog towards
 // (outdoors::Haze), in registers of their own below these (look.hlsl's
 // daoHaze): the sky's part and whether it is ours, the sun's part and its
@@ -298,13 +301,15 @@ HRESULT __stdcall CreateRenderTarget(IDirect3DDevice9 *device, UINT width, UINT 
 constexpr std::string_view kLogFrameFile = "log-frame";
 constexpr int kTraceEvery = 600; // frames from one logged frame to the next
 constexpr int kTraceFirst = 300;
-constexpr std::size_t kPresentSlot = 17;         // IDirect3DDevice9::Present
-constexpr std::size_t kStretchRectSlot = 34;     // IDirect3DDevice9::StretchRect
-constexpr std::size_t kSetRenderTargetSlot = 37; // IDirect3DDevice9::SetRenderTarget
-constexpr std::size_t kSetRenderStateSlot = 57;  // IDirect3DDevice9::SetRenderState
-constexpr std::size_t kClearSlot = 43;           // IDirect3DDevice9::Clear
-constexpr std::size_t kDrawSlot = 81;            // IDirect3DDevice9::DrawPrimitive
-constexpr std::size_t kDrawIndexedSlot = 82;     // IDirect3DDevice9::DrawIndexedPrimitive
+constexpr std::size_t kPresentSlot = 17;            // IDirect3DDevice9::Present
+constexpr std::size_t kStretchRectSlot = 34;        // IDirect3DDevice9::StretchRect
+constexpr std::size_t kSetRenderTargetSlot = 37;    // IDirect3DDevice9::SetRenderTarget
+constexpr std::size_t kSetRenderStateSlot = 57;     // IDirect3DDevice9::SetRenderState
+constexpr std::size_t kClearSlot = 43;              // IDirect3DDevice9::Clear
+constexpr std::size_t kDrawSlot = 81;               // IDirect3DDevice9::DrawPrimitive
+constexpr std::size_t kDrawIndexedSlot = 82;        // IDirect3DDevice9::DrawIndexedPrimitive
+constexpr std::size_t kCreateVertexShaderSlot = 91; // IDirect3DDevice9::CreateVertexShader
+constexpr std::size_t kCreatePixelShaderSlot = 106; // IDirect3DDevice9::CreatePixelShader
 using PresentFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, const RECT *, const RECT *, HWND, const RGNDATA *);
 using StretchRectFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, IDirect3DSurface9 *, const RECT *, IDirect3DSurface9 *,
                                            const RECT *, D3DTEXTUREFILTERTYPE);
@@ -507,6 +512,7 @@ HRESULT __stdcall GetRenderTarget(IDirect3DDevice9 *device, DWORD index, IDirect
 
 HRESULT __stdcall Reset(IDirect3DDevice9 *device, D3DPRESENT_PARAMETERS *parameters)
 {
+    levelshadows::Release();
     DropScene();
     const HRESULT result = g_reset.Original()(device, parameters);
     if (SUCCEEDED(result))
@@ -545,6 +551,159 @@ std::string Described(IDirect3DDevice9 *device, IDirect3DSurface9 *surface)
                        static_cast<const void *>(surface));
 }
 
+// A test of what dynamic sun shadows for the level would cost (2026-10-16, not
+// for a release): with a file `shadow-cost` beside the DLL holding a number K,
+// each draw of the level's (its pixel shader's hash in `level-shaders`, one a
+// line, written by build/scratch/cost-test.py) is drawn K times more, depth
+// tested and writing nothing, which is the work of drawing the level into K
+// shadow maps; and the frame's mean time is logged every kCostFrames frames.
+constexpr std::string_view kShadowCostFile = "shadow-cost";
+constexpr std::string_view kLevelShadersFile = "level-shaders";
+constexpr int kCostFrames = 300;
+std::set<std::uint64_t> g_levelHashes;
+std::set<void *> g_levelShaders;
+int g_extraPasses = 0;
+IDirect3DPixelShader9 *g_nothingShader = nullptr;
+LARGE_INTEGER g_costStart{};
+int g_costFrames = 0;
+
+void ReadCostFiles()
+{
+    std::ifstream in(dao::Module::OwnFolder() / kShadowCostFile);
+    int passes = 0;
+    in >> passes;
+    if (passes != g_extraPasses)
+    {
+        g_extraPasses = passes;
+        spdlog::info("shadow cost test: {} extra passes of the level", passes);
+    }
+}
+
+void NoteCostFrame()
+{
+    LARGE_INTEGER now{};
+    QueryPerformanceCounter(&now);
+    if (g_costFrames == 0)
+    {
+        g_costStart = now;
+    }
+    if (++g_costFrames > kCostFrames)
+    {
+        LARGE_INTEGER frequency{};
+        QueryPerformanceFrequency(&frequency);
+        const double ms = 1000.0 * static_cast<double>(now.QuadPart - g_costStart.QuadPart) /
+                          static_cast<double>(frequency.QuadPart) / kCostFrames;
+        spdlog::info("shadow cost test: {:.2f} ms a frame with {} extra passes", ms, g_extraPasses);
+        g_costFrames = 0;
+        ReadCostFiles();
+    }
+}
+
+void DrawExtraPasses(IDirect3DDevice9 *device, D3DPRIMITIVETYPE type, INT base, UINT least, UINT vertices, UINT first,
+                     UINT count);
+
+// The shaders the game makes, each logged with the FNV-1a hash of its byte
+// code as it is made, so that a traced frame's draws can be named by the
+// shaders' files (build/scratch/trace-names.py). Only with the trace asked for.
+using CreateShaderFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, const DWORD *, void **);
+dao::Detour<CreateShaderFn> g_createVertexShader;
+dao::Detour<CreateShaderFn> g_createPixelShader;
+
+std::uint64_t HashOfCode(const DWORD *code)
+{
+    constexpr DWORD kEnd = 0x0000FFFF;
+    constexpr std::size_t kMost = 1 << 20;
+    std::uint64_t hash = 14695981039346656037ULL;
+    for (std::size_t at = 0; at < kMost; ++at)
+    {
+        for (int shift = 0; shift < 32; shift += 8)
+        {
+            hash = (hash ^ ((code[at] >> shift) & 0xFF)) * 1099511628211ULL;
+        }
+        if (code[at] == kEnd)
+        {
+            break;
+        }
+    }
+    return hash;
+}
+
+HRESULT __stdcall CreateVertexShader(IDirect3DDevice9 *device, const DWORD *code, void **shader)
+{
+    const HRESULT result = g_createVertexShader.Original()(device, code, shader);
+    if (SUCCEEDED(result) && shader != nullptr && code != nullptr)
+    {
+        levelshadows::Created(code, static_cast<IDirect3DVertexShader9 *>(*shader));
+        if (g_traceAsked)
+        {
+            spdlog::info("shader vs {} {:016x}", *shader, HashOfCode(code));
+        }
+    }
+    return result;
+}
+
+HRESULT __stdcall CreatePixelShader(IDirect3DDevice9 *device, const DWORD *code, void **shader)
+{
+    const HRESULT result = g_createPixelShader.Original()(device, code, shader);
+    if (SUCCEEDED(result) && shader != nullptr && code != nullptr)
+    {
+        const std::uint64_t hash = HashOfCode(code);
+        if (g_traceAsked)
+        {
+            spdlog::info("shader ps {} {:016x}", *shader, hash);
+        }
+        // The last shader made at an address is the one there (LevelShadows.cpp's Created).
+        if (g_levelHashes.contains(hash))
+        {
+            g_levelShaders.insert(*shader);
+        }
+        else
+        {
+            g_levelShaders.erase(*shader);
+        }
+        levelshadows::CreatedPixel(code, static_cast<IDirect3DPixelShader9 *>(*shader));
+    }
+    return result;
+}
+
+// A traced draw: its shaders and how many primitives.
+void LogDraw(IDirect3DDevice9 *device, UINT count)
+{
+    IDirect3DVertexShader9 *vs = nullptr;
+    IDirect3DPixelShader9 *ps = nullptr;
+    device->GetVertexShader(&vs);
+    device->GetPixelShader(&ps);
+    std::array<void *, 2> maps{}; // the sun's maps it reads, the receivers' samplers 7 and 15
+    for (std::size_t at = 0; at < 2; ++at)
+    {
+        IDirect3DBaseTexture9 *bound = nullptr;
+        device->GetTexture(at == 0 ? 7 : 15, &bound);
+        if (bound != nullptr && bound->GetType() == D3DRTYPE_TEXTURE)
+        {
+            IDirect3DSurface9 *surface = nullptr;
+            if (SUCCEEDED(static_cast<IDirect3DTexture9 *>(bound)->GetSurfaceLevel(0, &surface)))
+            {
+                maps.at(at) = surface;
+                surface->Release();
+            }
+        }
+        if (bound != nullptr)
+        {
+            bound->Release();
+        }
+    }
+    spdlog::info("      draw vs {} ps {} {} reads {} {}", static_cast<void *>(vs), static_cast<void *>(ps), count,
+                 maps[0], maps[1]);
+    if (vs != nullptr)
+    {
+        vs->Release();
+    }
+    if (ps != nullptr)
+    {
+        ps->Release();
+    }
+}
+
 // The draws gathered since the last line, as a line of their own.
 void LogDraws()
 {
@@ -565,6 +724,11 @@ void FramePresented(std::string_view by)
         spdlog::info("  Present by {}: the end of frame {}", by, g_presented);
     }
     ++g_presented;
+    levelshadows::Presented();
+    if (!g_levelHashes.empty())
+    {
+        NoteCostFrame();
+    }
     // Only where it is asked for: the scene target stands on the same
     // detours, and without this the trace went to every player's log, sixty
     // lines every ten seconds (seen 2026-10-14).
@@ -685,6 +849,7 @@ bool IsPicture(IDirect3DDevice9 *device, IDirect3DSurface9 *surface)
 // and whether the frame's own picture is drawn into.
 void HandFills(IDirect3DDevice9 *device)
 {
+    levelshadows::Receiving(device, g_drawsPicture);
     const std::array<float, 4> fills{g_drawsPicture ? g_fills.load(std::memory_order_relaxed) : 1.0F, 0, 0, 0};
     device->SetPixelShaderConstantF(kFillRegister, fills.data(), 1);
 }
@@ -703,6 +868,10 @@ void HandShareAsked(IDirect3DDevice9 *device)
 HRESULT __stdcall SetRenderTarget(IDirect3DDevice9 *device, DWORD index, IDirect3DSurface9 *target)
 {
     target = index == 0 ? Swapped(target) : target;
+    if (index == 0)
+    {
+        levelshadows::Leaving(device);
+    }
     if (index == 0 && target != nullptr)
     {
         // A portrait and the record's and the inventory's figures are drawn
@@ -743,6 +912,10 @@ HRESULT __stdcall Clear(IDirect3DDevice9 *device, DWORD count, const D3DRECT *re
 HRESULT __stdcall Draw(IDirect3DDevice9 *device, D3DPRIMITIVETYPE type, UINT first, UINT count)
 {
     g_draws += g_tracing ? 1 : 0;
+    if (g_tracing)
+    {
+        LogDraw(device, count);
+    }
     return g_draw.Original()(device, type, first, count);
 }
 
@@ -750,7 +923,55 @@ HRESULT __stdcall DrawIndexed(IDirect3DDevice9 *device, D3DPRIMITIVETYPE type, I
                               UINT first, UINT count)
 {
     g_draws += g_tracing ? 1 : 0;
+    if (g_tracing)
+    {
+        LogDraw(device, count);
+    }
+    levelshadows::Drawing(device, g_drawsPicture, type, base, least, vertices, first, count);
+    if (g_extraPasses > 0)
+    {
+        DrawExtraPasses(device, type, base, least, vertices, first, count);
+    }
     return g_drawIndexed.Original()(device, type, base, least, vertices, first, count);
+}
+
+void DrawExtraPasses(IDirect3DDevice9 *device, D3DPRIMITIVETYPE type, INT base, UINT least, UINT vertices, UINT first,
+                     UINT count)
+{
+    IDirect3DPixelShader9 *shader = nullptr;
+    device->GetPixelShader(&shader);
+    const bool level = shader != nullptr && g_levelShaders.contains(shader);
+    if (level && g_nothingShader != nullptr)
+    {
+        DWORD colours = 0;
+        DWORD depthWrite = 0;
+        device->GetRenderState(D3DRS_COLORWRITEENABLE, &colours);
+        device->GetRenderState(D3DRS_ZWRITEENABLE, &depthWrite);
+        const auto set = [&](D3DRENDERSTATETYPE state, DWORD value) {
+            if (g_setRenderState.IsAttached())
+            {
+                g_setRenderState.Original()(device, state, value);
+            }
+            else
+            {
+                device->SetRenderState(state, value);
+            }
+        };
+        set(D3DRS_COLORWRITEENABLE, 0);
+        set(D3DRS_ZWRITEENABLE, FALSE);
+        device->SetPixelShader(g_nothingShader);
+        for (int pass = 0; pass < g_extraPasses; ++pass)
+        {
+            g_drawIndexed.Original()(device, type, base, least, vertices, first, count);
+        }
+        device->SetPixelShader(shader);
+        set(D3DRS_COLORWRITEENABLE, colours);
+        set(D3DRS_ZWRITEENABLE, depthWrite);
+    }
+    if (shader != nullptr)
+    {
+        shader->Release();
+    }
 }
 
 // Places the detours the frame's trace and our own scene target both stand
@@ -762,6 +983,30 @@ void WatchFramesOf(IDirect3DDevice9 *device)
     const bool ownScene = word != "off";
     std::error_code error;
     g_traceAsked = std::filesystem::exists(dao::Module::OwnFolder() / kLogFrameFile, error);
+    {
+        std::ifstream in(dao::Module::OwnFolder() / kLevelShadersFile);
+        for (std::string line; std::getline(in, line);)
+        {
+            std::uint64_t hash = 0;
+            if (std::from_chars(line.data(), line.data() + line.size(), hash, 16).ec == std::errc{})
+            {
+                g_levelHashes.insert(hash);
+            }
+        }
+        if (!g_levelHashes.empty())
+        {
+            // ps_3_0: def c0, 0, 0, 0, 0; mov oC0, c0; end.
+            const std::array<DWORD, 10> code{0xFFFF0300, 0x05000051, 0xA00F0000, 0,          0,
+                                             0,          0,          0x02000001, 0x800F0800, 0xA0E40000};
+            std::array<DWORD, 11> ended{};
+            std::ranges::copy(code, ended.begin());
+            ended.back() = 0x0000FFFF;
+            device->CreatePixelShader(ended.data(), &g_nothingShader);
+            spdlog::info("shadow cost test: {} level shaders' hashes, the nothing shader {}", g_levelHashes.size(),
+                         static_cast<void *>(g_nothingShader));
+            ReadCostFiles();
+        }
+    }
     if (!ownScene && !g_traceAsked)
     {
         return;
@@ -785,6 +1030,10 @@ void WatchFramesOf(IDirect3DDevice9 *device)
     g_clear.AttachTo(Method<ClearFn>(device, kClearSlot), &Clear);
     g_draw.AttachTo(Method<DrawFn>(device, kDrawSlot), &Draw);
     g_drawIndexed.AttachTo(Method<DrawIndexedFn>(device, kDrawIndexedSlot), &DrawIndexed);
+    levelshadows::Start(dao::Module::OwnFolder() / "override", GameFolder(), g_drawIndexed.Original());
+    g_createVertexShader.AttachTo(Method<CreateShaderFn>(device, kCreateVertexShaderSlot), &CreateVertexShader);
+    // Always: the sun's shadows know their receivers by it (LevelShadows.h).
+    g_createPixelShader.AttachTo(Method<CreateShaderFn>(device, kCreatePixelShaderSlot), &CreatePixelShader);
     if (ownScene)
     {
         g_getRenderTarget.AttachTo(Method<GetRenderTargetFn>(device, kGetRenderTargetSlot), &GetRenderTarget);
@@ -969,13 +1218,9 @@ void ReadChosen(const std::filesystem::path &folder)
         {
             g_materials.store(value == "On", std::memory_order_relaxed);
         }
-        if (key == "SunlitHaze")
+        if (key == "ImprovedLighting")
         {
-            g_sunlitHaze.store(value == "On", std::memory_order_relaxed);
-        }
-        if (key == "SunlitFigures")
-        {
-            g_sunlitFigures.store(value == "On", std::memory_order_relaxed);
+            g_lighting.store(value == "On", std::memory_order_relaxed);
         }
         if (key == "ImprovedShadows")
         {
@@ -1003,8 +1248,7 @@ void KeepChosen()
     std::ofstream out(dao::Module::OwnFolder() / kChosenFile, std::ios::trunc);
     out << "ImprovedMaterials = " << said(g_materials.load(std::memory_order_relaxed))
         << "\nImprovedShadows = " << said(g_shadows.load(std::memory_order_relaxed))
-        << "\nSunlitHaze = " << said(g_sunlitHaze.load(std::memory_order_relaxed))
-        << "\nSunlitFigures = " << said(g_sunlitFigures.load(std::memory_order_relaxed))
+        << "\nImprovedLighting = " << said(g_lighting.load(std::memory_order_relaxed))
         << "\nAntiAliasing = " << (g_smaa ? "SMAA" : "Off")
         << "\nAmbientOcclusion = " << g_occlusionStop.load(std::memory_order_relaxed)
         << "\nAnisotropicFiltering = " << g_anisotropyStop.load(std::memory_order_relaxed) << '\n';
@@ -1056,8 +1300,17 @@ void KeepLookRegisters()
     g_look.at(kUncut).store(wide ? 1.0F : 0.0F, std::memory_order_relaxed);
     g_look.at(kShadows).store(shadows, std::memory_order_relaxed);
     g_look.at(kShadowOnFigures).store(shadows, std::memory_order_relaxed);
-    outdoors::Want(g_sunlitHaze.load(std::memory_order_relaxed));
-    outdoors::WantSunlitFigures(g_sunlitFigures.load(std::memory_order_relaxed));
+    const bool lighting = g_lighting.load(std::memory_order_relaxed);
+    outdoors::Want(lighting);
+    // The level drawn into the sun's maps only where it has a sun: underground
+    // the engine still draws maps for its figures' own light, and the level's
+    // surfaces took the shade of it in place of their baked light (the Ruined
+    // Temple's arches, blotched black, 2026-10-16). Read through Improved
+    // shadows' filter (shadow.hlsl), so with it alone.
+    levelshadows::Want(lighting && shadows > 0 && outdoors::Sunlit() && outdoors::Tune("LevelShadows", 1) > 0);
+    g_look.at(kShadowShow).store(outdoors::Tune("ShadowShow", 0), std::memory_order_relaxed);
+    levelshadows::Skip(static_cast<unsigned>(outdoors::Tune("LevelShadowsSkip", 0)));
+    outdoors::WantSunlitFigures(lighting);
     const outdoors::SkyHaze haze = outdoors::Haze();
     for (std::size_t c = 0; c < 3; ++c)
     {
@@ -1219,8 +1472,8 @@ void ApplyOptions()
 // The options screen's section, on the Video tab's right column, which holds
 // a heading and twelve rows of 35 px (DAOLib #82), a slider 41 px (#84):
 // four checkboxes and two sliders. Improved materials and shadows, SMAA and
-// the sliders are the first release's (issue 23); Sunlit haze the first of
-// the lighting's (2026-10-16).
+// the sliders are the first release's (issue 23); Improved lighting the
+// lighting's, one switch for all of it (the user, 2026-10-16).
 constexpr const wchar_t *kOptionsTitle = L"Elgara Shaders";
 
 // A checkbox kept in graphics.chosen.
@@ -1285,16 +1538,12 @@ void AddToOptions()
                       L"Metal, gilt and polished stone reflect as what they are made of, and normal maps shape the "
                       L"light in shade and indoors",
                       "improved materials"),
+             Checkbox(g_lighting, kLightingByDefault, L"GraphicsLighting", L"Improved lighting",
+                      L"More natural sunlight and haze", "improved lighting"),
              Checkbox(g_shadows, kShadowsByDefault, L"GraphicsShadows", L"Improved shadows",
                       L"Softer, finer shadows, which fall on characters too; their finer maps are made as the game "
                       L"starts",
                       "improved shadows"),
-             Checkbox(g_sunlitHaze, kHazeByDefault, L"GraphicsSunlitHaze", L"Sunlit haze",
-                      L"The haze and fog out of doors lit by the sun: brighter and warmer towards it", "sunlit haze"),
-             Checkbox(g_sunlitFigures, kSunlitFiguresByDefault, L"GraphicsSunlitFigures", L"Sunlit figures",
-                      L"Characters out of doors lit more by the sun or the moon and less by the area's even fill "
-                      L"light, so the light's direction shows",
-                      "sunlit figures"),
              smaa},
             {StopSlider(g_occlusionStop, kOcclusionByDefault, kOcclusionNames, L"GraphicsOcclusion",
                         L"Ambient occlusion", L"Shade in corners and creases and under things (GTAO)",

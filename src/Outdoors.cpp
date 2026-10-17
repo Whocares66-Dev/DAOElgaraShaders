@@ -1,5 +1,7 @@
 #include "Outdoors.h"
 
+#include "LevelShadows.h"
+
 #include "Probes.h"
 
 #include "dao/Atmosphere.h"
@@ -144,13 +146,13 @@ std::optional<float> Tuned(std::string_view key)
     return found != g_tune.end() ? std::optional<float>(found->second) : std::nullopt;
 }
 
-// Whether the player wants the air lit (the options screen's Sunlit haze).
+// Whether the player wants the air lit (the options screen's Improved lighting).
 bool g_wanted = false;
 
 SkyHaze g_haze;
 float g_fills = 1;
 
-// Sunlit figures: out of doors under a sun or a moon, a figure is lit as the
+// The one sun on figures (Improved lighting): out of doors under a sun or a moon, a figure is lit as the
 // ground it stands on is, by the one sun in the ground's colour and strength
 // and the area's ambient light, and the area's fills, three far lights only
 // figures have, are taken away (the user, 2026-10-16: "One sun, one color,
@@ -164,13 +166,14 @@ float g_fills = 1;
 constexpr float kSunlitFills = 0;
 bool g_wantedSunlit = false;
 
-// Whether Sunlit figures is on: the player's word, or the tuning file's
+// Whether figures take the one sun (Improved lighting): the player's word, or the tuning file's
 // `SunlitFigures`, to compare without the options screen.
 bool SunlitFigures()
 {
     return Tuned("SunlitFigures").value_or(g_wantedSunlit ? 1 : 0) > 0;
 }
 bool g_outdoors = false;
+bool g_sunlit = false; // out of doors with a sun on the ground (Sunlit)
 
 // The air's light from the area's own. Its fog colour is the air's light as
 // its makers saw it, the same every way. The air is a scatterer of the sun's
@@ -298,33 +301,27 @@ void KeepAir()
     g_haze = sun && sky ? HazeOf(*sun, *sky, outdoors) : SkyHaze{};
     g_outdoors = sun && sky && outdoors;
     const bool sunny = sun && std::max({sun->color[0], sun->color[1], sun->color[2]}) > 0;
+    g_sunlit = g_outdoors && sunny;
     const float rule = SunlitFigures() && sunny ? kSunlitFills : 1;
     g_fills = g_outdoors ? std::clamp(Tuned("Fills").value_or(rule), 0.0F, 1.0F) : 1;
     probes::Want(g_outdoors && SunlitFigures() && Tuned("Probes").value_or(1) > 0);
 }
 
-// The area's sun: on figures the ground's, with Sunlit figures on out of
+// The area's sun: on figures the ground's, with Improved lighting on out of
 // doors; and as the tuning file says, on the ground times its `Sun`, on
 // figures times its `SunOnFigures`.
-// What the sunlit ground sends back, for the baked probes (Probes.h): the
-// sun on the ground times the area's earth reflectance, the sky model's own
-// number (0.19 in Redcliffe), out of doors.
+// The sun's colour on the ground, for the bounce from the level's sunlit
+// patches (Probes.h), each giving back its own colour's share of it; out of
+// doors, and as the tuning file's `Bounce` says, a developer's switch.
 void KeepSunBounce(const dao::atmosphere::Sunlight &sun)
 {
-    const std::optional<dao::atmosphere::Sky> sky = dao::atmosphere::AreaOwnSky();
-    std::array<float, 3> toSun{-sun.direction[0], -sun.direction[1], -sun.direction[2]};
-    const float length = std::hypot(toSun[0], toSun[1], toSun[2]);
     std::array<float, 3> sent{};
-    if (g_outdoors && sky && length > 0)
+    if (g_outdoors)
     {
-        const float reflectance = std::clamp(sky->earthReflectance, 0.0F, 1.0F);
-        for (std::size_t c = 0; c < 3; ++c)
-        {
-            toSun.at(c) /= length;
-            sent.at(c) = reflectance * sun.color.at(c);
-        }
+        const float bounce = Tuned("Bounce").value_or(1);
+        sent = {sun.color[0] * bounce, sun.color[1] * bounce, sun.color[2] * bounce};
     }
-    probes::SunBounce(toSun, sent);
+    probes::SunBounce(sent);
 }
 
 void KeepSun()
@@ -344,6 +341,7 @@ void KeepSun()
         sun.characterColor.at(channel) = (oneSun ? sun.color.at(channel) : sun.characterColor.at(channel)) * figures;
     }
     KeepSunBounce(sun);
+    levelshadows::Sun({sun.direction[0], sun.direction[1], sun.direction[2]});
     if (sun == dao::atmosphere::CurrentSunlight())
     {
         return;
@@ -482,6 +480,15 @@ void KeepHaze()
     const dao::GameModeController *modes = app != nullptr ? app->GameModes() : nullptr;
     const dao::CameraController *controller = modes != nullptr ? modes->Camera() : nullptr;
     const dao::SceneCamera *camera = controller != nullptr ? controller->Scene() : nullptr;
+    if (controller != nullptr)
+    {
+        const dao::Vector focus = controller->Focus();
+        levelshadows::Focus(std::array<float, 3>{focus.x, focus.y, focus.z});
+    }
+    else
+    {
+        levelshadows::Focus(std::nullopt);
+    }
     if (!sun || !sky || !size || !lens || *lens <= 0 || camera == nullptr || size->width <= 0)
     {
         return;
@@ -518,6 +525,11 @@ void KeepHaze()
 
 } // namespace
 
+float Tune(std::string_view key, float otherwise)
+{
+    return Tuned(key).value_or(otherwise);
+}
+
 SkyHaze Haze()
 {
     return g_haze;
@@ -536,6 +548,11 @@ void WantSunlitFigures(bool on)
         KeepAir();
         KeepSun();
     }
+}
+
+bool Sunlit()
+{
+    return g_sunlit;
 }
 
 void Want(bool on)

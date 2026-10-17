@@ -123,6 +123,10 @@ add_daolib_plugin(
         src/Outdoors.cpp
         src/ProbeBaker.cpp
         src/Probes.cpp
+        src/LevelShadows.cpp
+        src/Cascades.cpp
+        src/Reflected.cpp
+        src/ShaderCode.cpp
 )
 target_link_libraries(elgarashaders PRIVATE elgara_materials)
 dao_apply_warnings(elgarashaders)
@@ -217,10 +221,17 @@ enable_testing()
 # The materials' rule, names, lines and table (tests/test_materials.cpp); its
 # [game] cases read the installed game, and are skipped where there is none.
 find_package(Catch2 3 CONFIG REQUIRED)
-add_executable(elgarashaders_tests tests/test_materials.cpp)
+add_executable(
+    elgarashaders_tests
+    tests/test_materials.cpp
+    tests/test_cascades.cpp
+    tests/test_reflected.cpp
+    src/Cascades.cpp
+    src/Reflected.cpp
+)
 target_link_libraries(
     elgarashaders_tests
-    PRIVATE elgara_materials_table Catch2::Catch2WithMain
+    PRIVATE elgara_materials_table DAOLib::core Catch2::Catch2WithMain
 )
 target_compile_definitions(
     elgarashaders_tests
