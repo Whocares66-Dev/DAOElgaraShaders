@@ -97,6 +97,7 @@ constexpr bool kSmaaByDefault = true;
 constexpr bool kLightingByDefault = true;
 constexpr int kOcclusionByDefault = 3;  // High
 constexpr int kAnisotropyByDefault = 4; // 16x
+constexpr int kExposureByDefault = 2;   // 0 EV
 std::atomic<bool> g_materials{kMaterialsByDefault};
 // Improved lighting: out of doors one sun lights everything (Outdoors.h, LevelShadows.h, Probes.h)
 std::atomic<bool> g_lighting{kLightingByDefault};
@@ -115,6 +116,11 @@ constexpr std::array<int, 5> kAnisotropyStops{0, 2, 4, 8, 16};
 constexpr std::array<const wchar_t *, 5> kAnisotropyNames{L"Off", L"2x", L"4x", L"8x", L"16x"};
 std::atomic<int> g_occlusionStop{kOcclusionByDefault};
 std::atomic<int> g_anisotropyStop{kAnisotropyByDefault};
+// The picture's exposure in quarter stops (grade.hlsl's fDaoExposure); the
+// physics' own at 0 (the user, 2026-10-16).
+constexpr std::array<float, 5> kExposureStops{-0.5F, -0.25F, 0.0F, 0.25F, 0.5F}; // in EV
+constexpr std::array<const wchar_t *, 5> kExposureNames{L"-0.5", L"-0.25", L"0", L"+0.25", L"+0.5"};
+std::atomic<int> g_exposureStop{kExposureByDefault};
 
 // One of the sun's shadow maps as the engine is asked for it.
 // Notes on Partition: read 2026-10-10 in the function that asks (0x00455580):
@@ -1344,6 +1350,10 @@ void ReadChosen(const std::filesystem::path &folder)
         {
             g_occlusionStop.store(StopOf(value, kOcclusionStops.size()), std::memory_order_relaxed);
         }
+        if (key == "Exposure")
+        {
+            g_exposureStop.store(StopOf(value, kExposureStops.size()), std::memory_order_relaxed);
+        }
         if (key == "AnisotropicFiltering")
         {
             g_anisotropyStop.store(StopOf(value, kAnisotropyStops.size()), std::memory_order_relaxed);
@@ -1360,7 +1370,8 @@ void KeepChosen()
         << "\nImprovedLighting = " << said(g_lighting.load(std::memory_order_relaxed))
         << "\nAntiAliasing = " << (g_smaa ? "SMAA" : "Off")
         << "\nAmbientOcclusion = " << g_occlusionStop.load(std::memory_order_relaxed)
-        << "\nAnisotropicFiltering = " << g_anisotropyStop.load(std::memory_order_relaxed) << '\n';
+        << "\nAnisotropicFiltering = " << g_anisotropyStop.load(std::memory_order_relaxed)
+        << "\nExposure = " << g_exposureStop.load(std::memory_order_relaxed) << '\n';
     if (!out)
     {
         spdlog::warn("{} was not written: the choice lasts this session", kChosenFile);
@@ -1555,6 +1566,21 @@ void KeepLens()
     KeepQuietly(L"DaoLensY", static_cast<float>(size->height) / focal);
 }
 
+// How much the shade is lifted with Improved lighting, in stops (grade.hlsl's
+// fDaoLift): what an eye's exposure, measured from the picture and eased,
+// came to in the dark views it was tried in (0.24 of a stop on the Brecilian
+// forest's floor, 0.35 on Denerim's shaded house, 2026-10-17), the same
+// everywhere (the user: "A subtle lift is sufficient. We just don't want the
+// shadows to be pure black").
+constexpr float kShadowLift = 0.3F;
+
+// Hands the lift its value: none with Improved lighting off.
+void KeepLift()
+{
+    Keep(L"DaoLift", g_lighting.load(std::memory_order_relaxed) ? outdoors::Tune("Lift", kShadowLift) : 0.0F,
+         "Lift");
+}
+
 // Keeps the chain's values at the options', and the registers. The chain is
 // asked each time, since a new game or a reload of the chain would put its
 // values back to their own.
@@ -1569,6 +1595,9 @@ void ApplyOptions()
     // in the back buffer's eight bits it would only dim what is nearly white.
     const bool highlights = g_materials.load(std::memory_order_relaxed) && g_wideFormat != D3DFMT_UNKNOWN;
     Keep(L"DaoHighlights", highlights ? 1.0F : 0.0F, "Highlights");
+    Keep(L"DaoExposure",
+         std::exp2(kExposureStops.at(static_cast<std::size_t>(g_exposureStop.load(std::memory_order_relaxed)))),
+         "Exposure");
     Keep(L"DaoOcclusion", kOcclusionStops.at(static_cast<std::size_t>(g_occlusionStop.load(std::memory_order_relaxed))),
          "Occlusion");
     // The picture's alpha holds the ambient share while the occlusion is on,
@@ -1577,12 +1606,13 @@ void ApplyOptions()
     Keep(kBloom, L"DaoAlphaIsShare", g_occlusionStop.load(std::memory_order_relaxed) > 0 ? 1.0F : 0.0F,
          "the bloom's AlphaIsShare");
     Keep(kSmaa, g_smaa ? 1.0F : 0.0F, "Smaa");
+    KeepLift();
     KeepLookRegisters();
 }
 
 // The options screen's section, on the Video tab's right column, which holds
 // a heading and twelve rows of 35 px (DAOLib #82), a slider 41 px (#84):
-// three checkboxes and two sliders. Improved materials, SMAA and the sliders
+// three checkboxes and three sliders. Improved materials, SMAA and two sliders
 // are the first release's (issue 23); Improved lighting is the lighting and
 // the sun's shadows, one switch for both (the user, 2026-10-16), in place of
 // the release's Improved shadows.
@@ -1653,7 +1683,9 @@ void AddToOptions()
              Checkbox(g_lighting, kLightingByDefault, L"GraphicsLighting", L"Improved lighting",
                       L"More natural sunlight, shadows and haze", "improved lighting"),
              smaa},
-            {StopSlider(g_occlusionStop, kOcclusionByDefault, kOcclusionNames, L"GraphicsOcclusion",
+            {StopSlider(g_exposureStop, kExposureByDefault, kExposureNames, L"GraphicsExposure", L"Exposure",
+                        L"How bright the picture is, in stops", "exposure"),
+             StopSlider(g_occlusionStop, kOcclusionByDefault, kOcclusionNames, L"GraphicsOcclusion",
                         L"Ambient occlusion", L"Shade in corners and creases and under things (GTAO)",
                         "ambient occlusion"),
              StopSlider(g_anisotropyStop, kAnisotropyByDefault, kAnisotropyNames, L"GraphicsAnisotropic",

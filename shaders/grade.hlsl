@@ -27,6 +27,11 @@ float DaoOcclusion(float2 uv)
 // the chain (build_shaders.py's LOOK), 1 with Improved materials on.
 float fDaoHighlights;
 
+// The picture's exposure, a factor on the scene's light before it is rolled
+// off: the options screen's Exposure, -0.5 to +0.5 EV, 0 by default (a
+// value of the chain, build_shaders.py's LOOK).
+float fDaoExposure;
+
 // The brightness that comes out white, in whites. The scene is the game's
 // own light (nothing here makes it brighter), which is seldom much over
 // white: a shoulder long enough for more bends a room's whites down to grey
@@ -81,10 +86,32 @@ float3 DaoShoulder(float3 colour)
     return lerp(saturate(colour), kept, fDaoHighlights);
 }
 
-// The picture at `uv`, as the grade is to read it.
-float3 DaoPicture(sampler2D picture, float2 uv)
+// How much brighter the shade is made, in stops: a value of the chain
+// (build_shaders.py's LOOK), 0 with Improved lighting off. The sun under one
+// rule and the level's own shadows left a forest's floor and a party under a
+// timber house near black (the user, 2026-10-17: "We just don't want the
+// shadows to be pure black"). It is laid on the dark tones alone: whole on
+// what is a sixteenth of white and darker, none on what is a quarter of white
+// and brighter, and between them less the brighter a colour is, so a sunlit
+// street is not taken up with the shade beside it; it multiplies, so black
+// stays black. Fading over two stops, a lift under a stop never makes a darker
+// colour the brighter. (An eye's exposure, measured from the picture each
+// frame and eased, did it for a day: it lifted the forest's floor by 0.24 of a
+// stop and Denerim's shaded house by 0.35, and the party picker's figures
+// came up over seconds as it caught up; a lift that is the same everywhere
+// does what was wanted of it, with nothing to lag.)
+float fDaoLift;
+static const float kDaoLiftWhole = -4;
+static const float kDaoLiftNone = -2;
+
+// The picture at `uv`, as the grade is to read it, its shade lifted by
+// `lift` stops (fDaoLift, or 0).
+float3 DaoPicture(sampler2D picture, float2 uv, float lift)
 {
-    return DaoShoulder(tex2D(picture, uv).rgb);
+    const float3 colour = tex2D(picture, uv).rgb;
+    const float stopsFromWhite = log2(max(dot(colour, float3(0.2126, 0.7152, 0.0722)), 1.0 / 4096));
+    const float dark = saturate((kDaoLiftNone - stopsFromWhite) / (kDaoLiftNone - kDaoLiftWhole));
+    return DaoShoulder(colour * (fDaoExposure * exp2(lift * dark)));
 }
 
 // The graded picture's colour made ours. `pixel` is its place on the screen.

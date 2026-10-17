@@ -1084,7 +1084,10 @@ def with_our_grade(shader, occlusion=False, show=False):
     picture = next(
         p.name for p in shader.parameters.values() if p.set == "s" and p.base == 0
     )
-    colour = f"DaoPicture({picture}, {coordinate}.xy)"
+    # The grade's own pass lifts the shade (grade.hlsl's fDaoLift); the
+    # fading form, run by another chain, does not.
+    lift = "fDaoLift" if occlusion else "0"
+    colour = f"DaoPicture({picture}, {coordinate}.xy, {lift})"
     open_ = f"DaoOcclusion({coordinate}.xy)"
     if occlusion:
         colour += f" * {open_}"
@@ -1110,6 +1113,10 @@ def with_our_grade(shader, occlusion=False, show=False):
 # two passes read names both, with a + between.
 LOOK = [
     ("DaoHighlights", "grade", 0.0, 0, 1),
+    # The picture's exposure, a factor (Graphics.cpp's Exposure slider).
+    ("DaoExposure", "grade", 1.0, 0.25, 4),
+    # The shade's lift, in stops (grade.hlsl; Graphics.cpp's kShadowLift).
+    ("DaoLift", "grade", 0.0, 0, 1),
     # The picture's width and height on a plane one unit before the eye
     # (Graphics.cpp's KeepLens), each frame.
     ("DaoLensX", "occlusion+haze", 1.0, 0, 64),
