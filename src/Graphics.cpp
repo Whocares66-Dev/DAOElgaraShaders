@@ -19,7 +19,7 @@
 // What is code here:
 //
 // - The options screen's section on the Video tab: Improved materials,
-//   Improved shadows and SMAA, each a checkbox, and the ambient occlusion's
+//   Improved lighting and SMAA, each a checkbox, and the ambient occlusion's
 //   strength and the anisotropic filtering's degree, each a slider. What is
 //   chosen is kept in graphics.chosen beside the DLL. The shaders read the
 //   checkboxes from registers this sets on the game's Direct3D device, and
@@ -28,10 +28,12 @@
 // - The scene is drawn into a 16-bit target of our own, so that a surface
 //   lit brighter than white is rolled off and not cut (grade.hlsl's
 //   DaoShoulder), which the materials want.
-// - The sun's shadow maps are drawn at kMapSize a side with Improved shadows
-//   on, not the 512 or 1024 the game's shadow quality gives them: the engine
-//   is asked for its two maps through one function, and this changes the
-//   size on the way in.
+// - The engine's own sun shadow maps are drawn at kMapSize a side with
+//   Improved lighting on as the game starts, not the 512 or 1024 the game's
+//   shadow quality gives them: the engine is asked for its two maps through
+//   one function, and this changes the size on the way in. Out of doors the
+//   sun's shadows are the plugin's own (LevelShadows.h); the engine's maps
+//   are read where its sun is not out of doors.
 // - Anisotropic filtering, which the game has no setting for.
 //
 // What it does goes to elgarashaders.log.
@@ -80,7 +82,7 @@
 namespace
 {
 
-constexpr std::int32_t kMapSize = 2048; // texels a side, with Improved shadows on
+constexpr std::int32_t kMapSize = 2048; // texels a side, with Improved lighting on as the game starts
 
 // The options as the player has them: the game thread's, as the options
 // screen's callbacks and the frame's are. Each is read where it is needed
@@ -89,13 +91,11 @@ constexpr std::int32_t kMapSize = 2048; // texels a side, with Improved shadows 
 // Each option's default: what a new player has, and what the options
 // screen's Restore Defaults gives back (DAOLib #140).
 constexpr bool kMaterialsByDefault = true;
-constexpr bool kShadowsByDefault = true;
 constexpr bool kSmaaByDefault = true;
 constexpr bool kLightingByDefault = true;
 constexpr int kOcclusionByDefault = 3;  // High
 constexpr int kAnisotropyByDefault = 4; // 16x
 std::atomic<bool> g_materials{kMaterialsByDefault};
-std::atomic<bool> g_shadows{kShadowsByDefault};
 // Improved lighting: out of doors one sun lights everything (Outdoors.h, LevelShadows.h, Probes.h)
 std::atomic<bool> g_lighting{kLightingByDefault};
 bool g_smaa = kSmaaByDefault; // SMAA beside the game's own anti-aliasing, or not
@@ -121,7 +121,7 @@ std::atomic<int> g_anisotropyStop{kAnisotropyByDefault};
 // shadow quality sets to 512 or 1024, the format 9 or 0x20 by a capability of
 // the device. The function that takes them (0x00455420) copies each 12 bytes.
 // It is asked once, as the game starts (seen in the log 2026-10-14), so the
-// size Improved shadows gives is the one it had then.
+// size Improved lighting gives is the one it had then.
 struct Partition
 {
     float distance;      // how far from the camera the map reaches, in metres
@@ -190,7 +190,7 @@ bool ShareAsked()
 
 void __cdecl SetPartitions(const Partition *partitions, std::uint32_t count)
 {
-    const bool ours = g_shadows.load(std::memory_order_relaxed);
+    const bool ours = g_lighting.load(std::memory_order_relaxed);
     std::array<Partition, 2> asked{};
     if (count > asked.size())
     {
@@ -1222,10 +1222,6 @@ void ReadChosen(const std::filesystem::path &folder)
         {
             g_lighting.store(value == "On", std::memory_order_relaxed);
         }
-        if (key == "ImprovedShadows")
-        {
-            g_shadows.store(value == "On", std::memory_order_relaxed);
-        }
         if (key == "AntiAliasing")
         {
             g_smaa = value == "SMAA";
@@ -1247,7 +1243,6 @@ void KeepChosen()
     const auto said = [](bool on) { return on ? "On" : "Off"; };
     std::ofstream out(dao::Module::OwnFolder() / kChosenFile, std::ios::trunc);
     out << "ImprovedMaterials = " << said(g_materials.load(std::memory_order_relaxed))
-        << "\nImprovedShadows = " << said(g_shadows.load(std::memory_order_relaxed))
         << "\nImprovedLighting = " << said(g_lighting.load(std::memory_order_relaxed))
         << "\nAntiAliasing = " << (g_smaa ? "SMAA" : "Off")
         << "\nAmbientOcclusion = " << g_occlusionStop.load(std::memory_order_relaxed)
@@ -1294,20 +1289,22 @@ void KeepLookRegisters()
 {
     const bool materials = g_materials.load(std::memory_order_relaxed);
     const bool wide = materials && g_wideFormat != D3DFMT_UNKNOWN;
-    const float shadows = g_shadows.load(std::memory_order_relaxed) ? 1.0F : 0.0F;
+    // Improved lighting is the lighting and the sun's shadows alike (the user,
+    // 2026-10-16: one option for both): the shadows' filter and their fall on
+    // figures with it.
+    const bool lighting = g_lighting.load(std::memory_order_relaxed);
+    const float shadows = lighting ? 1.0F : 0.0F;
     g_look.at(kRelief).store(materials ? 1.0F : 0.0F, std::memory_order_relaxed);
     g_look.at(kMaterials).store(wide ? 1.0F : 0.0F, std::memory_order_relaxed);
     g_look.at(kUncut).store(wide ? 1.0F : 0.0F, std::memory_order_relaxed);
     g_look.at(kShadows).store(shadows, std::memory_order_relaxed);
     g_look.at(kShadowOnFigures).store(shadows, std::memory_order_relaxed);
-    const bool lighting = g_lighting.load(std::memory_order_relaxed);
     outdoors::Want(lighting);
     // The level drawn into the sun's maps only where it has a sun: underground
     // the engine still draws maps for its figures' own light, and the level's
     // surfaces took the shade of it in place of their baked light (the Ruined
-    // Temple's arches, blotched black, 2026-10-16). Read through Improved
-    // shadows' filter (shadow.hlsl), so with it alone.
-    levelshadows::Want(lighting && shadows > 0 && outdoors::Sunlit() && outdoors::Tune("LevelShadows", 1) > 0);
+    // Temple's arches, blotched black, 2026-10-16).
+    levelshadows::Want(lighting && outdoors::Sunlit() && outdoors::Tune("LevelShadows", 1) > 0);
     g_look.at(kShadowShow).store(outdoors::Tune("ShadowShow", 0), std::memory_order_relaxed);
     levelshadows::Skip(static_cast<unsigned>(outdoors::Tune("LevelShadowsSkip", 0)));
     outdoors::WantSunlitFigures(lighting);
@@ -1471,9 +1468,10 @@ void ApplyOptions()
 
 // The options screen's section, on the Video tab's right column, which holds
 // a heading and twelve rows of 35 px (DAOLib #82), a slider 41 px (#84):
-// four checkboxes and two sliders. Improved materials and shadows, SMAA and
-// the sliders are the first release's (issue 23); Improved lighting the
-// lighting's, one switch for all of it (the user, 2026-10-16).
+// three checkboxes and two sliders. Improved materials, SMAA and the sliders
+// are the first release's (issue 23); Improved lighting is the lighting and
+// the sun's shadows, one switch for both (the user, 2026-10-16), in place of
+// the release's Improved shadows.
 constexpr const wchar_t *kOptionsTitle = L"Elgara Shaders";
 
 // A checkbox kept in graphics.chosen.
@@ -1539,11 +1537,7 @@ void AddToOptions()
                       L"light in shade and indoors",
                       "improved materials"),
              Checkbox(g_lighting, kLightingByDefault, L"GraphicsLighting", L"Improved lighting",
-                      L"More natural sunlight and haze", "improved lighting"),
-             Checkbox(g_shadows, kShadowsByDefault, L"GraphicsShadows", L"Improved shadows",
-                      L"Softer, finer shadows, which fall on characters too; their finer maps are made as the game "
-                      L"starts",
-                      "improved shadows"),
+                      L"More natural sunlight, shadows and haze", "improved lighting"),
              smaa},
             {StopSlider(g_occlusionStop, kOcclusionByDefault, kOcclusionNames, L"GraphicsOcclusion",
                         L"Ambient occlusion", L"Shade in corners and creases and under things (GTAO)",

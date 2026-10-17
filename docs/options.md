@@ -12,7 +12,7 @@ On the **Video** tab of the options screen.
 | Option | What it does | Default |
 |---|---|---|
 | **Improved materials** | Metal reflects its surroundings; leather, cloth and stone stay matte. | On |
-| **Improved shadows** | Softer, finer shadows that fall on characters too. Restart the game after turning it on. | On |
+| **Improved lighting** | More natural sunlight, shadows and haze. | On |
 | **SMAA** | Smooths jagged edges. | On |
 | **Ambient occlusion** | Shade in corners and creases: Off, Low, Medium or High. | High |
 | **Anisotropic filtering** | Sharper ground and walls at a slant: Off to 16x. | 16x |

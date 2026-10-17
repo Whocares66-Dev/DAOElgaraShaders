@@ -308,8 +308,12 @@ std::mutex g_sunLock;
 std::optional<std::array<cascades::Vector, 3>> g_sunAxes; // Sun's, under g_sunLock
 
 // The atlas: the four maps in a square of two by two, map i at column i % 2
-// and row i / 2, of the engine's maps' size and format each; its depth; and
-// whether it was drawn this frame.
+// and row i / 2, each kTile texels a side in the engine's maps' format (depth
+// in red, 16 bits; shadow.hlsl's kDaoAtlasTile is the same), whatever size
+// the game's shadow quality gives its own; its depth; and whether it was
+// drawn this frame.
+constexpr UINT kTile = 2048;
+constexpr D3DFORMAT kMapFormat = D3DFMT_G16R16;
 IDirect3DTexture9 *g_atlas = nullptr;
 IDirect3DSurface9 *g_atlasDepth = nullptr;
 UINT g_tile = 0;
@@ -1267,20 +1271,17 @@ static bool MakeCopying(IDirect3DDevice9 *device)
 
 // The cache's texture and depth made for a map, of its size and format, and
 // a target of its colours if `coloured`.
-static bool MakeCache(IDirect3DDevice9 *device, IDirect3DSurface9 *map, Cache &cache, bool coloured)
+static bool MakeCache(IDirect3DDevice9 *device, Cache &cache, bool coloured)
 {
     if (cache.texture != nullptr && cache.depth != nullptr && (cache.colours != nullptr || !coloured))
     {
         return true;
     }
-    D3DSURFACE_DESC desc;
-    std::memset(&desc, 0, sizeof desc);
-    map->GetDesc(&desc);
-    if (FAILED(device->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET, desc.Format, D3DPOOL_DEFAULT,
+    if (FAILED(device->CreateTexture(kTile, kTile, 1, D3DUSAGE_RENDERTARGET, kMapFormat, D3DPOOL_DEFAULT,
                                      &cache.texture, nullptr)) ||
-        FAILED(device->CreateDepthStencilSurface(desc.Width, desc.Height, D3DFMT_D24X8, D3DMULTISAMPLE_NONE, 0, TRUE,
-                                                 &cache.depth, nullptr)) ||
-        (coloured && FAILED(device->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8,
+        FAILED(device->CreateDepthStencilSurface(kTile, kTile, D3DFMT_D24X8, D3DMULTISAMPLE_NONE, 0, TRUE, &cache.depth,
+                                                 nullptr)) ||
+        (coloured && FAILED(device->CreateTexture(kTile, kTile, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8,
                                                   D3DPOOL_DEFAULT, &cache.colours, nullptr))))
     {
         return false;
@@ -1590,41 +1591,30 @@ static bool FitMaps()
     return g_cascades[0].has_value();
 }
 
-// The atlas and its depth, of the engine's maps' size and format each.
+// The atlas and its depth, made once (and again after a device's reset).
 static bool MakeAtlas(IDirect3DDevice9 *device)
 {
-    if (g_map == nullptr)
-    {
-        return false;
-    }
-    D3DSURFACE_DESC desc;
-    std::memset(&desc, 0, sizeof desc);
-    g_map->GetDesc(&desc);
-    if (desc.Width != desc.Height)
-    {
-        return false;
-    }
-    if (g_atlas != nullptr && g_tile == desc.Width)
+    if (g_atlas != nullptr)
     {
         return true;
     }
-    for (IUnknown **held : {reinterpret_cast<IUnknown **>(&g_atlas), reinterpret_cast<IUnknown **>(&g_atlasDepth)})
+    if (FAILED(device->CreateTexture(kTile * 2, kTile * 2, 1, D3DUSAGE_RENDERTARGET, kMapFormat, D3DPOOL_DEFAULT,
+                                     &g_atlas, nullptr)) ||
+        FAILED(device->CreateDepthStencilSurface(kTile * 2, kTile * 2, D3DFMT_D24X8, D3DMULTISAMPLE_NONE, 0, TRUE,
+                                                 &g_atlasDepth, nullptr)))
     {
-        if (*held != nullptr)
+        spdlog::warn("level shadows: the atlas of {0}x{0} could not be made", kTile * 2);
+        for (IUnknown **held : {reinterpret_cast<IUnknown **>(&g_atlas), reinterpret_cast<IUnknown **>(&g_atlasDepth)})
         {
-            (*held)->Release();
-            *held = nullptr;
+            if (*held != nullptr)
+            {
+                (*held)->Release();
+                *held = nullptr;
+            }
         }
-    }
-    if (FAILED(device->CreateTexture(desc.Width * 2, desc.Height * 2, 1, D3DUSAGE_RENDERTARGET, desc.Format,
-                                     D3DPOOL_DEFAULT, &g_atlas, nullptr)) ||
-        FAILED(device->CreateDepthStencilSurface(desc.Width * 2, desc.Height * 2, D3DFMT_D24X8, D3DMULTISAMPLE_NONE, 0,
-                                                 TRUE, &g_atlasDepth, nullptr)))
-    {
-        spdlog::warn("level shadows: the atlas of {0}x{0} could not be made", desc.Width * 2);
         return false;
     }
-    g_tile = desc.Width;
+    g_tile = kTile;
     return true;
 }
 
@@ -1658,7 +1648,7 @@ static void KeepCaches(IDirect3DDevice9 *device)
     {
         Cache &cache = g_caches.at(map);
         const std::optional<cascades::Fitted> &fitted = g_cascades.at(map);
-        if (!fitted || !MakeCache(device, g_map, cache, map < g_reflecting.size()))
+        if (!fitted || !MakeCache(device, cache, map < g_reflecting.size()))
         {
             continue;
         }

@@ -30,6 +30,9 @@
 // maps fitted to its figures.
 float4 daoShadowData[14] : register(c200);
 
+// The texels a side of each map of the plugin's atlas (LevelShadows.cpp's
+// kTile), whatever size the engine's own maps are.
+static const float kDaoAtlasTile = 2048;
 // The penumbra's radius in the world, in metres, and the least it may be in
 // texels of the map, under which the map's own steps show.
 static const float kDaoPenumbra = 0.035;
@@ -66,7 +69,7 @@ float DaoShadowMap(sampler2D map, float3 at, float2 slope, float2 turn, float ra
                    float scale)
 {
     const float reach = 2 * radius; // no tap's depth moves further than a surface at 63 degrees would
-    const float edge = 0.5 / DAO_SHADOW_MAP_SIZE;
+    const float edge = 0.5 / kDaoAtlasTile;
     float lit = 0;
     [loop] for (int i = 0; i < 16; i++)
     {
@@ -95,7 +98,7 @@ float DaoAtlasShadow(int tile, float3 at, float2 turn, float radius, float bias)
 // A point's place in a map (x, y its texture's, z its depth), the disc's
 // radius there and the bias, by the map's matrix's rows.
 void DaoMapPlace(float4 m0, float4 m1, float4 m2, float4 point4, float least, out float3 at, out float radius,
-                 out float bias)
+                 out float bias, float size)
 {
     const float w = 1;
     at = float3(dot(m0, point4), dot(m1, point4), dot(m2, point4));
@@ -106,7 +109,7 @@ void DaoMapPlace(float4 m0, float4 m1, float4 m2, float4 point4, float least, ou
     // game's, fitted to its figures, had millimetres; and a leaf or a blade
     // at a slant to the sun was shaded by its own neighbour in the map (the
     // trees over Redcliffe went dark, 2026-10-16).
-    const float texel = 1 / (DAO_SHADOW_MAP_SIZE * length(m0.xyz) / w);
+    const float texel = 1 / (size * length(m0.xyz) / w);
     bias = (kDaoBias + texel) * length(m2.xyz) / w;
 }
 
@@ -144,10 +147,10 @@ static const float kDaoNormalOffset = 1.5;
 DaoInMap DaoPlaceIn(int first, float4 point4, float3 facing, float least)
 {
     DaoInMap placed;
-    const float texel = 1 / (DAO_SHADOW_MAP_SIZE * length(daoShadowData[first].xyz));
+    const float texel = 1 / (kDaoAtlasTile * length(daoShadowData[first].xyz));
     const float4 offPoint = point4 + float4(facing * (kDaoNormalOffset * texel), 0);
     DaoMapPlace(daoShadowData[first], daoShadowData[first + 1], daoShadowData[first + 2], offPoint, least, placed.at,
-                placed.radius, placed.bias);
+                placed.radius, placed.bias, kDaoAtlasTile);
     // By how far the point is from the focus across the map, not from the
     // map's edge: a map moves in steps, and its edge, and the change of
     // detail there, jumped with it as the party walked (the user,
@@ -235,7 +238,7 @@ float DaoShadow(float3 world, float2 pixel)
         const float3 toSun = -normalize(daoShadowData[2].xyz);
         float3 facing = dot(across, across) > 0 ? normalize(across) : toSun;
         facing = dot(facing, toSun) < 0 ? -facing : facing;
-        return DaoViewShadow(point4, facing, turn, least);
+        return DaoViewShadow(point4, facing, turn, kDaoLeastTexels / kDaoAtlasTile);
     }
 
     const float nearW = dot(g_vShadowData[3], point4);

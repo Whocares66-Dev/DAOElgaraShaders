@@ -18,7 +18,7 @@ float4 daoLook[4] : register(c220);
 // Improved materials.
 #define DAO_MATERIALS daoLook[0].y
 // How much of the sun's shadow falls on figures, 0 to 1 (build_shaders.py's
-// with_sun_shadow): Improved shadows.
+// with_sun_shadow): Improved lighting.
 #define DAO_SHADOW_ON_FIGURES daoLook[0].z
 // Whether the sun's shadows are filtered by shadow.hlsl, 1, or by the
 // game's own few taps, 0 (build_shaders.py's with_our_shadow): Improved

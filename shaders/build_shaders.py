@@ -16,7 +16,7 @@ one source: the point's side of the plane that divides the two maps is
 `dp3 <side>, v<N>, c<ShadowData + 8>`, which says which input is the point in
 the world, and the shadow is settled by the first `cmp <lit>, -<...>` after
 the last tap of the near map, the choice between the two maps. DaoShadow's
-answer is put into <lit> after it, where the plugin says (Improved shadows).
+answer is put into <lit> after it, where the plugin says (Improved lighting).
 
 The options' numbers (look.hlsl). What the level's and the figures' shaders
 do of ours is by how much the plugin says, in registers of its own: the
