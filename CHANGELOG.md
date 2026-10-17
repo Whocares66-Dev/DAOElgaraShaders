@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0
+
+- Improved lighting replaces Improved shadows. Out of doors one sun lights the level and the characters alike: the level casts its shadows as the sun falls (the plugin's own soft-edged shadow maps), on characters too, and a character walking into shade goes dark with the ground around it. Characters take their light from probes baked from the level's own lighting, and the haze glows toward the sun. Shade is lifted a little, so it reads as shade rather than black.
+- Exposure: a new slider on the Video tab, -0.5 to +0.5 in quarter stops.
+- Hair no longer darkens the face under it with ambient occlusion (#28).
+- Needs DAOLib 0.3.0 or newer.
+
 ## 0.1.2
 
 - Water is drawn as the game draws it: lakes and rivers were a white or electric-blue glare with rainbow fringes in places, worst by night (Lake Calenhad's docks) and also by day (Redcliffe's lake), whatever the options were (#25).

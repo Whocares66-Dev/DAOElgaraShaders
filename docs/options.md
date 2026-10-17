@@ -14,5 +14,6 @@ On the **Video** tab of the options screen.
 | **Improved materials** | Metal reflects its surroundings; leather, cloth and stone stay matte. | On |
 | **Improved lighting** | More natural sunlight, shadows and haze. | On |
 | **SMAA** | Smooths jagged edges. | On |
+| **Exposure** | How bright the picture is: -0.5 to +0.5. | 0 |
 | **Ambient occlusion** | Shade in corners and creases: Off, Low, Medium or High. | High |
 | **Anisotropic filtering** | Sharper ground and walls at a slant: Off to 16x. | 16x |

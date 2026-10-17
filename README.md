@@ -4,15 +4,16 @@ Better shaders, shadows and anti-aliasing for Dragon Age: Origins, through the g
 
 Download it from [Nexus Mods](https://www.nexusmods.com/dragonage/mods/7061) or the [releases](https://github.com/Whocares66-Dev/DAOElgaraShaders/releases); the guide is at <https://whocares66-dev.github.io/DAOElgaraShaders/>. It needs [DAOLib](https://www.nexusmods.com/dragonage/mods/7052) 0.3.0 or later.
 
-Five options on the Video tab of the game's options screen, each one on by default:
+Six options on the Video tab of the game's options screen:
 
 - **Improved materials**: metal, gilt and polished stone mirror and scatter light as what they are made of, normal maps shape the light in shade and indoors, and bright highlights are rolled off rather than clipped. The game's own materials, its DLC's and Awakening's come with the plugin; a mod's are worked out from the game's own item data as the game starts.
-- **Improved lighting**: one sun out of doors: the level casts its shadows as the sun falls, on characters too (the plugin's own cascaded shadow maps, soft-edged), characters take the sun's light and what the ground gives back, and the haze glows toward the sun.
+- **Improved lighting**: one sun out of doors: the level casts its shadows as the sun falls, on characters too (the plugin's own cascaded shadow maps, soft-edged), characters take the sun's light and what the ground gives back, the haze glows toward the sun, and the darkest shade is lifted a little.
 - **SMAA**: smooths the edges the game's own anti-aliasing misses; it works with that or without it.
+- **Exposure** (-0.5 to +0.5, 0 by default): how bright the picture is, in stops.
 - **Ambient occlusion** (Off, Low, Medium, High): shade in corners, creases and under things.
 - **Anisotropic filtering** (Off to 16x): textures stay sharp where they are seen at a slant.
 
-It rebuilds the game's shaders from the installed game at build time. [dev/NOTES.md](dev/NOTES.md) says how the game's lighting works; the history until 2026-10-11 is [issue 1](https://github.com/Whocares66-Dev/DAOElgaraShaders/issues/1). The lighting overhaul is on the `dev` branch.
+It rebuilds the game's shaders from the installed game at build time. [dev/NOTES.md](dev/NOTES.md) says how the game's lighting works; the history until 2026-10-11 is [issue 1](https://github.com/Whocares66-Dev/DAOElgaraShaders/issues/1).
 
 ## Building
 
