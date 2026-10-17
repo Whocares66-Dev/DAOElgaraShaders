@@ -932,7 +932,9 @@ HRESULT __stdcall DrawIndexed(IDirect3DDevice9 *device, D3DPRIMITIVETYPE type, I
     {
         DrawExtraPasses(device, type, base, least, vertices, first, count);
     }
-    return g_drawIndexed.Original()(device, type, base, least, vertices, first, count);
+    const HRESULT result = g_drawIndexed.Original()(device, type, base, least, vertices, first, count);
+    levelshadows::Drawn(device);
+    return result;
 }
 
 void DrawExtraPasses(IDirect3DDevice9 *device, D3DPRIMITIVETYPE type, INT base, UINT least, UINT vertices, UINT first,
@@ -1148,6 +1150,10 @@ HRESULT __stdcall CreateDevice(IDirect3D9 *direct3d, UINT adapter, D3DDEVTYPE ty
         spdlog::info("the game's Direct3D device: {}",
                      placed ? "the options' registers are set every scene" : "no detour, the registers stay 0");
         g_setSamplerState.AttachTo(Method<SetSamplerStateFn>(*device, kSetSamplerStateSlot), &SetSamplerState);
+        if (g_setSamplerState.IsAttached())
+        {
+            levelshadows::UseSamplerState(g_setSamplerState.Original());
+        }
         LogTargetsOf(*device, parameters);
         WatchFramesOf(*device);
     }

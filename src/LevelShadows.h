@@ -35,6 +35,13 @@ using DrawIndexedFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, D3DPRIMITIVETYPE,
 // made from, in the game's shaders.erf under `game`.
 void Start(const std::filesystem::path &override, const std::filesystem::path &game, DrawIndexedFn draw);
 
+// The device's own SetSamplerState, past Graphics.cpp's detour of it: the
+// sampler a receiver is lent the atlas on is set and given back exactly, and
+// the detour's record of what the game asked of it is left as the game left
+// it. Until it is given, the device's.
+using SetSamplerStateFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, DWORD, D3DSAMPLERSTATETYPE, DWORD);
+void UseSamplerState(SetSamplerStateFn set);
+
 // Whether the level is drawn into the shadow maps. The game thread's word.
 void Want(bool on);
 
@@ -48,6 +55,9 @@ void CreatedPixel(const DWORD *code, IDirect3DPixelShader9 *shader);
 // An indexed draw about to be made, into the frame's own picture or not.
 void Drawing(IDirect3DDevice9 *device, bool picture, D3DPRIMITIVETYPE type, INT base, UINT least, UINT vertices,
              UINT first, UINT count);
+
+// The draw Drawing was told of made: what it lent the draw is given back.
+void Drawn(IDirect3DDevice9 *device);
 
 // The device's first target about to change: where the level is drawn into a
 // shadow map the engine is done with.

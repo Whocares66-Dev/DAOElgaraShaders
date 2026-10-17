@@ -331,6 +331,37 @@ bool g_passLastFrame = false;
 // near map on (its smpShadowPartition1), which is given the atlas.
 std::unordered_map<IDirect3DPixelShader9 *, DWORD> g_receivers;
 
+// What a receiver's draw had on the sampler it is given the atlas on, given
+// back when the draw is done (Drawn). The engine keeps the sampler states it
+// set and does not set them again, so the atlas's point sampling, without
+// mipmaps and clamped, was left on the slot for every draw after that reads
+// a texture there: until 2026-10-16 figures' and props' textures were drawn
+// blocky close up and sparkling in motion, and SMAA could not smooth them
+// (the user: "grainy shimmering").
+constexpr std::array<D3DSAMPLERSTATETYPE, 5> kLentStates{D3DSAMP_MINFILTER, D3DSAMP_MAGFILTER, D3DSAMP_MIPFILTER,
+                                                         D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV};
+struct Lent
+{
+    bool lent = false;
+    DWORD sampler = 0;
+    IDirect3DBaseTexture9 *texture = nullptr;
+    std::array<DWORD, kLentStates.size()> states{};
+};
+Lent g_lent;
+SetSamplerStateFn g_setSampler = nullptr; // UseSamplerState's
+
+void SetSampler(IDirect3DDevice9 *device, DWORD sampler, D3DSAMPLERSTATETYPE type, DWORD value)
+{
+    if (g_setSampler != nullptr)
+    {
+        g_setSampler(device, sampler, type, value);
+    }
+    else
+    {
+        device->SetSamplerState(sampler, type, value);
+    }
+}
+
 // One of the engine's draws of a figure into its shadow maps, as the device
 // had it, to be drawn into each of the atlas's: the engine draws the same
 // figure into both its maps, or into one, or none past its own reach.
@@ -1160,12 +1191,19 @@ static void PictureDrawing(IDirect3DDevice9 *device, IDirect3DVertexShader9 *sha
             if (g_atlasReady)
             {
                 const DWORD sampler = receiver->second;
+                g_lent.lent = true;
+                g_lent.sampler = sampler;
+                device->GetTexture(sampler, &g_lent.texture);
+                for (std::size_t at = 0; at < kLentStates.size(); ++at)
+                {
+                    device->GetSamplerState(sampler, kLentStates.at(at), &g_lent.states.at(at));
+                }
                 device->SetTexture(sampler, g_atlas);
-                device->SetSamplerState(sampler, D3DSAMP_MINFILTER, D3DTEXF_POINT);
-                device->SetSamplerState(sampler, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
-                device->SetSamplerState(sampler, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
-                device->SetSamplerState(sampler, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
-                device->SetSamplerState(sampler, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+                SetSampler(device, sampler, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+                SetSampler(device, sampler, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+                SetSampler(device, sampler, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+                SetSampler(device, sampler, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+                SetSampler(device, sampler, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
             }
         }
     }
@@ -1196,6 +1234,29 @@ void Drawing(IDirect3DDevice9 *device, bool picture, D3DPRIMITIVETYPE type, INT 
         PictureDrawing(device, shader, type, base, least, vertices, first, count);
     }
     shader->Release();
+}
+
+void UseSamplerState(SetSamplerStateFn set)
+{
+    g_setSampler = set;
+}
+
+void Drawn(IDirect3DDevice9 *device)
+{
+    if (!g_lent.lent)
+    {
+        return;
+    }
+    device->SetTexture(g_lent.sampler, g_lent.texture);
+    for (std::size_t at = 0; at < kLentStates.size(); ++at)
+    {
+        SetSampler(device, g_lent.sampler, kLentStates.at(at), g_lent.states.at(at));
+    }
+    if (g_lent.texture != nullptr)
+    {
+        g_lent.texture->Release();
+    }
+    g_lent = Lent{};
 }
 
 static bool g_drawsPictureNow = true; // the device's first target is the frame's own picture
