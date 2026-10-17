@@ -440,7 +440,9 @@ CUTS = {}
 # The shaders that can say an ambient share: those of the materials' model,
 # and a face's, hair's and an eye's, which say it of what they scatter
 # (with_scattered_share).
-SHARE_SHADERS = MATERIAL_SHADERS[: -len(r")\.psh$")] + r"|face[02]|hair[02]|eye0)\.psh$"
+# Hair says no share of its own: it lies on the head, takes the head's
+# occlusion, and leaves the share under it (Graphics.cpp's HoldHairBack).
+SHARE_SHADERS = MATERIAL_SHADERS[: -len(r")\.psh$")] + r"|face[02]|eye0)\.psh$"
 
 
 def passes_of(material):

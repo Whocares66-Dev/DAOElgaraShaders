@@ -120,6 +120,7 @@ add_daolib_plugin(
         src/MaterialPatch.cpp
         src/MaterialLearn.cpp
         src/ResourceDump.cpp
+        src/ShaderCode.cpp
 )
 target_link_libraries(elgarashaders PRIVATE elgara_materials)
 dao_apply_warnings(elgarashaders)
@@ -208,7 +209,7 @@ enable_testing()
 # The materials' rule, names, lines and table (tests/test_materials.cpp); its
 # [game] cases read the installed game, and are skipped where there is none.
 find_package(Catch2 3 CONFIG REQUIRED)
-add_executable(elgarashaders_tests tests/test_materials.cpp)
+add_executable(elgarashaders_tests tests/test_materials.cpp tests/test_shadercode.cpp src/ShaderCode.cpp)
 target_link_libraries(
     elgarashaders_tests
     PRIVATE elgara_materials_table Catch2::Catch2WithMain
