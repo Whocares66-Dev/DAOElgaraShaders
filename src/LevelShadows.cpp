@@ -2041,6 +2041,45 @@ static std::pair<std::array<float, 3>, float> FigureBounds(const FigureDraw &dra
     return {at, reach};
 }
 
+// One light's six maps, in its row of the atlas: each face the level's own
+// surfaces within the light's reach (a wall between the light and what is
+// behind it), then the figures whose bounds (`bounds`, by g_figureDraws) come
+// within it.
+static void DrawEffectLight(IDirect3DDevice9 *device, std::size_t light, const std::array<float, 4> &place,
+                            const std::vector<std::pair<std::array<float, 3>, float>> &bounds)
+{
+    for (std::size_t face = 0; face < 6; ++face)
+    {
+        const D3DVIEWPORT9 viewport{static_cast<DWORD>(face * kEffectTile),
+                                    static_cast<DWORD>(light * kEffectTile),
+                                    kEffectTile,
+                                    kEffectTile,
+                                    0,
+                                    1};
+        device->SetViewport(&viewport);
+        device->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, 0xFFFFFFFF, 1.0F, 0);
+        const cascades::Matrix clip = EffectFace(place, face);
+        g_partition = clip;
+        g_drawingFor = place;
+        DrawLevel(device, false);
+        DrawLevel(device, true);
+        g_drawingFor.reset();
+        device->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED);
+        for (std::size_t at = 0; at < g_figureDraws.size(); ++at)
+        {
+            const auto &[centre, reach] = bounds[at];
+            const float x = centre[0] - place[0];
+            const float y = centre[1] - place[1];
+            const float z = centre[2] - place[2];
+            const float within = place[3] + reach;
+            if ((x * x) + (y * y) + (z * z) <= within * within)
+            {
+                Replay(device, g_figureDraws[at], clip, true);
+            }
+        }
+    }
+}
+
 // The effects' lights' maps for this scene: each light handed, six faces,
 // each with every figure that can stand within its reach. False where there
 // is nothing to draw them by.
@@ -2088,39 +2127,7 @@ static bool DrawEffectShadows(IDirect3DDevice9 *device)
         }
         for (std::size_t light = 0; light < lights.size() && light < kEffectLightsMost; ++light)
         {
-            const std::array<float, 4> &place = lights[light];
-            for (std::size_t face = 0; face < 6; ++face)
-            {
-                const D3DVIEWPORT9 viewport{static_cast<DWORD>(face * kEffectTile),
-                                            static_cast<DWORD>(light * kEffectTile),
-                                            kEffectTile,
-                                            kEffectTile,
-                                            0,
-                                            1};
-                device->SetViewport(&viewport);
-                device->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, 0xFFFFFFFF, 1.0F, 0);
-                const cascades::Matrix clip = EffectFace(place, face);
-                // The level's own surfaces within the light's reach (a wall
-                // between the light and what is behind it), then the figures.
-                g_partition = clip;
-                g_drawingFor = place;
-                DrawLevel(device, false);
-                DrawLevel(device, true);
-                g_drawingFor.reset();
-                device->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED);
-                for (std::size_t at = 0; at < g_figureDraws.size(); ++at)
-                {
-                    const auto &[centre, reach] = bounds[at];
-                    const float x = centre[0] - place[0];
-                    const float y = centre[1] - place[1];
-                    const float z = centre[2] - place[2];
-                    const float within = place[3] + reach;
-                    if ((x * x) + (y * y) + (z * z) <= within * within)
-                    {
-                        Replay(device, g_figureDraws[at], clip, true);
-                    }
-                }
-            }
+            DrawEffectLight(device, light, lights[light], bounds);
         }
         std::error_code error;
         if (!g_dumpAsked.empty() && std::filesystem::exists(g_dumpAsked, error))
