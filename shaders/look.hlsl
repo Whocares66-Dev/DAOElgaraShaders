@@ -40,6 +40,15 @@ float3 DaoCut(float3 colour)
 {
     return lerp(saturate(colour), max(colour, 0), saturate(DAO_UNCUT));
 }
+// The air's light the sky, the clouds and the effects fog towards (haze.hlsl;
+// Outdoors.cpp), two registers of their own below daoLook, set as they are:
+// the part the air's molecules scatter and whether it is ours (1, or the
+// area's fog colour, 0); the part its haze scatters and that's asymmetry.
+float4 daoHaze[2] : register(c218);
+#define DAO_HAZE daoHaze[0].w
+#define DAO_HAZE_AIR daoHaze[0].xyz
+#define DAO_HAZE_SUN daoHaze[1].xyz
+#define DAO_HAZE_G daoHaze[1].w
 // Whether what is drawn now goes into the frame's own picture, 1, or into
 // some other target, 0: the plugin's word, as the device's target changes
 // (Graphics.cpp's SetRenderTarget). A share is written to the alpha of the

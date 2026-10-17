@@ -120,6 +120,7 @@ add_daolib_plugin(
         src/MaterialPatch.cpp
         src/MaterialLearn.cpp
         src/ResourceDump.cpp
+        src/Outdoors.cpp
 )
 target_link_libraries(elgarashaders PRIVATE elgara_materials)
 dao_apply_warnings(elgarashaders)

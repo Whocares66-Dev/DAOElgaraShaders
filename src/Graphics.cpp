@@ -37,6 +37,7 @@
 // What it does goes to elgarashaders.log.
 #include "MaterialLearn.h"
 #include "MaterialPatch.h"
+#include "Outdoors.h"
 #include "ResourceDump.h"
 
 #include "dao/Addresses.h"
@@ -86,10 +87,12 @@ constexpr std::int32_t kMapSize = 2048; // texels a side, with Improved shadows 
 constexpr bool kMaterialsByDefault = true;
 constexpr bool kShadowsByDefault = true;
 constexpr bool kSmaaByDefault = true;
+constexpr bool kHazeByDefault = true;
 constexpr int kOcclusionByDefault = 3;  // High
 constexpr int kAnisotropyByDefault = 4; // 16x
 std::atomic<bool> g_materials{kMaterialsByDefault};
 std::atomic<bool> g_shadows{kShadowsByDefault};
+std::atomic<bool> g_sunlitHaze{kHazeByDefault}; // the air lit by the sun (Outdoors.h)
 bool g_smaa = kSmaaByDefault; // SMAA beside the game's own anti-aliasing, or not
 
 // The two sliders, each a stop of its list (the user, 2026-10-12: "implement
@@ -146,6 +149,13 @@ constexpr std::size_t kShadowOnFigures = 2;
 constexpr std::size_t kShadows = 3;
 constexpr std::size_t kShadowMapSize = 4;
 constexpr std::size_t kUncut = 5;
+// The air's light the sky, the clouds and the effects fog towards
+// (outdoors::Haze), in registers of their own below these (look.hlsl's
+// daoHaze): the sky's part and whether it is ours, the sun's part and its
+// asymmetry.
+constexpr UINT kHazeRegister = 218;
+constexpr std::size_t kHazeRegisters = 2;
+std::array<std::atomic<float>, kHazeRegisters * 4> g_hazeLook{};
 // The last of them: whether the ambient share is written into what is drawn
 // now (look.hlsl's DAO_SHARE_ASKED): where the device's first target is the
 // frame's own picture, which is the drawing thread's to know and to say as
@@ -608,6 +618,26 @@ HRESULT __stdcall StretchRect(IDirect3DDevice9 *device, IDirect3DSurface9 *from,
 // colour does, which is the game's way.
 DWORD g_separateAlphaAsked = FALSE;
 
+// What the distance target beside the picture (the second target, the
+// game's packed depth) keeps in its alpha: how much of its light each
+// surface kept through the fog (build_shaders.py's with_fog_kept), for the
+// air's light's pass. The engine writes all four channels there (seen
+// 2026-10-16: COLORWRITEENABLE1 0xF), and after the solid surfaces it draws
+// effects and see-through things with the target still bound, some by
+// shaders that write it nothing and all of them blended: over Redcliffe's
+// hill and its windmill what they left said no fog at all. So while the game
+// blends, that alpha is not written, and what is behind keeps its own. The
+// game reads none of it: its depth is the other three.
+DWORD g_writeOneAsked = D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE |
+                        D3DCOLORWRITEENABLE_ALPHA;
+DWORD g_blendAsked = FALSE;
+
+DWORD WriteOne()
+{
+    return g_blendAsked != FALSE ? (g_writeOneAsked & ~static_cast<DWORD>(D3DCOLORWRITEENABLE_ALPHA))
+                                 : g_writeOneAsked;
+}
+
 HRESULT __stdcall SetRenderState(IDirect3DDevice9 *device, D3DRENDERSTATETYPE state, DWORD value)
 {
     if (state == D3DRS_SEPARATEALPHABLENDENABLE)
@@ -615,7 +645,18 @@ HRESULT __stdcall SetRenderState(IDirect3DDevice9 *device, D3DRENDERSTATETYPE st
         g_separateAlphaAsked = value;
         value = ShareAsked() ? value : FALSE;
     }
-    return g_setRenderState.Original()(device, state, value);
+    if (state == D3DRS_COLORWRITEENABLE1)
+    {
+        g_writeOneAsked = value;
+        value = WriteOne();
+    }
+    const HRESULT result = g_setRenderState.Original()(device, state, value);
+    if (state == D3DRS_ALPHABLENDENABLE)
+    {
+        g_blendAsked = value;
+        g_setRenderState.Original()(device, D3DRS_COLORWRITEENABLE1, WriteOne());
+    }
+    return result;
 }
 
 // Whether a surface is the frame's own picture: our target, or the back
@@ -823,6 +864,12 @@ HRESULT __stdcall BeginScene(IDirect3DDevice9 *device)
     }
     values.at(kShareAsked) = ShareAsked() ? 1.0F : 0.0F;
     device->SetPixelShaderConstantF(kLookRegister, values.data(), kLookRegisters);
+    std::array<float, kHazeRegisters * 4> haze{};
+    for (std::size_t i = 0; i < haze.size(); ++i)
+    {
+        haze.at(i) = g_hazeLook.at(i).load(std::memory_order_relaxed);
+    }
+    device->SetPixelShaderConstantF(kHazeRegister, haze.data(), kHazeRegisters);
     return g_beginScene.Original()(device);
 }
 
@@ -906,6 +953,10 @@ void ReadChosen(const std::filesystem::path &folder)
         {
             g_materials.store(value == "On", std::memory_order_relaxed);
         }
+        if (key == "SunlitHaze")
+        {
+            g_sunlitHaze.store(value == "On", std::memory_order_relaxed);
+        }
         if (key == "ImprovedShadows")
         {
             g_shadows.store(value == "On", std::memory_order_relaxed);
@@ -932,6 +983,7 @@ void KeepChosen()
     std::ofstream out(dao::Module::OwnFolder() / kChosenFile, std::ios::trunc);
     out << "ImprovedMaterials = " << said(g_materials.load(std::memory_order_relaxed))
         << "\nImprovedShadows = " << said(g_shadows.load(std::memory_order_relaxed))
+        << "\nSunlitHaze = " << said(g_sunlitHaze.load(std::memory_order_relaxed))
         << "\nAntiAliasing = " << (g_smaa ? "SMAA" : "Off")
         << "\nAmbientOcclusion = " << g_occlusionStop.load(std::memory_order_relaxed)
         << "\nAnisotropicFiltering = " << g_anisotropyStop.load(std::memory_order_relaxed) << '\n';
@@ -983,6 +1035,15 @@ void KeepLookRegisters()
     g_look.at(kUncut).store(wide ? 1.0F : 0.0F, std::memory_order_relaxed);
     g_look.at(kShadows).store(shadows, std::memory_order_relaxed);
     g_look.at(kShadowOnFigures).store(shadows, std::memory_order_relaxed);
+    outdoors::Want(g_sunlitHaze.load(std::memory_order_relaxed));
+    const outdoors::SkyHaze haze = outdoors::Haze();
+    for (std::size_t c = 0; c < 3; ++c)
+    {
+        g_hazeLook.at(c).store(haze.air.at(c), std::memory_order_relaxed);
+        g_hazeLook.at(4 + c).store(haze.sun.at(c), std::memory_order_relaxed);
+    }
+    g_hazeLook.at(3).store(haze.on ? 1.0F : 0.0F, std::memory_order_relaxed);
+    g_hazeLook.at(7).store(haze.g, std::memory_order_relaxed);
     g_shareWanted.store(g_occlusionStop.load(std::memory_order_relaxed) > 0, std::memory_order_relaxed);
     g_anisotropy.store(kAnisotropyStops.at(static_cast<std::size_t>(g_anisotropyStop.load(std::memory_order_relaxed))),
                        std::memory_order_relaxed);
@@ -1134,8 +1195,9 @@ void ApplyOptions()
 
 // The options screen's section, on the Video tab's right column, which holds
 // a heading and twelve rows of 35 px (DAOLib #82), a slider 41 px (#84):
-// three checkboxes and two sliders. The checkboxes and the sliders are the
-// first release's (issue 23); the lighting's are on the dev branch.
+// four checkboxes and two sliders. Improved materials and shadows, SMAA and
+// the sliders are the first release's (issue 23); Sunlit haze the first of
+// the lighting's (2026-10-16).
 constexpr const wchar_t *kOptionsTitle = L"Elgara Shaders";
 
 // A checkbox kept in graphics.chosen.
@@ -1204,6 +1266,8 @@ void AddToOptions()
                       L"Softer, finer shadows, which fall on characters too; their finer maps are made as the game "
                       L"starts",
                       "improved shadows"),
+             Checkbox(g_sunlitHaze, kHazeByDefault, L"GraphicsSunlitHaze", L"Sunlit haze",
+                      L"The haze and fog out of doors lit by the sun: brighter and warmer towards it", "sunlit haze"),
              smaa},
             {StopSlider(g_occlusionStop, kOcclusionByDefault, kOcclusionNames, L"GraphicsOcclusion",
                         L"Ambient occlusion", L"Shade in corners and creases and under things (GTAO)",
@@ -1271,5 +1335,6 @@ extern "C" __declspec(dllexport) bool __cdecl DAOLib_Load(const dao::LoaderInfo 
     dao::OnFrame(&resourcedump::Poll);
     dao::OnFrame(&materialpatch::LogCounts);
     dao::OnFrame(&materiallearn::Poll);
+    dao::OnFrame(&outdoors::Poll);
     return true;
 }
