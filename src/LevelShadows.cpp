@@ -246,7 +246,7 @@ bool g_mapDrawn = false;
 // (traced 2026-10-16), and a figure's shaders have no sampler for more.
 // Hosting the view's maps in them was a fault after a fault (the user,
 // 2026-10-16: "do it properly").
-constexpr std::array<float, 4> kRadii{8, 32, 128, 512};
+constexpr std::array<float, 4> kRadii{3, 16, 80, 512};
 // What share of its radius a map moves by: it is the same map while the focus
 // walks about within it, and the level drawn into it is kept (Cache).
 constexpr float kStepShare = 0.4F;
@@ -328,7 +328,8 @@ bool g_atlasReady = false; // and drawn: the receivers read it, else the engine'
 bool g_passThisFrame = false;
 bool g_passLastFrame = false;
 // The receivers' pixel shaders, each with the sampler it reads the engine's
-// near map on (its smpShadowPartition1), which is given the atlas.
+// near map on (its smpShadowPartition1, or a face's and hair's
+// smpShadowPart1), which is given the atlas.
 std::unordered_map<IDirect3DPixelShader9 *, DWORD> g_receivers;
 
 // What a receiver's draw had on the sampler it is given the atlas on, given
@@ -1825,9 +1826,17 @@ void CreatedPixel(const DWORD *code, IDirect3DPixelShader9 *shader)
         return;
     }
     g_receivers.erase(shader); // the last made here's alone (Created)
-    if (const std::optional<UINT> sampler = RegisterOf(CodeOf(code), "smpShadowPartition1"))
+    // The near map's name: the Character material's, or the Face's and the
+    // HairAlpha's own (build_shaders.py's SHADOW_MAPS). Until 2026-10-16 only
+    // the first was looked for, and every face and hair read whatever the
+    // draw before had left on its sampler.
+    for (const std::string_view name : {"smpShadowPartition1", "smpShadowPart1"})
     {
-        g_receivers[shader] = *sampler;
+        if (const std::optional<UINT> sampler = RegisterOf(CodeOf(code), name))
+        {
+            g_receivers[shader] = *sampler;
+            break;
+        }
     }
 }
 
