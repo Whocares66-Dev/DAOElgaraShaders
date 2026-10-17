@@ -1355,10 +1355,39 @@ def with_our_grade(shader, occlusion=False, show=False):
     # The grade's own pass lifts the shade (grade.hlsl's fDaoLift); the
     # fading form, run by another chain, does not.
     lift = "fDaoLift" if occlusion else "0"
-    colour = f"DaoPicture({picture}, {coordinate}.xy, {lift})"
+    # The grade's own pass takes each channel through the area's curve (s1)
+    # by `dp4 <c>, <picture>, v0` and v1 and v2, the colour matrix's rows:
+    # the picture comes to it as bright as it is, and the three are rolled
+    # off together into what the curve can show (grade.hlsl's DaoIntoCurve).
+    # The fading form has no curve: it reads the picture rolled off.
+    rows = [
+        i
+        for i, st in enumerate(shader.statements)
+        if re.match(rf"^dp4\w* r\d+\.\w, {register}, v[012]$", st.asm.strip())
+    ]
+    curve = next(
+        (p.name for p in shader.parameters.values() if p.set == "s" and p.base == 1),
+        None,
+    )
+    into_curve = len(rows) == 3 and curve is not None
+    colour = f"DaoPicture({picture}, {coordinate}.xy, {lift}, {'false' if into_curve else 'true'})"
     open_ = f"DaoOcclusion({coordinate}.xy)"
     if occlusion:
         colour += f" * {open_}"
+    if into_curve:
+        for i in rows:
+            target, row = re.match(
+                rf"^dp4\w* (r\d+\.\w), {register}, v([012])$",
+                shader.statements[i].asm.strip(),
+            ).groups()
+            shader.statements[i].hlsl = f"{target} = daoGraded.{'rgb'[int(row)]};"
+        shader.insert(
+            rows[0] - 1,
+            [
+                f"const float3 daoGraded = DaoIntoCurve(float3(dot({register}, v0), dot({register}, v1),"
+                f" dot({register}, v2)), {curve});"
+            ],
+        )
     shader.replace(read, read, [f"{register} = float4({colour}, 1);"])
     shader.add_input("pixel", "float2", "VPOS")
     last = ["oC0.xyz = DaoGrade(oC0.xyz, input.pixel);"]

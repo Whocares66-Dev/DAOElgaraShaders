@@ -105,13 +105,55 @@ static const float kDaoLiftWhole = -4;
 static const float kDaoLiftNone = -2;
 
 // The picture at `uv`, as the grade is to read it, its shade lifted by
-// `lift` stops (fDaoLift, or 0).
-float3 DaoPicture(sampler2D picture, float2 uv, float lift)
+// `lift` stops (fDaoLift, or 0); rolled off at white where `rolled` (the
+// fading form, which has no curve after it), else left as bright as it is
+// for DaoIntoCurve.
+float3 DaoPicture(sampler2D picture, float2 uv, float lift, bool rolled)
 {
     const float3 colour = tex2D(picture, uv).rgb;
     const float stopsFromWhite = log2(max(dot(colour, float3(0.2126, 0.7152, 0.0722)), 1.0 / 4096));
     const float dark = saturate((kDaoLiftNone - stopsFromWhite) / (kDaoLiftNone - kDaoLiftWhole));
-    return DaoShoulder(colour * (fDaoExposure * exp2(lift * dark)));
+    const float3 lit = colour * (fDaoExposure * exp2(lift * dark));
+    return rolled ? DaoShoulder(lit) : lit;
+}
+
+// Where an area's curve reaches white, a channel at a time: the least of its
+// input that comes out white, found by halving (eight times, to a 256th: the
+// curve is 256 wide). The grade's last step is a curve for each channel,
+// each area's own (cc_<area>.dds; DAOLib's dev/TODO.md, read 2026-10-17), and
+// many are an S that is white well short of the top: the Dead Trenches' at
+// 0.59, 0.78 and 0.66 of red, green and blue, the Circle's at 0.52, 0.54 and
+// 0.40, the Dalish camp's near 1.
+float3 DaoCurveWhite(sampler2D curve)
+{
+    float3 low = 0;
+    float3 high = 1;
+    [unroll] for (int i = 0; i < 8; i++)
+    {
+        const float3 middle = (low + high) / 2;
+        const float3 seen =
+            float3(tex2Dlod(curve, float4(middle.r, 0.5, 0, 0)).r, tex2Dlod(curve, float4(middle.g, 0.5, 0, 0)).g,
+                   tex2Dlod(curve, float4(middle.b, 0.5, 0, 0)).b);
+        const float3 white = step(254.5 / 255, seen);
+        high = lerp(high, middle, white);
+        low = lerp(middle, low, white);
+    }
+    return max(high, 1.0 / 255);
+}
+
+// The graded colour (the picture through the area's colour matrix, as bright
+// as it is) brought into what the area's curve can show, each channel's
+// white the curve's: rolled off by DaoShoulder as a share of it. What the
+// curve would have cut at its white comes down on the shoulder instead, and
+// below the knee the curve has the colour as it had it. The roll-off ran on
+// the picture before the matrix, white at 1, and an effect's flash in the
+// Dead Trenches, rolled off to 0.9 and more, was cut flat white by the
+// curve's 0.59 (the user, 2026-10-17: "we're blowing out the image with
+// effect lighting").
+float3 DaoIntoCurve(float3 graded, sampler2D curve)
+{
+    const float3 white = DaoCurveWhite(curve);
+    return DaoShoulder(graded / white) * white;
 }
 
 // The graded picture's colour made ours. `pixel` is its place on the screen.
