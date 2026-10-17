@@ -45,6 +45,10 @@ void UseSamplerState(SetSamplerStateFn set);
 // Whether the level is drawn into the shadow maps. The game thread's word.
 void Want(bool on);
 
+// Whether the effects' lights' shadows are drawn (effect_lights.hlsl's
+// DaoEffectShadow), each light's from the figures about it: the game
+// thread's word, with Improved lighting.
+void WantEffectShadows(bool on);
 // A vertex shader the game made, from `code`.
 void Created(const DWORD *code, IDirect3DVertexShader9 *shader);
 

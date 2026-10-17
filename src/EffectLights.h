@@ -21,6 +21,10 @@
 
 #include <d3d9.h>
 
+#include <array>
+#include <cstddef>
+#include <vector>
+
 namespace effectlights
 {
 
@@ -40,5 +44,9 @@ void Read();
 // Hands the shaders the lights last read (effect_lights.hlsl's registers),
 // as the scene starts.
 void Hand(IDirect3DDevice9 *device);
+
+// The lights handed for this scene, in their order, each its place and reach:
+// what their shadows are drawn from (LevelShadows.cpp). The render thread's.
+const std::vector<std::array<float, 4>> &Handed();
 
 } // namespace effectlights

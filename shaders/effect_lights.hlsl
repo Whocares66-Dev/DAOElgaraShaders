@@ -13,6 +13,85 @@
 float4 daoEffectLights[32] : register(c160);
 float4 daoEffectCount : register(c192);
 
+// The lights' shadows: what stands about each light drawn into six maps, a
+// cube's faces, side by side in one atlas, a row of six to a light, in the
+// order daoEffectLights has them (LevelShadows.cpp's DrawEffectShadows). A
+// face looks along an axis of the world, +x, -x, +y, -y, +z, -z, from the
+// light's place, a quarter turn wide and high, from kDaoEffectNear to the
+// light's reach; it holds, for each texel, a + b / z of what is nearest the
+// light, z the distance along the face's axis (the engine's shadow pass
+// writes the depth over w). Across a face its x and y are the world's two
+// other axes in order, y up the face.
+static const float kDaoEffectTile = 128;
+static const int kDaoEffectLightsMost = 16;
+static const float kDaoEffectNear = 0.05;
+
+// A point's place in light i's maps: the atlas's x and y, and its distance
+// along the face's axis.
+float3 DaoEffectPlace(int i, float3 world)
+{
+    const float4 light = daoEffectLights[2 * i];
+    const float3 d = world - light.xyz;
+    const float3 a = abs(d);
+    float face;
+    float z;
+    float2 across;
+    if (a.x >= a.y && a.x >= a.z)
+    {
+        face = d.x >= 0 ? 0 : 1;
+        z = a.x;
+        across = d.yz;
+    }
+    else if (a.y >= a.z)
+    {
+        face = d.y >= 0 ? 2 : 3;
+        z = a.y;
+        across = d.xz;
+    }
+    else
+    {
+        face = d.z >= 0 ? 4 : 5;
+        z = a.z;
+        across = d.xy;
+    }
+    const float2 uv = float2(0.5 + 0.5 * across.x / z, 0.5 - 0.5 * across.y / z);
+    // Kept a texel inside the face's own tile, for the taps about it.
+    const float2 inside = clamp(uv, 1 / kDaoEffectTile, 1 - 1 / kDaoEffectTile);
+    return float3((face + inside.x) / 6, (i + inside.y) / kDaoEffectLightsMost, z);
+}
+
+// How much of light i reaches a point of the world, past what stands nearer
+// the light than it: four taps a texel apart, each by the distance it holds
+// against the point's own, less a bias of two centimetres and two texels'
+// width there (the maps' own steps).
+float DaoEffectShadow(sampler2D map, int i, float3 world)
+{
+    const float far = daoEffectLights[2 * i].w;
+    const float a = far / (far - kDaoEffectNear);
+    const float b = -kDaoEffectNear * a;
+    const float3 at = DaoEffectPlace(i, world);
+    const float bias = 0.02 + 4 * at.z / kDaoEffectTile;
+    const float2 texel = float2(1.0 / (6 * kDaoEffectTile), 1.0 / (kDaoEffectLightsMost * kDaoEffectTile));
+    float lit = 0;
+    [unroll] for (int t = 0; t < 4; t++)
+    {
+        const float2 tap = at.xy + (float2(t % 2, t / 2) - 0.5) * texel;
+        const float stored = tex2Dlod(map, float4(tap, 0, 0)).x;
+        // The stored a + b / z back to z; nothing drawn there (1) is the reach.
+        const float nearest = stored < 1 ? b / (stored - a) : far;
+        lit += nearest >= at.z - bias ? 1.0 : 0.0;
+    }
+    return lit / 4;
+}
+
+// A light's shadow at a point, where the shader has a sampler for the atlas;
+// where it has none left (a face's: Direct3D 9's sixteen all taken), none.
+#ifdef DAO_NO_EFFECT_SHADOWS
+#define DAO_EFFECT_SHADOW(i, world) 1.0
+#else
+#define DAO_EFFECT_SHADOW(i, world) DaoEffectShadow(smpDaoEffectShadows, i, world)
+#endif
+
 // A texture read in a light's reckoning, run in a loop as long as the lights:
 // at its first level, a loop of no fixed length allowing no gradient. What a
 // reckoning reads is a table (a face's scattering by the light's angle).
@@ -36,7 +115,8 @@ float3 DaoEffectDiffuse(float3 world, float3 normal)
         const float3 way = place.xyz - world;
         const float distance = max(length(way), 0.001);
         const float fall = cos(1.5707963 * saturate(distance / place.w));
-        sum += fall * fall * saturate(dot(normal, way / distance)) * daoEffectLights[2 * i + 1].rgb;
+        sum += fall * fall * saturate(dot(normal, way / distance)) * daoEffectLights[2 * i + 1].rgb *
+               DAO_EFFECT_SHADOW(i, world);
     }
     return sum;
 }

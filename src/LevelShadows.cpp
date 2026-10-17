@@ -1,6 +1,7 @@
 #include "LevelShadows.h"
 
 #include "Cascades.h"
+#include "EffectLights.h"
 #include "Reflected.h"
 #include "ShaderCode.h"
 
@@ -318,6 +319,21 @@ IDirect3DTexture9 *g_atlas = nullptr;
 IDirect3DSurface9 *g_atlasDepth = nullptr;
 UINT g_tile = 0;
 bool g_atlasDrawn = false; // asked for this frame
+
+// The effects' lights' shadows (effect_lights.hlsl's DaoEffectShadow): for
+// each light handed this scene, six maps, a cube's faces, a row of six to a
+// light, drawn with the figures within the light's reach. A face is
+// kEffectTile square, a quarter turn wide, from kEffectNear to the light's
+// reach; all of it the shaders' own reckoning, which these numbers must match.
+constexpr UINT kEffectTile = 128;
+constexpr UINT kEffectLightsMost = 16;
+constexpr float kEffectNear = 0.05F;
+std::atomic<bool> g_effectsWanted{false};
+std::unordered_map<IDirect3DPixelShader9 *, DWORD> g_effectReceivers;
+IDirect3DTexture9 *g_effectAtlas = nullptr;
+IDirect3DSurface9 *g_effectDepth = nullptr;
+bool g_effectsDrawn = false; // asked for this frame
+bool g_effectsReady = false;
 bool g_atlasReady = false; // and drawn: the receivers read it, else the engine's own maps
 // Whether the engine's shadow pass has drawn this frame, and last frame. The
 // atlas takes its figures from the pass, so it is drawn after it: a receiver
@@ -354,6 +370,7 @@ struct Lent
     std::array<DWORD, kLentStates.size()> states{};
 };
 Lent g_lent;
+Lent g_lentEffects;
 SetSamplerStateFn g_setSampler = nullptr; // UseSamplerState's
 
 void SetSampler(IDirect3DDevice9 *device, DWORD sampler, D3DSAMPLERSTATETYPE type, DWORD value)
@@ -1081,6 +1098,7 @@ void Created(const DWORD *code, IDirect3DVertexShader9 *shader)
 }
 
 static bool DrawAtlas(IDirect3DDevice9 *device);
+static void EffectsDrawing(IDirect3DDevice9 *device);
 static void SetReceivers(IDirect3DDevice9 *device);
 static void SetReceiversFor(IDirect3DDevice9 *device, bool picture);
 
@@ -1167,7 +1185,7 @@ static void EngineDrawing(IDirect3DDevice9 *device, UINT partition, D3DPRIMITIVE
         target->Release();
     }
     device->GetVertexShaderConstantF(partition, g_partition.data(), kMatrixRegisters);
-    if (g_wanted.load(std::memory_order_relaxed))
+    if (g_wanted.load(std::memory_order_relaxed) || g_effectsWanted.load(std::memory_order_relaxed))
     {
         NoteFigure(device, partition, type, base, least, vertices, first, count);
     }
@@ -1181,16 +1199,16 @@ static void EngineDrawing(IDirect3DDevice9 *device, UINT partition, D3DPRIMITIVE
 // given to it; if it is the level's own, the draw kept.
 // The atlas lent to the draw about to be made on `sampler`, read point by
 // point; Drawn gives back what was there.
-static void Lend(IDirect3DDevice9 *device, DWORD sampler)
+static void Lend(IDirect3DDevice9 *device, DWORD sampler, Lent &lent = g_lent, IDirect3DTexture9 *texture = g_atlas)
 {
-    g_lent.lent = true;
-    g_lent.sampler = sampler;
-    device->GetTexture(sampler, &g_lent.texture);
+    lent.lent = true;
+    lent.sampler = sampler;
+    device->GetTexture(sampler, &lent.texture);
     for (std::size_t at = 0; at < kLentStates.size(); ++at)
     {
-        device->GetSamplerState(sampler, kLentStates.at(at), &g_lent.states.at(at));
+        device->GetSamplerState(sampler, kLentStates.at(at), &lent.states.at(at));
     }
-    device->SetTexture(sampler, g_atlas);
+    device->SetTexture(sampler, texture);
     SetSampler(device, sampler, D3DSAMP_MINFILTER, D3DTEXF_POINT);
     SetSampler(device, sampler, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
     SetSampler(device, sampler, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
@@ -1242,9 +1260,13 @@ void Drawing(IDirect3DDevice9 *device, bool picture, D3DPRIMITIVETYPE type, INT 
     {
         EngineDrawing(device, engine->second, type, base, least, vertices, first, count);
     }
-    else if (picture && g_wanted.load(std::memory_order_relaxed))
+    else if (picture)
     {
-        PictureDrawing(device, shader, type, base, least, vertices, first, count);
+        if (g_wanted.load(std::memory_order_relaxed))
+        {
+            PictureDrawing(device, shader, type, base, least, vertices, first, count);
+        }
+        EffectsDrawing(device);
     }
     shader->Release();
 }
@@ -1278,6 +1300,25 @@ void Air(IDirect3DDevice9 *device)
     }
 }
 
+// What was lent a draw given back.
+static void GiveBack(IDirect3DDevice9 *device, Lent &lent)
+{
+    if (!lent.lent)
+    {
+        return;
+    }
+    device->SetTexture(lent.sampler, lent.texture);
+    for (std::size_t at = 0; at < kLentStates.size(); ++at)
+    {
+        SetSampler(device, lent.sampler, kLentStates.at(at), lent.states.at(at));
+    }
+    if (lent.texture != nullptr)
+    {
+        lent.texture->Release();
+    }
+    lent = Lent{};
+}
+
 void Drawn(IDirect3DDevice9 *device)
 {
     if (g_airSet)
@@ -1285,20 +1326,8 @@ void Drawn(IDirect3DDevice9 *device)
         g_airSet = false;
         SetReceivers(device);
     }
-    if (!g_lent.lent)
-    {
-        return;
-    }
-    device->SetTexture(g_lent.sampler, g_lent.texture);
-    for (std::size_t at = 0; at < kLentStates.size(); ++at)
-    {
-        SetSampler(device, g_lent.sampler, kLentStates.at(at), g_lent.states.at(at));
-    }
-    if (g_lent.texture != nullptr)
-    {
-        g_lent.texture->Release();
-    }
-    g_lent = Lent{};
+    GiveBack(device, g_lent);
+    GiveBack(device, g_lentEffects);
 }
 
 static bool g_drawsPictureNow = true; // the device's first target is the frame's own picture
@@ -1728,7 +1757,8 @@ static bool MakeAtlas(IDirect3DDevice9 *device)
 }
 
 // A figure's draw drawn again by a map's matrix.
-static void Replay(IDirect3DDevice9 *device, const FigureDraw &draw, const cascades::Matrix &clip)
+static void Replay(IDirect3DDevice9 *device, const FigureDraw &draw, const cascades::Matrix &clip,
+                   bool bothSides = false)
 {
     device->SetVertexShader(draw.vertex);
     device->SetPixelShader(draw.pixel);
@@ -1746,6 +1776,10 @@ static void Replay(IDirect3DDevice9 *device, const FigureDraw &draw, const casca
     for (std::size_t at = 0; at < kFigureStates.size(); ++at)
     {
         device->SetRenderState(kFigureStates.at(at), draw.states.at(at));
+    }
+    if (bothSides)
+    {
+        device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
     }
     g_draw(device, draw.type, draw.base, draw.least, draw.vertices, draw.first, draw.count);
 }
@@ -1861,6 +1895,225 @@ static bool DrawAtlas(IDirect3DDevice9 *device)
     return true;
 }
 
+// The effects' atlas and its depth, made once (and again after a reset).
+static bool MakeEffectAtlas(IDirect3DDevice9 *device)
+{
+    if (g_effectAtlas != nullptr)
+    {
+        return true;
+    }
+    if (FAILED(device->CreateTexture(kEffectTile * 6, kEffectTile * kEffectLightsMost, 1, D3DUSAGE_RENDERTARGET,
+                                     kMapFormat, D3DPOOL_DEFAULT, &g_effectAtlas, nullptr)) ||
+        FAILED(device->CreateDepthStencilSurface(kEffectTile * 6, kEffectTile * kEffectLightsMost, D3DFMT_D24X8,
+                                                 D3DMULTISAMPLE_NONE, 0, TRUE, &g_effectDepth, nullptr)))
+    {
+        spdlog::warn("effects' shadows: the atlas could not be made");
+        for (IUnknown **held :
+             {reinterpret_cast<IUnknown **>(&g_effectAtlas), reinterpret_cast<IUnknown **>(&g_effectDepth)})
+        {
+            if (*held != nullptr)
+            {
+                (*held)->Release();
+                *held = nullptr;
+            }
+        }
+        return false;
+    }
+    return true;
+}
+
+// The matrix of one face of a light's cube, by rows, as the engine's shadow
+// pass takes it (g_mPSSMPartitionMatrix): x and y the world's other two axes
+// in order, w the distance along the face's axis, z made a + b w so that the
+// depth over w is a + b / w, 0 at kEffectNear and 1 at the reach.
+static cascades::Matrix EffectFace(const std::array<float, 4> &light, std::size_t face)
+{
+    const std::size_t axis = face / 2;
+    const float sign = face % 2 == 0 ? 1.0F : -1.0F;
+    const float reachOf = light[3];
+    const float a = reachOf / (reachOf - kEffectNear);
+    const float b = -kEffectNear * a;
+    // A row that reads component c of the way from the light: e_c, less the light's place.
+    const auto along = [&](std::size_t c, float times) {
+        std::array<float, 4> row{};
+        row.at(c) = times;
+        row[3] = -light.at(c) * times;
+        return row;
+    };
+    const std::array<std::size_t, 2> across = axis == 0   ? std::array<std::size_t, 2>{1, 2}
+                                              : axis == 1 ? std::array<std::size_t, 2>{0, 2}
+                                                          : std::array<std::size_t, 2>{0, 1};
+    const std::array<float, 4> x = along(across[0], 1);
+    const std::array<float, 4> y = along(across[1], 1);
+    const std::array<float, 4> w = along(axis, sign);
+    std::array<float, 4> z{};
+    for (std::size_t i = 0; i < 4; ++i)
+    {
+        z.at(i) = a * w.at(i);
+    }
+    z[3] += b;
+    cascades::Matrix clip{};
+    for (std::size_t i = 0; i < 4; ++i)
+    {
+        clip.at(i) = x.at(i);
+        clip.at(4 + i) = y.at(i);
+        clip.at(8 + i) = z.at(i);
+        clip.at(12 + i) = w.at(i);
+    }
+    return clip;
+}
+
+// Where a figure's draw stands and how far it reaches about that: its world
+// matrix's translation (the four registers before its map's matrix, in both
+// the engine's skinned and plain shadow shaders, aur_mWorld), and the
+// farthest of its bones from there, or for a draw with no bones (a weapon,
+// a shield) a reach any such thing is within. Only what is drawn into a
+// light's maps is decided by it, so it is taken wide.
+static std::pair<std::array<float, 3>, float> FigureBounds(const FigureDraw &draw)
+{
+    const std::size_t world = (draw.partition - 4) * 4;
+    const std::array<float, 3> at{draw.vertexConstants.at(world + 3), draw.vertexConstants.at(world + 7),
+                                  draw.vertexConstants.at(world + 11)};
+    constexpr float kThingReach = 2.5F; // metres: a weapon, a shield, a staff
+    constexpr float kFlesh = 1.0F;      // metres past the farthest bone
+    constexpr float kBoneFarthest = 30.0F;
+    float reach = kThingReach;
+    if (draw.partition > 4)
+    {
+        // Skinned: bsm_bones, a bone three registers, from c0.
+        for (std::size_t bone = 0; (bone * 3) + 3 <= draw.partition - 4; ++bone)
+        {
+            const float x = draw.vertexConstants.at((bone * 12) + 3);
+            const float y = draw.vertexConstants.at((bone * 12) + 7);
+            const float z = draw.vertexConstants.at((bone * 12) + 11);
+            const float d = std::sqrt((x * x) + (y * y) + (z * z));
+            if (std::isfinite(d) && d < kBoneFarthest)
+            {
+                reach = std::max(reach, d + kFlesh);
+            }
+        }
+    }
+    return {at, reach};
+}
+
+// The effects' lights' maps for this scene: each light handed, six faces,
+// each with every figure that can stand within its reach. False where there
+// is nothing to draw them by.
+static bool DrawEffectShadows(IDirect3DDevice9 *device)
+{
+    const std::vector<std::array<float, 4>> &lights = effectlights::Handed();
+    if (lights.empty() || !MakeEffectAtlas(device))
+    {
+        return false;
+    }
+    if (g_saved == nullptr && FAILED(device->CreateStateBlock(D3DSBT_ALL, &g_saved)))
+    {
+        g_saved = nullptr;
+        return false;
+    }
+    g_saved->Capture();
+    std::array<IDirect3DSurface9 *, 2> targets{};
+    IDirect3DSurface9 *depth = nullptr;
+    IDirect3DSurface9 *atlas = nullptr;
+    device->GetRenderTarget(0, targets.data());
+    device->GetRenderTarget(1, targets.data() + 1);
+    device->GetDepthStencilSurface(&depth);
+    if (SUCCEEDED(g_effectAtlas->GetSurfaceLevel(0, &atlas)))
+    {
+        device->SetRenderTarget(0, atlas);
+        device->SetRenderTarget(1, nullptr);
+        device->SetDepthStencilSurface(g_effectDepth);
+        device->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
+        device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+        device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+        device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+        device->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED);
+        std::vector<std::pair<std::array<float, 3>, float>> bounds;
+        bounds.reserve(g_figureDraws.size());
+        for (const FigureDraw &draw : g_figureDraws)
+        {
+            bounds.push_back(FigureBounds(draw));
+        }
+        for (std::size_t light = 0; light < lights.size() && light < kEffectLightsMost; ++light)
+        {
+            const std::array<float, 4> &place = lights[light];
+            for (std::size_t face = 0; face < 6; ++face)
+            {
+                const D3DVIEWPORT9 viewport{static_cast<DWORD>(face * kEffectTile),
+                                            static_cast<DWORD>(light * kEffectTile),
+                                            kEffectTile,
+                                            kEffectTile,
+                                            0,
+                                            1};
+                device->SetViewport(&viewport);
+                device->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, 0xFFFFFFFF, 1.0F, 0);
+                const cascades::Matrix clip = EffectFace(place, face);
+                for (std::size_t at = 0; at < g_figureDraws.size(); ++at)
+                {
+                    const auto &[centre, reach] = bounds[at];
+                    const float x = centre[0] - place[0];
+                    const float y = centre[1] - place[1];
+                    const float z = centre[2] - place[2];
+                    const float within = place[3] + reach;
+                    if ((x * x) + (y * y) + (z * z) <= within * within)
+                    {
+                        Replay(device, g_figureDraws[at], clip, true);
+                    }
+                }
+            }
+        }
+        atlas->Release();
+    }
+    device->SetRenderTarget(0, targets[0]);
+    device->SetRenderTarget(1, targets[1]);
+    device->SetDepthStencilSurface(depth);
+    for (IDirect3DSurface9 *held : {targets[0], targets[1], depth})
+    {
+        if (held != nullptr)
+        {
+            held->Release();
+        }
+    }
+    g_saved->Apply();
+    return true;
+}
+
+// A draw into the picture that reads the effects' shadows: the maps drawn at
+// the first such draw of the scene, and lent to it.
+static void EffectsDrawing(IDirect3DDevice9 *device)
+{
+    if (!g_effectsWanted.load(std::memory_order_relaxed))
+    {
+        return;
+    }
+    IDirect3DPixelShader9 *pixel = nullptr;
+    device->GetPixelShader(&pixel);
+    if (pixel == nullptr)
+    {
+        return;
+    }
+    pixel->Release();
+    const auto receiver = g_effectReceivers.find(pixel);
+    if (receiver == g_effectReceivers.end())
+    {
+        return;
+    }
+    if (!g_effectsDrawn)
+    {
+        g_effectsDrawn = true;
+        g_effectsReady = DrawEffectShadows(device);
+    }
+    if (g_effectsReady)
+    {
+        Lend(device, receiver->second, g_lentEffects, g_effectAtlas);
+    }
+}
+
+void WantEffectShadows(bool on)
+{
+    g_effectsWanted.store(on, std::memory_order_relaxed);
+}
+
 void Leaving(IDirect3DDevice9 * /*device*/)
 {
     g_mapDrawn = false;
@@ -1874,6 +2127,11 @@ void CreatedPixel(const DWORD *code, IDirect3DPixelShader9 *shader)
     }
     g_receivers.erase(shader); // the last made here's alone (Created)
     g_air.erase(shader);
+    g_effectReceivers.erase(shader);
+    if (const std::optional<UINT> sampler = RegisterOf(CodeOf(code), "smpDaoEffectShadows"))
+    {
+        g_effectReceivers[shader] = *sampler;
+    }
     if (const std::optional<UINT> sampler = RegisterOf(CodeOf(code), "smpDaoSunMaps"))
     {
         g_air[shader] = *sampler;
@@ -1934,6 +2192,8 @@ void Presented()
     g_figureKeys.clear();
     g_atlasDrawn = false;
     g_atlasReady = false;
+    g_effectsDrawn = false;
+    g_effectsReady = false;
     g_passLastFrame = g_passThisFrame;
     g_passThisFrame = false;
     g_drawnThisFrame.clear();
@@ -2040,6 +2300,15 @@ void Release()
     {
         g_atlasDepth->Release();
         g_atlasDepth = nullptr;
+    }
+    for (IUnknown **held :
+         {reinterpret_cast<IUnknown **>(&g_effectAtlas), reinterpret_cast<IUnknown **>(&g_effectDepth)})
+    {
+        if (*held != nullptr)
+        {
+            (*held)->Release();
+            *held = nullptr;
+        }
     }
     g_tile = 0;
     g_along = {};

@@ -79,9 +79,10 @@ std::mutex g_lock;
 std::map<void *, void *> g_lights;
 std::map<void *, std::array<std::uint32_t, 2>> g_ownMost;
 
-// The lights as last read, for the render thread.
+// The lights as last read, for the render thread, and as last handed.
 std::mutex g_readLock;
 std::array<float, (2 * kMostLights + 1) * 4> g_registers{};
+std::vector<std::array<float, 4>> g_handed;
 
 float FloatAt(const void *base, std::size_t offset)
 {
@@ -292,6 +293,17 @@ void Hand(IDirect3DDevice9 *device)
     }
     static_assert(kCountRegister == kLightsRegister + (2 * kMostLights));
     device->SetPixelShaderConstantF(kLightsRegister, registers.data(), static_cast<UINT>(2 * kMostLights) + 1);
+    const auto count = static_cast<std::size_t>(registers.at(2 * kMostLights * 4));
+    g_handed.resize(count);
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        std::memcpy(g_handed[i].data(), registers.data() + (i * 8), sizeof g_handed[i]);
+    }
+}
+
+const std::vector<std::array<float, 4>> &Handed()
+{
+    return g_handed;
 }
 
 } // namespace effectlights

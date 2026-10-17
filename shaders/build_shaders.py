@@ -1227,6 +1227,24 @@ def with_effect_lights(shader):
         EFFECT_UNLIT.append("a point light's sum that nothing reads")
         return
 
+    # The point the light is reckoned at: its way is `add <w>.xyz, <place>,
+    # -<point>` (the world's place of the surface, an input).
+    world = next(
+        (
+            m.group(1)
+            for st in body
+            if (
+                m := re.match(
+                    rf"^add r\d+\.xyz, c{base + place}, -(v\d+)$", st.asm.strip()
+                )
+            )
+        ),
+        None,
+    )
+    if world is None:
+        EFFECT_UNLIT.append("no point a light is reckoned at")
+        return
+
     def mask(comps):
         return "".join(c for c in "xyzw" if c in comps)
 
@@ -1234,14 +1252,17 @@ def with_effect_lights(shader):
         for name in written:
             text = re.sub(rf"\b{name}\b", f"dao_{name}", text)
         text = re.sub(rf"\b{lights.name}\[{place}\]", "daoEffectLights[2 * daoI]", text)
-        text = re.sub(
-            rf"\b{lights.name}\[{colour}\]", "daoEffectLights[2 * daoI + 1]", text
-        )
+        text = re.sub(rf"\b{lights.name}\[{colour}\]", "daoEffectColour", text)
         if place == 9:
             text = re.sub(r"\bg_bShaderControlBooleans\[0\]", "true", text)
         return re.sub(r"\btex2D\(", "DaoTexFirstLevel(", text)
 
     lines = ["[loop] for (int daoI = 0; daoI < daoEffectCount.x; daoI++)", "{"]
+    # The light's colour, less what stands between it and the point.
+    lines += [
+        "    const float4 daoEffectColour = float4(daoEffectLights[2 * daoI + 1].rgb *"
+        f" DAO_EFFECT_SHADOW(daoI, {world}.xyz), daoEffectLights[2 * daoI + 1].a);"
+    ]
     lines += [f"    float4 dao_{name} = {name};" for name in sorted(written)]
     lines += [
         f"    dao_{name}.{mask(comps)} = 0;" for name, comps in sorted(outputs.items())
@@ -2354,6 +2375,26 @@ def with_alpha_clamped(shader):
     shader.insert(len(shader.statements) - 1, ["oC0.w = saturate(oC0.w);"])
 
 
+def effect_shadows_sampler(listing, preamble):
+    """The declaration of the effects' lights' shadows' atlas, on the last
+    sampler the game's shader leaves free (the plugin finds it by its name,
+    LevelShadows.cpp). With the samplers the game's shader uses and those our
+    changes add (the sun's maps for a figure, the metal's map) sixteen, none
+    is left, as for a face (fourteen of the game's and the sun's two): there
+    the effects' lights are not shadowed (effect_lights.hlsl's
+    DAO_NO_EFFECT_SHADOWS)."""
+    used = {int(n) for n in re.findall(r"^//\s+\w+\s+s(\d+)\s+\d+", listing, re.M)}
+    added = len(re.findall(r"^sampler2D \w+;$", preamble, re.M))
+    free = [n for n in range(15, -1, -1) if n not in used]
+    if len(used) + added >= 16 or not free:
+        EFFECT_UNSHADOWED.append(1)
+        return "#define DAO_NO_EFFECT_SHADOWS\n"
+    return f"sampler2D smpDaoEffectShadows : register(s{free[0]});\n"
+
+
+EFFECT_UNSHADOWED = []
+
+
 def takes_point_lights(listing):
     """Whether a pixel shader of model 3 reckons a point light: it reads
     g_vLightParams from c0, the first light's place and colour among it."""
@@ -2443,12 +2484,17 @@ def changes_for(stem, listing, show):
         preamble += ours("fills.hlsl")
     # Every effect's light, on whatever reckons a point light: after the
     # materials and the fills, whose reckoning of a light it runs again.
-    if takes_point_lights(listing):
-        changes.append(with_effect_lights)
-        preamble += ours("effect_lights.hlsl")
-    elif "g_vLightParams" in listing and "ps_3_0" in listing:
-        changes.append(with_effect_lights_on_ground)
-        preamble += ours("effect_lights.hlsl")
+    if "g_vLightParams" in listing and "ps_3_0" in listing:
+        changes.append(
+            with_effect_lights
+            if takes_point_lights(listing)
+            else with_effect_lights_on_ground
+        )
+        preamble = (
+            effect_shadows_sampler(listing, preamble)
+            + preamble
+            + ours("effect_lights.hlsl")
+        )
     # The alpha clamped, last: whatever else wrote it.
     if stem in SUMMED_ALPHA:
         changes.append(with_alpha_clamped)
@@ -2681,6 +2727,11 @@ def main(argv):
         f"build_shaders: effects' lights in {len(EFFECT_LIT)} shaders, by the reckoning of light "
         + ", ".join(
             f"{place} in {count}" for place, count in sorted(by_light.items(), key=str)
+        )
+        + (
+            f"; unshadowed, no sampler left: {len(EFFECT_UNSHADOWED)}"
+            if EFFECT_UNSHADOWED
+            else ""
         )
         + (
             f"; left as they are: {', '.join(sorted(set(EFFECT_UNLIT)))} ({len(EFFECT_UNLIT)})"
