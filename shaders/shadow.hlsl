@@ -33,8 +33,9 @@ float4 daoShadowData[14] : register(c200);
 // The texels a side of each map of the plugin's atlas (LevelShadows.cpp's
 // kTile), whatever size the engine's own maps are.
 static const float kDaoAtlasTile = 2048;
-// The penumbra's radius in the world, in metres, and the least it may be in
-// texels of the map, under which the map's own steps show.
+// The penumbra's radius in the world, in metres, where the maps are the
+// game's (the plugin's own have the sun's, DaoAtlasShadow), and the least it
+// may be in texels of the map, under which the map's own steps show.
 static const float kDaoPenumbra = 0.035;
 static const float kDaoLeastTexels = 1.5;
 // How much nearer the light than a tap's own surface a caster must be to
@@ -88,11 +89,38 @@ float DaoShadowMap(sampler2D map, float3 at, float2 turn, float radius, float bi
     return DaoShadowMap(map, at, DaoSlope(at), turn, radius, bias, 0, 1);
 }
 
-// The lit part of a disc around `at` in map `tile` of the atlas.
-float DaoAtlasShadow(int tile, float3 at, float2 turn, float radius, float bias)
+// The tangent of the sun's angular radius (0.267 degrees, as seen from the
+// Earth): a shadow's edge is as soft as the sun's disc is wide seen from the
+// ground, so the disc a point is filtered over has this times the distance
+// from what casts its shadow to it for its radius. A post's foot is sharp and
+// its top's shadow soft, and a crown's dapples ten metres up are blurred by a
+// hand's breadth.
+static const float kDaoSunRadius = 0.00466;
+
+// The mean depth of what is nearer the sun than `at` within `radius` of it,
+// and how much of the disc that is: the first half of percentage-closer soft
+// shadows (Fernando 2005).
+float2 DaoBlocker(sampler2D map, float3 at, float2 slope, float2 turn, float radius, float bias, float2 origin,
+                  float scale)
 {
-    const float2 origin = float2(tile % 2, tile / 2) * 0.5;
-    return DaoShadowMap(smpShadowPartition1, at, DaoSlope(at), turn, radius, bias, origin, 0.5);
+    const float reach = 2 * radius;
+    const float edge = 0.5 / kDaoAtlasTile;
+    float sum = 0;
+    float count = 0;
+    [loop] for (int i = 0; i < 16; i++)
+    {
+        const float2 tap =
+            float2(kDaoDisc[i].x * turn.x - kDaoDisc[i].y * turn.y, kDaoDisc[i].x * turn.y + kDaoDisc[i].y * turn.x) *
+            radius;
+        const float2 uv = origin + scale * clamp(at.xy + tap, edge, 1 - edge);
+        const float depth = tex2Dlod(map, float4(uv, 0, 0)).x;
+        if (depth < at.z + clamp(dot(tap, slope), -reach, reach) - bias)
+        {
+            sum += depth;
+            count += 1;
+        }
+    }
+    return float2(count > 0 ? sum / count : at.z, count / 16);
 }
 
 // A point's place in a map (x, y its texture's, z its depth), the disc's
@@ -134,7 +162,30 @@ struct DaoInMap
     float radius;
     float bias;
     float inside;
+    // The map's texture units, across and in depth, a metre.
+    float across;
+    float deep;
 };
+
+// The lit part at `placed` in map `tile` of the atlas, its edge as soft as the
+// sun makes it there: what may shade the point is looked for as far round it
+// as the sun's disc reaches from the map's sunward side, and the point is
+// filtered over the penumbra that what was found casts, no less than the
+// map's own steps (the disc's least radius, placed.radius).
+float DaoAtlasShadow(int tile, DaoInMap placed, float2 turn)
+{
+    const float2 origin = float2(tile % 2, tile / 2) * 0.5;
+    const float2 slope = DaoSlope(placed.at);
+    const float search = max(kDaoSunRadius * (placed.at.z / placed.deep) * placed.across, placed.radius);
+    const float2 blocker = DaoBlocker(smpShadowPartition1, placed.at, slope, turn, search, placed.bias, origin, 0.5);
+    if (blocker.y <= 0)
+    {
+        return 1;
+    }
+    const float penumbra = kDaoSunRadius * ((placed.at.z - blocker.x) / placed.deep) * placed.across;
+    return DaoShadowMap(smpShadowPartition1, placed.at, slope, turn, max(penumbra, placed.radius), placed.bias, origin,
+                        0.5);
+}
 
 // How far a point is looked up off its surface, along its facing towards the
 // sun, in the map's texels: a surface read at its own place in the map is
@@ -151,6 +202,11 @@ DaoInMap DaoPlaceIn(int first, float4 point4, float3 facing, float least)
     const float4 offPoint = point4 + float4(facing * (kDaoNormalOffset * texel), 0);
     DaoMapPlace(daoShadowData[first], daoShadowData[first + 1], daoShadowData[first + 2], offPoint, least, placed.at,
                 placed.radius, placed.bias, kDaoAtlasTile);
+    // The least the disc may be is the map's steps: the sun's own softness
+    // is DaoAtlasShadow's.
+    placed.radius = least;
+    placed.across = length(daoShadowData[first].xyz);
+    placed.deep = length(daoShadowData[first + 2].xyz);
     // By how far the point is from the focus across the map, not from the
     // map's edge: a map moves in steps, and its edge, and the change of
     // detail there, jumped with it as the party walked (the user,
@@ -183,7 +239,7 @@ float DaoViewShadow(float4 point4, float3 facing, float2 turn, float least)
     const DaoInMap in0 = DaoPlaceIn(0, point4, facing, least);
     if (in0.inside >= 1)
     {
-        return DaoAtlasShadow(0, in0.at, turn, in0.radius, in0.bias);
+        return DaoAtlasShadow(0, in0, turn);
     }
     const DaoInMap in1 = DaoPlaceIn(3, point4, facing, least);
     float lit = 1;
@@ -196,24 +252,24 @@ float DaoViewShadow(float4 point4, float3 facing, float2 turn, float least)
             const DaoInMap in3 = DaoPlaceIn(9, point4, facing, least);
             if (in3.inside > 0)
             {
-                lit = lerp(1, DaoAtlasShadow(3, in3.at, turn, in3.radius, in3.bias), in3.inside);
+                lit = lerp(1, DaoAtlasShadow(3, in3, turn), in3.inside);
                 covered = in3.inside;
             }
         }
         if (in2.inside > 0)
         {
-            lit = lerp(lit, DaoAtlasShadow(2, in2.at, turn, in2.radius, in2.bias), in2.inside);
+            lit = lerp(lit, DaoAtlasShadow(2, in2, turn), in2.inside);
             covered = lerp(covered, 1, in2.inside);
         }
     }
     if (in1.inside > 0)
     {
-        lit = lerp(lit, DaoAtlasShadow(1, in1.at, turn, in1.radius, in1.bias), in1.inside);
+        lit = lerp(lit, DaoAtlasShadow(1, in1, turn), in1.inside);
         covered = lerp(covered, 1, in1.inside);
     }
     if (in0.inside > 0)
     {
-        lit = lerp(lit, DaoAtlasShadow(0, in0.at, turn, in0.radius, in0.bias), in0.inside);
+        lit = lerp(lit, DaoAtlasShadow(0, in0, turn), in0.inside);
         covered = lerp(covered, 1, in0.inside);
     }
     daoShadowCovered = covered;
