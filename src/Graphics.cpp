@@ -37,6 +37,7 @@
 // - Anisotropic filtering, which the game has no setting for.
 //
 // What it does goes to elgarashaders.log.
+#include "EffectLights.h"
 #include "GameFolder.h"
 #include "LevelShadows.h"
 #include "MaterialLearn.h"
@@ -1256,6 +1257,7 @@ HRESULT __stdcall BeginScene(IDirect3DDevice9 *device)
     }
     device->SetPixelShaderConstantF(kHazeRegister, haze.data(), kHazeRegisters);
     HandFills(device);
+    effectlights::Hand(device);
     return g_beginScene.Original()(device);
 }
 
@@ -1430,6 +1432,8 @@ void KeepLookRegisters()
     g_look.at(kShadows).store(shadows, std::memory_order_relaxed);
     g_look.at(kShadowOnFigures).store(shadows, std::memory_order_relaxed);
     outdoors::Want(lighting);
+    // Effects light everything they reach, indoors and out.
+    effectlights::Want(lighting);
     // The level drawn into the sun's maps only where it has a sun: underground
     // the engine still draws maps for its figures' own light, and the level's
     // surfaces took the shade of it in place of their baked light (the Ruined
@@ -1757,6 +1761,7 @@ extern "C" __declspec(dllexport) bool __cdecl DAOLib_Load(const dao::LoaderInfo 
     materialpatch::Start(dao::Module::OwnFolder());
     KeepLookRegisters();
     probes::Install();
+    effectlights::Install();
     if (!g_setPartitions.Attach(dao::addr::kShadowMaps_SetPartitions, &SetPartitions))
     {
         spdlog::warn("the shadow maps keep the game's size: no detour");
@@ -1771,6 +1776,7 @@ extern "C" __declspec(dllexport) bool __cdecl DAOLib_Load(const dao::LoaderInfo 
     dao::OnFrame(&materiallearn::Poll);
     dao::OnFrame(&outdoors::Poll);
     dao::OnFrame(&KeepWithScene);
+    dao::OnFrame(&effectlights::Read);
     for (const dao::script::EventType type :
          {dao::script::EventType::GamemodeChange, dao::script::EventType::ArealoadPostloadexit,
           dao::script::EventType::ArealoadsavePostloadexit})

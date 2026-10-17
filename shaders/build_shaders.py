@@ -1048,6 +1048,253 @@ def with_fill_strength(shader):
 FILLS_KEPT = []
 
 
+# How an instruction reads its sources' components: one for each of the
+# destination's, by position (the default), all of the first three or four
+# whatever the destination's, or each named once (a scalar's).
+_READS_THREE = {"dp3", "nrm", "crs"}
+_READS_FOUR = {"dp4", "texld", "texldl", "texldb", "texldp", "texldd"}
+_READS_SCALAR = {"rcp", "rsq", "exp", "log", "pow", "sincos", "expp", "logp"}
+_CONTROL = re.compile(
+    r"^(if|else|endif|loop|endloop|rep|endrep|break|breakc|call|ret|label|texkill)\b"
+)
+
+
+def _operand(text):
+    """A register and its components as an operand names them: (name, the
+    components in order, padded to four as the swizzle repeats its last)."""
+    text = text.strip().lstrip("-")
+    text = re.sub(r"_(abs|bias|bx2|x2|dz|dw)$", "", text)
+    m = re.match(r"^([a-zA-Z]+\d*)(?:\[[^\]]*\])?(?:\.([xyzw]+))?$", text)
+    if not m:
+        return None, ""
+    swizzle = m.group(2) or "xyzw"
+    return m.group(1), (swizzle + swizzle[-1] * 4)[:4]
+
+
+def _accesses(asm):
+    """What one instruction writes and reads: ({register: components written},
+    {register: components read})."""
+    asm = asm.strip()
+    if not asm or _CONTROL.match(asm):
+        reads = {}
+        for name in re.findall(r"\b([rcvb]\d+)\b", asm):
+            reads.setdefault(name, set()).update("xyzw")
+        return {}, reads
+    op, _, rest = asm.partition(" ")
+    op = op.split("_")[0]
+    operands = [o for o in rest.split(",") if o.strip()]
+    if not operands:
+        return {}, {}
+    dest, _ = _operand(operands[0])
+    mask = re.search(r"\.([xyzw]+)", operands[0])
+    mask = mask.group(1) if mask else "xyzw"
+    writes = {dest: set(mask)} if dest else {}
+    reads = {}
+    for operand in operands[1:]:
+        name, swizzle = _operand(operand)
+        if name is None:
+            continue
+        if op in _READS_THREE:
+            comps = set(swizzle[:3])
+        elif op in _READS_FOUR:
+            comps = set(swizzle)
+        elif op in _READS_SCALAR:
+            named = re.search(r"\.([xyzw]+)", operand)
+            comps = set(named.group(1)) if named else set("xyzw")
+        else:
+            comps = {swizzle["xyzw".index(c)] for c in mask}
+        reads.setdefault(name, set()).update(comps)
+    return writes, reads
+
+
+def _hlsl_reads(hlsl):
+    """The temporaries an added statement of ours reads, by its HLSL."""
+    reads = {}
+    for name, comps in re.findall(r"\b(r\d+)(?:\.([xyzw]+))?", hlsl):
+        reads.setdefault(name, set()).update(comps or "xyzw")
+    return reads
+
+
+def with_effect_lights(shader):
+    """Every effect's light on this surface (effect_lights.hlsl): the
+    shader's own reckoning of one point light, run once more for each light
+    in daoEffectLights, its share added to the sums that light was added to.
+
+    The light whose reckoning is run is the one the engine gives the effects'
+    lights to, g_vLightParams [9] and [11] (its unflagged one), where the
+    shader has it, else its first, [0] and [1] (terrain, hair, eyes: one
+    light or three). The reckoning is the statements from the first reading
+    of the light's place to the last reading of its colour, with any branch
+    begun among them to its end; what they write is kept in locals of the
+    loop's own, and of that what the rest of the shader reads (the light's
+    diffuse and specular sums) starts at nothing and is added on. The engine
+    is kept from choosing the effects' lights for anything itself
+    (EffectLights.cpp), so none is counted twice.
+
+    In the copy, the engine's word that its light [9] is there
+    (g_bShaderControlBooleans[0], set exactly when it is: logged 2026-10-17)
+    is true, every light of the loop being there; and a texture read in the
+    reckoning (a face's scattering table) is read at its first level, a loop
+    as long as the lights allowing no gradient. A shader that reckons no
+    point light whose sum it uses (water; the probes' projection) is left
+    as it is."""
+    lights = shader.parameters["g_vLightParams"]
+    base = lights.base
+    statements = shader.statements
+    for place, colour in ((9, 11), (0, 1)):
+        if colour >= lights.size:
+            continue  # that register is another parameter's
+        reads_place = [
+            i
+            for i, st in enumerate(statements)
+            if re.search(rf"\bc{base + place}\b", st.asm)
+        ]
+        if reads_place:
+            break
+    else:
+        EFFECT_UNLIT.append("no point light")
+        return
+    first = reads_place[0]
+    reads_colour = [
+        i
+        for i, st in enumerate(statements)
+        if i >= first and re.search(rf"\bc{base + colour}\b", st.asm)
+    ]
+    if not reads_colour:
+        EFFECT_UNLIT.append("no point light's colour")
+        return
+    depth = statements[first].depth
+    # The reckoning, with a branch begun in it taken to its end.
+    last = reads_colour[-1]
+    open_branches = 0
+    index = first
+    while index <= last or open_branches > 0:
+        asm = statements[index].asm.strip()
+        if asm.startswith("if"):
+            open_branches += 1
+        elif asm.startswith("endif"):
+            open_branches -= 1
+            if open_branches < 0:
+                raise shader_hlsl.ShaderError(
+                    "a point light's reckoning leaves the branch it is in"
+                )
+        elif _CONTROL.match(asm) and not asm.startswith("else"):
+            raise shader_hlsl.ShaderError(
+                f"a point light's reckoning has {asm.split()[0]} in it"
+            )
+        index += 1
+    body = statements[first:index]
+    last = index - 1
+    written = {}
+    for st in body:
+        for name, comps in _accesses(st.asm)[0].items():
+            if name.startswith("r"):
+                written.setdefault(name, set()).update(comps)
+    # Where the loop goes: after the branch the reckoning is in, if any, so
+    # that it runs whether or not the engine gave the shader a light there.
+    after = last
+    if depth > 0:
+        after = next(
+            (
+                i
+                for i in range(last + 1, len(statements))
+                if statements[i].depth < depth
+                and statements[i].asm.strip().startswith("endif")
+            ),
+            None,
+        )
+        if after is None:
+            raise shader_hlsl.ShaderError(
+                "no end to the branch of a point light's reckoning"
+            )
+    # What the rest of the shader reads of what the reckoning wrote, before
+    # writing it again: the light's sums.
+    outputs = {name: set() for name in written}
+    killed = {name: set() for name in written}
+    for st in statements[after + 1 :]:
+        writes, reads = (
+            _accesses(st.asm) if st.asm.strip() else ({}, _hlsl_reads(st.hlsl))
+        )
+        for name, comps in reads.items():
+            if name in written:
+                outputs[name] |= (comps & written[name]) - killed[name]
+        if st.depth <= depth:
+            for name, comps in writes.items():
+                if name in written:
+                    killed[name] |= comps
+    outputs = {name: comps for name, comps in outputs.items() if comps}
+    if not outputs:
+        EFFECT_UNLIT.append("a point light's sum that nothing reads")
+        return
+
+    def mask(comps):
+        return "".join(c for c in "xyzw" if c in comps)
+
+    def local(text):
+        for name in written:
+            text = re.sub(rf"\b{name}\b", f"dao_{name}", text)
+        text = re.sub(rf"\b{lights.name}\[{place}\]", "daoEffectLights[2 * daoI]", text)
+        text = re.sub(
+            rf"\b{lights.name}\[{colour}\]", "daoEffectLights[2 * daoI + 1]", text
+        )
+        if place == 9:
+            text = re.sub(r"\bg_bShaderControlBooleans\[0\]", "true", text)
+        return re.sub(r"\btex2D\(", "DaoTexFirstLevel(", text)
+
+    lines = ["[loop] for (int daoI = 0; daoI < daoEffectCount.x; daoI++)", "{"]
+    lines += [f"    float4 dao_{name} = {name};" for name in sorted(written)]
+    lines += [
+        f"    dao_{name}.{mask(comps)} = 0;" for name, comps in sorted(outputs.items())
+    ]
+    lines += ["    " + local(st.hlsl) for st in body]
+    lines += [
+        f"    {name}.{mask(comps)} += dao_{name}.{mask(comps)};"
+        for name, comps in sorted(outputs.items())
+    ]
+    lines += ["}"]
+    shader.insert(after, lines)
+    EFFECT_LIT.append(
+        (f"[{place}]", len(body), {n: mask(c) for n, c in outputs.items()})
+    )
+
+
+def with_effect_lights_on_ground(shader):
+    """Every effect's light on a surface whose shader reckons no point light
+    of its own (the ground's: the engine gives terrain the sun alone, and an
+    effect never lit it): effect_lights.hlsl's DaoEffectDiffuse added to the
+    light the surface scatters, `mad <sum>.xyz, <N.L>, <sun colour>, <the
+    vertex's light>`, with the normal the sun's facing is taken from (`dp3
+    <f>, <normal>, -<sun's way>`) and the point the sun's shadow is asked at
+    (with_our_shadow's). A shader without the three is left as it is."""
+    lights = shader.parameters["g_vLightParams"]
+    data = shader.parameters.get("g_vShadowData")
+    if lights.size < 4 or data is None:
+        return
+    try:
+        total = shader.find(
+            rf"^mad(?:_pp)? (r\d+)\.xyz, r\d+\.\w+, c{lights.base + 3}, v\d+$"
+        )
+        facing = shader.find(rf"^dp3 r\d+\.\w, (r\d+), -c{lights.base + 2}$")
+        side = shader.find(rf"^dp3 r\d+\.[xyzw], v\d+, c{data.base + 8}$")
+    except shader_hlsl.ShaderError:
+        return
+    sum_register = re.match(r"\S+ (r\d+)", shader.statements[total].asm).group(1)
+    normal = re.search(r", (r\d+), ", shader.statements[facing].asm).group(1)
+    world = re.search(r"(v\d+),", shader.statements[side].asm).group(1)
+    if facing > total:
+        raise shader_hlsl.ShaderError("the sun's facing after the light it scatters")
+    shader.insert(
+        total,
+        [f"{sum_register}.xyz += DaoEffectDiffuse({world}.xyz, daoGroundNormal);"],
+    )
+    shader.insert(facing - 1, [f"const float3 daoGroundNormal = {normal}.xyz;"])
+    EFFECT_LIT.append(("ground", 0, {sum_register: "xyz"}))
+
+
+EFFECT_UNLIT = []
+EFFECT_LIT = []
+
+
 def without_cut(shader):
     """Leave a surface as bright as it is lit (look.hlsl's DaoCut). The
     shaders of buildings, furnishings and figures end their lighting with
@@ -2107,6 +2354,18 @@ def with_alpha_clamped(shader):
     shader.insert(len(shader.statements) - 1, ["oC0.w = saturate(oC0.w);"])
 
 
+def takes_point_lights(listing):
+    """Whether a pixel shader of model 3 reckons a point light: it reads
+    g_vLightParams from c0, the first light's place and colour among it."""
+    m = re.search(r"g_vLightParams\s+c(\d+)\s+(\d+)", listing)
+    return (
+        m is not None
+        and m.group(1) == "0"
+        and int(m.group(2)) >= 2
+        and "ps_3_0" in listing
+    )
+
+
 def changes_for(stem, listing, show):
     """What this build changes in one of the game's pixel shaders: the
     functions that change it, and the HLSL they call."""
@@ -2182,6 +2441,14 @@ def changes_for(stem, listing, show):
     if "g_vLightParams" in listing and "ps_3_0" in listing:
         changes.append(with_fill_strength)
         preamble += ours("fills.hlsl")
+    # Every effect's light, on whatever reckons a point light: after the
+    # materials and the fills, whose reckoning of a light it runs again.
+    if takes_point_lights(listing):
+        changes.append(with_effect_lights)
+        preamble += ours("effect_lights.hlsl")
+    elif "g_vLightParams" in listing and "ps_3_0" in listing:
+        changes.append(with_effect_lights_on_ground)
+        preamble += ours("effect_lights.hlsl")
     # The alpha clamped, last: whatever else wrote it.
     if stem in SUMMED_ALPHA:
         changes.append(with_alpha_clamped)
@@ -2409,6 +2676,18 @@ def main(argv):
             print(f"build_shaders: {name}: {e}", file=sys.stderr)
     print(f"build_shaders: {built} shaders in {out}, {failed} failed")
     print(f"build_shaders: the fills' strength in {len(FILLS_KEPT)} shaders")
+    by_light = collections.Counter(place for place, _, _ in EFFECT_LIT)
+    print(
+        f"build_shaders: effects' lights in {len(EFFECT_LIT)} shaders, by the reckoning of light "
+        + ", ".join(
+            f"{place} in {count}" for place, count in sorted(by_light.items(), key=str)
+        )
+        + (
+            f"; left as they are: {', '.join(sorted(set(EFFECT_UNLIT)))} ({len(EFFECT_UNLIT)})"
+            if EFFECT_UNLIT
+            else ""
+        )
+    )
     if THEIR_WARNINGS:
         codes = collections.Counter(
             re.search(r"warning (X\d+)", w).group(1)

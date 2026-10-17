@@ -123,6 +123,7 @@ add_daolib_plugin(
         src/Outdoors.cpp
         src/ProbeBaker.cpp
         src/Probes.cpp
+        src/EffectLights.cpp
         src/LevelShadows.cpp
         src/Cascades.cpp
         src/Reflected.cpp
