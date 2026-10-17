@@ -30,6 +30,8 @@ namespace
 constexpr UINT kLightsRegister = 160;
 constexpr std::size_t kMostLights = 16;
 constexpr UINT kCountRegister = kLightsRegister + (2 * kMostLights);
+// The registers' floats: two registers a light and one for the count, four floats each.
+constexpr std::size_t kRegisterFloats = ((2 * kMostLights) + 1) * 4;
 
 // The light manager's lists of the lights that have no flag in their
 // blueprint, the figures' and the level's (DAOLib's notes on
@@ -81,7 +83,7 @@ std::map<void *, std::array<std::uint32_t, 2>> g_ownMost;
 
 // The lights as last read, for the render thread, and as last handed.
 std::mutex g_readLock;
-std::array<float, (2 * kMostLights + 1) * 4> g_registers{};
+std::array<float, kRegisterFloats> g_registers{};
 std::vector<std::array<float, 4>> g_handed;
 
 float FloatAt(const void *base, std::size_t offset)
@@ -273,7 +275,7 @@ void Read()
                                  [&](const Light &a, const Light &b) { return away(a) < away(b); });
         lights.resize(kMostLights);
     }
-    std::array<float, (2 * kMostLights + 1) * 4> registers{};
+    std::array<float, kRegisterFloats> registers{};
     for (std::size_t i = 0; i < lights.size(); ++i)
     {
         std::memcpy(registers.data() + (i * 8), lights[i].place.data(), sizeof lights[i].place);
@@ -286,7 +288,7 @@ void Read()
 
 void Hand(IDirect3DDevice9 *device)
 {
-    std::array<float, (2 * kMostLights + 1) * 4> registers{};
+    std::array<float, kRegisterFloats> registers{};
     {
         const std::scoped_lock lock(g_readLock);
         registers = g_registers;

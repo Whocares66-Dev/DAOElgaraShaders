@@ -1895,6 +1895,20 @@ static bool DrawAtlas(IDirect3DDevice9 *device)
     return true;
 }
 
+// The effects' atlas and its depth let go.
+static void ReleaseEffectAtlas()
+{
+    for (IUnknown **held :
+         {reinterpret_cast<IUnknown **>(&g_effectAtlas), reinterpret_cast<IUnknown **>(&g_effectDepth)})
+    {
+        if (*held != nullptr)
+        {
+            (*held)->Release();
+            *held = nullptr;
+        }
+    }
+}
+
 // The effects' atlas and its depth, made once (and again after a reset).
 static bool MakeEffectAtlas(IDirect3DDevice9 *device)
 {
@@ -1940,9 +1954,8 @@ static cascades::Matrix EffectFace(const std::array<float, 4> &light, std::size_
         row[3] = -light.at(c) * times;
         return row;
     };
-    const std::array<std::size_t, 2> across = axis == 0   ? std::array<std::size_t, 2>{1, 2}
-                                              : axis == 1 ? std::array<std::size_t, 2>{0, 2}
-                                                          : std::array<std::size_t, 2>{0, 1};
+    constexpr std::array<std::array<std::size_t, 2>, 3> kAcross{{{1, 2}, {0, 2}, {0, 1}}};
+    const std::array<std::size_t, 2> &across = kAcross.at(axis);
     const std::array<float, 4> x = along(across[0], 1);
     const std::array<float, 4> y = along(across[1], 1);
     const std::array<float, 4> w = along(axis, sign);
@@ -2301,15 +2314,7 @@ void Release()
         g_atlasDepth->Release();
         g_atlasDepth = nullptr;
     }
-    for (IUnknown **held :
-         {reinterpret_cast<IUnknown **>(&g_effectAtlas), reinterpret_cast<IUnknown **>(&g_effectDepth)})
-    {
-        if (*held != nullptr)
-        {
-            (*held)->Release();
-            *held = nullptr;
-        }
-    }
+    ReleaseEffectAtlas();
     g_tile = 0;
     g_along = {};
 }
