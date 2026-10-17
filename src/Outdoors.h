@@ -11,7 +11,9 @@
 // into it. A file beside the DLL, `outdoors.tune`, is a developer's: while the
 // game runs it is read again whenever it is saved, `name = value` a line:
 // `Haze = 0` for none,
-// `HazeShow = 1` for the fog as white air; `Sun` and `SunOnFigures`, how many
+// `HazeShow = 1` for the fog as white air; `SunlitFigures` 0 or 1 in place
+// of the options screen's; `Fills`, how many times the area's own its fills
+// are on figures, out of doors, in place of Sunlit figures' rule; `Sun` and `SunOnFigures`, how many
 // times the area's own the sun is on the ground and on figures; `sky.<a field
 // of dao/core/Sky.h's kSkyFields, its name with _ for spaces>`, that value
 // outright. Without the file nothing of the area is changed.
@@ -36,8 +38,17 @@ struct SkyHaze
 // The air's light as it is now. Call on the game's thread.
 SkyHaze Haze();
 
+// How strong the area's fills are on figures and props (shaders/fills.hlsl),
+// 1 for vanilla's. Call on the game's thread.
+float Fills();
+
 // Whether the player wants the air lit. Call on the game's thread.
 void Want(bool on);
+
+// Whether the player wants figures out of doors lit more by the sun or the
+// moon and less by the area's fills (Sunlit figures on the options screen).
+// Call on the game's thread.
+void WantSunlitFigures(bool on);
 
 // Logs the area's own light when it changes, keeps the air's light and the
 // tuning file's. For dao::OnFrame: the atmosphere is read and set on the

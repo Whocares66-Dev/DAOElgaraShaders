@@ -982,6 +982,33 @@ def with_ambient_relief(shader):
         return
 
 
+# A figure's point lights as the engine hands them, each a place with its
+# reach in w and a colour: g_vLightParams[0] and [1], [5] and [6], [7] and [8],
+# [9] and [11].
+POINT_LIGHTS = ((0, 1), (5, 6), (7, 8), (9, 11))
+
+
+def with_fill_strength(shader):
+    """Let the plugin say how strong an area's fills are on what it lights
+    (fills.hlsl): each point light's colour, wherever it is read, multiplied
+    by DaoFillKept of its reach, which is 1 for every light but a fill."""
+    lights = shader.parameters["g_vLightParams"].name
+    reached = False
+    for statement in shader.statements:
+        for place, colour in POINT_LIGHTS:
+            if f"{lights}[{colour}]" in statement.hlsl:
+                reached = True
+                statement.hlsl = statement.hlsl.replace(
+                    f"{lights}[{colour}]",
+                    f"({lights}[{colour}] * DaoFillKept({lights}[{place}].w))",
+                )
+    if reached:
+        FILLS_KEPT.append(shader)
+
+
+FILLS_KEPT = []
+
+
 def without_cut(shader):
     """Leave a surface as bright as it is lit (look.hlsl's DaoCut). The
     shaders of buildings, furnishings and figures end their lighting with
@@ -1579,7 +1606,11 @@ def with_lit_sky_fog(shader):
     TEXCOORD1 (sky.psh's dome, clouds.psh's layer: read 2026-10-16), and the
     sun's in g_vLightParams[2], as its own sun's glow reads it."""
     way = next(
-        (register for _, _, semantic, register, _ in shader.inputs if semantic == "TEXCOORD1"),
+        (
+            register
+            for _, _, semantic, register, _ in shader.inputs
+            if semantic == "TEXCOORD1"
+        ),
         None,
     )
     fogged = [s for s in shader.statements if "mml_vFogParams[0]" in s.hlsl]
@@ -1593,7 +1624,9 @@ def with_lit_sky_fog(shader):
     # roll-off, which keeps its hue (grade.hlsl's DaoShoulder).
     for statement in shader.statements:
         if statement.hlsl.startswith("oC0.xyz = saturate("):
-            statement.hlsl = statement.hlsl.replace("oC0.xyz = saturate(", "oC0.xyz = DaoSkyCut(", 1)
+            statement.hlsl = statement.hlsl.replace(
+                "oC0.xyz = saturate(", "oC0.xyz = DaoSkyCut(", 1
+            )
     shader.insert(
         -1,
         [
@@ -1653,10 +1686,10 @@ def with_fog_kept(shader):
     alone cannot match: on Redcliffe's hill it had a fog 20 levels of 255
     lighter than the engine's (measured the same day)."""
     fog = shader.parameters["mml_vFogParams"]
-    index = shader.find(
-        rf"^mad(_pp)? oC0\.xyz, r\d+\.[xyzw], r\d+, c{fog.base}$"
-    )
-    kept = re.match(r"mad\w* oC0\.xyz, (r\d+\.[xyzw]),", shader.statements[index].asm)[1]
+    index = shader.find(rf"^mad(_pp)? oC0\.xyz, r\d+\.[xyzw], r\d+, c{fog.base}$")
+    kept = re.match(r"mad\w* oC0\.xyz, (r\d+\.[xyzw]),", shader.statements[index].asm)[
+        1
+    ]
     # From the end back, so each place found is still where it was.
     shader.insert(len(shader.statements) - 1, ["oC1.w = daoFogKept;"])
     shader.insert(index, [f"daoFogKept = {kept};"])
@@ -1970,6 +2003,10 @@ def changes_for(stem, listing, show):
         if "DAO_LOOK_HLSL" not in preamble:
             preamble += ours("look.hlsl")
         preamble += ours("haze.hlsl")
+    # How strong the area's fills are on figures and props.
+    if "g_vLightParams" in listing and "ps_3_0" in listing:
+        changes.append(with_fill_strength)
+        preamble += ours("fills.hlsl")
     # The alpha clamped, last: whatever else wrote it.
     if stem in SUMMED_ALPHA:
         changes.append(with_alpha_clamped)
@@ -2174,6 +2211,7 @@ def main(argv):
             failed += 1
             print(f"build_shaders: {name}: {e}", file=sys.stderr)
     print(f"build_shaders: {built} shaders in {out}, {failed} failed")
+    print(f"build_shaders: the fills' strength in {len(FILLS_KEPT)} shaders")
     if THEIR_WARNINGS:
         codes = collections.Counter(
             re.search(r"warning (X\d+)", w).group(1)

@@ -146,6 +146,29 @@ std::optional<float> Tuned(std::string_view key)
 bool g_wanted = false;
 
 SkyHaze g_haze;
+float g_fills = 1;
+
+// Sunlit figures: out of doors under a sun or a moon, a figure is lit as the
+// ground it stands on is, by the one sun in the ground's colour and strength
+// and the area's ambient light, and the area's fills, three far lights only
+// figures have, are taken away (the user, 2026-10-16: "One sun, one color,
+// one strength. We should also try getting rid of fill lights and just using
+// sun directly"). An area gives figures a sun of their own: 0.89 times the
+// ground's in Redcliffe, 1.43 in the Dalish camp, pale yellow on figures and
+// deep orange on the ground in the Korcari Wilds, gray and cyan in Haven.
+// (Two rules before this one kept the fills at a half, with the sun on figures
+// at a fixed 1.3, which left figures 13 to 29 in 100 darker where the sun is
+// weak, or given what the fills lost.)
+constexpr float kSunlitFills = 0;
+bool g_wantedSunlit = false;
+
+// Whether Sunlit figures is on: the player's word, or the tuning file's
+// `SunlitFigures`, to compare without the options screen.
+bool SunlitFigures()
+{
+    return Tuned("SunlitFigures").value_or(g_wantedSunlit ? 1 : 0) > 0;
+}
+bool g_outdoors = false;
 
 // The air's light from the area's own. Its fog colour is the air's light as
 // its makers saw it, the same every way. The air is a scatterer of the sun's
@@ -203,18 +226,6 @@ void ApplyTune()
     {
         return;
     }
-    dao::atmosphere::Sunlight sun = *ownSun;
-    const float ground = Tuned("Sun").value_or(1);
-    const float figures = Tuned("SunOnFigures").value_or(1);
-    for (std::size_t channel = 0; channel < 3; ++channel)
-    {
-        sun.color.at(channel) *= ground;
-        sun.characterColor.at(channel) *= figures;
-    }
-    if (sun != dao::atmosphere::CurrentSunlight())
-    {
-        dao::atmosphere::SetSunlight(sun);
-    }
     dao::atmosphere::Sky sky = *ownSky;
     for (const dao::core::SkyField &field : dao::core::kSkyFields)
     {
@@ -238,7 +249,6 @@ void KeepTune()
     {
         if (g_tuned)
         {
-            dao::atmosphere::ResetSunlight();
             dao::atmosphere::ResetSky();
             g_tuned = false;
             g_tune.clear();
@@ -284,6 +294,43 @@ void KeepAir()
                      outdoors ? "out of doors: its air is lit by its sun" : "indoors: its fog as it is");
     }
     g_haze = sun && sky ? HazeOf(*sun, *sky, outdoors) : SkyHaze{};
+    g_outdoors = sun && sky && outdoors;
+    const bool sunny = sun && std::max({sun->color[0], sun->color[1], sun->color[2]}) > 0;
+    const float rule = SunlitFigures() && sunny ? kSunlitFills : 1;
+    g_fills = g_outdoors ? std::clamp(Tuned("Fills").value_or(rule), 0.0F, 1.0F) : 1;
+}
+
+// The area's sun: on figures the ground's, with Sunlit figures on out of
+// doors; and as the tuning file says, on the ground times its `Sun`, on
+// figures times its `SunOnFigures`.
+void KeepSun()
+{
+    const std::optional<dao::atmosphere::Sunlight> own = dao::atmosphere::AreaOwnSunlight();
+    if (!own)
+    {
+        return;
+    }
+    dao::atmosphere::Sunlight sun = *own;
+    const float ground = Tuned("Sun").value_or(1);
+    const float figures = Tuned("SunOnFigures").value_or(1);
+    const bool oneSun = g_outdoors && SunlitFigures();
+    for (std::size_t channel = 0; channel < 3; ++channel)
+    {
+        sun.characterColor.at(channel) = (oneSun ? sun.color.at(channel) : sun.characterColor.at(channel)) * figures;
+        sun.color.at(channel) *= ground;
+    }
+    if (sun == dao::atmosphere::CurrentSunlight())
+    {
+        return;
+    }
+    if (sun == *own)
+    {
+        dao::atmosphere::ResetSunlight();
+    }
+    else
+    {
+        dao::atmosphere::SetSunlight(sun);
+    }
 }
 
 void Set(std::wstring_view name, float value)
@@ -451,6 +498,21 @@ SkyHaze Haze()
     return g_haze;
 }
 
+float Fills()
+{
+    return g_fills;
+}
+
+void WantSunlitFigures(bool on)
+{
+    if (on != g_wantedSunlit)
+    {
+        g_wantedSunlit = on;
+        KeepAir();
+        KeepSun();
+    }
+}
+
 void Want(bool on)
 {
     if (on != g_wanted)
@@ -470,6 +532,7 @@ void Poll()
     WatchArea();
     KeepTune();
     KeepAir();
+    KeepSun();
 }
 
 } // namespace outdoors

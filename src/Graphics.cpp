@@ -88,12 +88,14 @@ constexpr bool kMaterialsByDefault = true;
 constexpr bool kShadowsByDefault = true;
 constexpr bool kSmaaByDefault = true;
 constexpr bool kHazeByDefault = true;
+constexpr bool kSunlitFiguresByDefault = true;
 constexpr int kOcclusionByDefault = 3;  // High
 constexpr int kAnisotropyByDefault = 4; // 16x
 std::atomic<bool> g_materials{kMaterialsByDefault};
 std::atomic<bool> g_shadows{kShadowsByDefault};
-std::atomic<bool> g_sunlitHaze{kHazeByDefault}; // the air lit by the sun (Outdoors.h)
-bool g_smaa = kSmaaByDefault; // SMAA beside the game's own anti-aliasing, or not
+std::atomic<bool> g_sunlitHaze{kHazeByDefault};             // the air lit by the sun (Outdoors.h)
+std::atomic<bool> g_sunlitFigures{kSunlitFiguresByDefault}; // figures lit more by the sun than the fills
+bool g_smaa = kSmaaByDefault;                               // SMAA beside the game's own anti-aliasing, or not
 
 // The two sliders, each a stop of its list (the user, 2026-10-12: "implement
 // gtao, and add an option / slider for it. also add one for anisotropic
@@ -156,6 +158,12 @@ constexpr std::size_t kUncut = 5;
 constexpr UINT kHazeRegister = 218;
 constexpr std::size_t kHazeRegisters = 2;
 std::array<std::atomic<float>, kHazeRegisters * 4> g_hazeLook{};
+// How strong the area's fills are on figures (outdoors::Fills), in a
+// register below those (shaders/fills.hlsl's daoFill). Never other than 1
+// in a portrait or the inventory's figure, which are lit by lights of their
+// own: written again as the target changes.
+constexpr UINT kFillRegister = 217;
+std::atomic<float> g_fills{1};
 // The last of them: whether the ambient share is written into what is drawn
 // now (look.hlsl's DAO_SHARE_ASKED): where the device's first target is the
 // frame's own picture, which is the drawing thread's to know and to say as
@@ -628,14 +636,13 @@ DWORD g_separateAlphaAsked = FALSE;
 // hill and its windmill what they left said no fog at all. So while the game
 // blends, that alpha is not written, and what is behind keeps its own. The
 // game reads none of it: its depth is the other three.
-DWORD g_writeOneAsked = D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE |
-                        D3DCOLORWRITEENABLE_ALPHA;
+DWORD g_writeOneAsked =
+    D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA;
 DWORD g_blendAsked = FALSE;
 
 DWORD WriteOne()
 {
-    return g_blendAsked != FALSE ? (g_writeOneAsked & ~static_cast<DWORD>(D3DCOLORWRITEENABLE_ALPHA))
-                                 : g_writeOneAsked;
+    return g_blendAsked != FALSE ? (g_writeOneAsked & ~static_cast<DWORD>(D3DCOLORWRITEENABLE_ALPHA)) : g_writeOneAsked;
 }
 
 HRESULT __stdcall SetRenderState(IDirect3DDevice9 *device, D3DRENDERSTATETYPE state, DWORD value)
@@ -675,6 +682,12 @@ bool IsPicture(IDirect3DDevice9 *device, IDirect3DSurface9 *surface)
 
 // The registers' last as the drawing thread has it now: its three numbers
 // and whether the frame's own picture is drawn into.
+void HandFills(IDirect3DDevice9 *device)
+{
+    const std::array<float, 4> fills{g_drawsPicture ? g_fills.load(std::memory_order_relaxed) : 1.0F, 0, 0, 0};
+    device->SetPixelShaderConstantF(kFillRegister, fills.data(), 1);
+}
+
 void HandShareAsked(IDirect3DDevice9 *device)
 {
     std::array<float, 4> last{};
@@ -699,6 +712,7 @@ HRESULT __stdcall SetRenderTarget(IDirect3DDevice9 *device, DWORD index, IDirect
         {
             g_drawsPicture = picture;
             HandShareAsked(device);
+            HandFills(device);
             if (g_setRenderState.IsAttached())
             {
                 g_setRenderState.Original()(device, D3DRS_SEPARATEALPHABLENDENABLE,
@@ -870,6 +884,7 @@ HRESULT __stdcall BeginScene(IDirect3DDevice9 *device)
         haze.at(i) = g_hazeLook.at(i).load(std::memory_order_relaxed);
     }
     device->SetPixelShaderConstantF(kHazeRegister, haze.data(), kHazeRegisters);
+    HandFills(device);
     return g_beginScene.Original()(device);
 }
 
@@ -957,6 +972,10 @@ void ReadChosen(const std::filesystem::path &folder)
         {
             g_sunlitHaze.store(value == "On", std::memory_order_relaxed);
         }
+        if (key == "SunlitFigures")
+        {
+            g_sunlitFigures.store(value == "On", std::memory_order_relaxed);
+        }
         if (key == "ImprovedShadows")
         {
             g_shadows.store(value == "On", std::memory_order_relaxed);
@@ -984,6 +1003,7 @@ void KeepChosen()
     out << "ImprovedMaterials = " << said(g_materials.load(std::memory_order_relaxed))
         << "\nImprovedShadows = " << said(g_shadows.load(std::memory_order_relaxed))
         << "\nSunlitHaze = " << said(g_sunlitHaze.load(std::memory_order_relaxed))
+        << "\nSunlitFigures = " << said(g_sunlitFigures.load(std::memory_order_relaxed))
         << "\nAntiAliasing = " << (g_smaa ? "SMAA" : "Off")
         << "\nAmbientOcclusion = " << g_occlusionStop.load(std::memory_order_relaxed)
         << "\nAnisotropicFiltering = " << g_anisotropyStop.load(std::memory_order_relaxed) << '\n';
@@ -1036,6 +1056,7 @@ void KeepLookRegisters()
     g_look.at(kShadows).store(shadows, std::memory_order_relaxed);
     g_look.at(kShadowOnFigures).store(shadows, std::memory_order_relaxed);
     outdoors::Want(g_sunlitHaze.load(std::memory_order_relaxed));
+    outdoors::WantSunlitFigures(g_sunlitFigures.load(std::memory_order_relaxed));
     const outdoors::SkyHaze haze = outdoors::Haze();
     for (std::size_t c = 0; c < 3; ++c)
     {
@@ -1044,6 +1065,7 @@ void KeepLookRegisters()
     }
     g_hazeLook.at(3).store(haze.on ? 1.0F : 0.0F, std::memory_order_relaxed);
     g_hazeLook.at(7).store(haze.g, std::memory_order_relaxed);
+    g_fills.store(outdoors::Fills(), std::memory_order_relaxed);
     g_shareWanted.store(g_occlusionStop.load(std::memory_order_relaxed) > 0, std::memory_order_relaxed);
     g_anisotropy.store(kAnisotropyStops.at(static_cast<std::size_t>(g_anisotropyStop.load(std::memory_order_relaxed))),
                        std::memory_order_relaxed);
@@ -1268,6 +1290,10 @@ void AddToOptions()
                       "improved shadows"),
              Checkbox(g_sunlitHaze, kHazeByDefault, L"GraphicsSunlitHaze", L"Sunlit haze",
                       L"The haze and fog out of doors lit by the sun: brighter and warmer towards it", "sunlit haze"),
+             Checkbox(g_sunlitFigures, kSunlitFiguresByDefault, L"GraphicsSunlitFigures", L"Sunlit figures",
+                      L"Characters out of doors lit more by the sun or the moon and less by the area's even fill "
+                      L"light, so the light's direction shows",
+                      "sunlit figures"),
              smaa},
             {StopSlider(g_occlusionStop, kOcclusionByDefault, kOcclusionNames, L"GraphicsOcclusion",
                         L"Ambient occlusion", L"Shade in corners and creases and under things (GTAO)",
