@@ -171,9 +171,15 @@ float3 DaoShadedHaze(float3 ray, float shaded)
 // (sky.psh, read 2026-10-17): the fog's cap, less as the way rises, by
 // exp(-z^3 / (0.0636620 zenith)), z the way's height over its length and the
 // zenith in radians. Its fog is the air out to the cap's distance, and is
-// shaded as a surface's is.
+// shaded as a surface's is. A zenith of 0.0015708 radians or less fogs none
+// of it (lib-agent-2, DAOLib's dev/SKY.md, 2026-10-18); the area's zenith is
+// in degrees, and the engine turns it to radians (0x0055C459).
 float DaoSkyFogOf(float3 ray)
 {
+    if (radians(fDaoFogZenith) <= 0.0015708)
+    {
+        return 0;
+    }
     const float rise = ray.x * fDaoRightZ + ray.y * fDaoDownZ + ray.z * fDaoAheadZ;
     // As the sky's own, by exp2: fxc's optimizer does not settle on exp here.
     return fDaoFogCap * saturate(exp2(rise * rise * rise * (-1.4426950 / (0.0636620 * radians(fDaoFogZenith)))));
