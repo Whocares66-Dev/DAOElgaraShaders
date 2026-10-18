@@ -41,6 +41,8 @@ fxc.exe of the Windows SDK; without either it says so and writes nothing.
 
 import collections
 import concurrent.futures
+import ctypes
+import ctypes.wintypes
 import glob
 import os
 import re
@@ -2547,6 +2549,16 @@ def main(argv):
         print(__doc__)
         return 2
     out = argv[0]
+    # Below normal priority, which its eight fxc processes inherit, run alone as
+    # under tools/build.ps1: other sessions' builds and games share the cores
+    # (the user, 2026-10-18).
+    if sys.platform == "win32":
+        below_normal_priority_class = 0x4000
+        kernel32 = ctypes.windll.kernel32
+        # The handle is a pointer: as ctypes' default int, a 64-bit Python passes a bad one.
+        kernel32.GetCurrentProcess.restype = ctypes.wintypes.HANDLE
+        kernel32.SetPriorityClass.argtypes = (ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD)
+        kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), below_normal_priority_class)
     show = "share" if "show-share" in argv else "show-occlusion" in argv
     antialias = "no-smaa" not in argv
     data = os.path.join(script_commands.GAME, "packages", "core", "data")
