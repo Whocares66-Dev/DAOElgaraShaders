@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.2
+
+- The game no longer crashes as it closes with Improved lighting on, as 0.2.1 did.
+- Needs DAOLib 0.3.0 or newer.
+
 ## 0.2.1
 
 - Faster Improved lighting: in Denerim's market it cost about 8 to 9 ms a frame and now about 3, with the same picture (#30).
