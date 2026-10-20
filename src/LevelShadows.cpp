@@ -456,9 +456,10 @@ int g_drawnInto = 0;
 // What the shadows cost a frame (issue 30, a player's frame rate in Denerim's
 // market from 150 to 100 with Improved lighting): the figures replayed into
 // the sun's maps and the effects' lights' maps, the most lights handed, and the
-// time each part took over the log's interval, on the game's thread
-// (QueryPerformanceCounter, what the calls took to be made) and on the GPU
-// (timestamp queries, read kQueryFrames frames later, never waited on).
+// time each part took over the log's interval on the game's thread
+// (QueryPerformanceCounter, what the calls took to be made). The GPU's time
+// was read by timestamp queries too, until the game crashed in Direct3D as it
+// shut down with them made, every time (0.2.1, 2026-10-20).
 enum Part : std::size_t
 {
     kSunPart,     // DrawAtlas: the caches kept, each tile copied, what moves and the figures
@@ -471,8 +472,6 @@ int g_figureReplays = 0;
 int g_effectFigureReplays = 0;
 std::size_t g_lightsMost = 0;
 std::array<LONGLONG, kParts> g_partTicks{};
-std::array<double, kParts> g_partGpuMs{};
-int g_gpuFrames = 0; // frames whose queries were read
 
 // A part's time on the game's thread, from its making to its end.
 class Timed
@@ -497,128 +496,6 @@ class Timed
     Part m_part;
     LARGE_INTEGER m_start{};
 };
-
-// One frame's queries: whether the GPU's clock held steady, its rate, and a
-// timestamp before and after each part drawn.
-constexpr std::size_t kQueryFrames = 4;
-struct FrameQueries
-{
-    IDirect3DQuery9 *disjoint = nullptr;
-    IDirect3DQuery9 *frequency = nullptr;
-    std::array<IDirect3DQuery9 *, 2 * kParts> stamps{};
-    std::array<bool, kParts> stamped{};
-    bool begun = false;
-};
-std::array<FrameQueries, kQueryFrames> g_queries{};
-std::size_t g_queryFrame = 0;
-bool g_queriesFailed = false;
-
-void ReleaseQueries(FrameQueries &frame)
-{
-    for (IDirect3DQuery9 *query : frame.stamps)
-    {
-        if (query != nullptr)
-        {
-            query->Release();
-        }
-    }
-    for (IDirect3DQuery9 *query : {frame.disjoint, frame.frequency})
-    {
-        if (query != nullptr)
-        {
-            query->Release();
-        }
-    }
-    frame = FrameQueries{};
-}
-
-// A timestamp at a part's start or end on the GPU, in this frame's queries.
-void Stamp(IDirect3DDevice9 *device, Part part, bool end)
-{
-    if (g_queriesFailed)
-    {
-        return;
-    }
-    FrameQueries &frame = g_queries.at(g_queryFrame);
-    if (frame.disjoint == nullptr)
-    {
-        bool made = SUCCEEDED(device->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT, &frame.disjoint)) &&
-                    SUCCEEDED(device->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ, &frame.frequency));
-        for (IDirect3DQuery9 *&query : frame.stamps)
-        {
-            made = made && SUCCEEDED(device->CreateQuery(D3DQUERYTYPE_TIMESTAMP, &query));
-        }
-        if (!made)
-        {
-            spdlog::info("level shadows: the GPU's timestamps cannot be had; its times are not logged");
-            ReleaseQueries(frame);
-            g_queriesFailed = true;
-            return;
-        }
-    }
-    if (!frame.begun)
-    {
-        frame.disjoint->Issue(D3DISSUE_BEGIN);
-        frame.begun = true;
-    }
-    frame.stamps.at((2 * part) + (end ? 1 : 0))->Issue(D3DISSUE_END);
-    frame.stamped.at(part) = frame.stamped.at(part) || end;
-}
-
-// A frame's queries' answers added to the parts' GPU times, if the GPU has
-// them; the frame's set made free either way.
-void ReadQueries(FrameQueries &frame)
-{
-    if (!frame.begun)
-    {
-        return;
-    }
-    frame.begun = false;
-    BOOL disjoint = TRUE;
-    UINT64 frequency = 0;
-    if (frame.disjoint->GetData(&disjoint, sizeof disjoint, 0) != S_OK || disjoint != FALSE ||
-        frame.frequency->GetData(&frequency, sizeof frequency, 0) != S_OK || frequency == 0)
-    {
-        frame.stamped = {};
-        return;
-    }
-    std::array<double, kParts> ms{};
-    for (std::size_t part = 0; part < kParts; ++part)
-    {
-        if (!frame.stamped.at(part))
-        {
-            continue;
-        }
-        UINT64 start = 0;
-        UINT64 end = 0;
-        if (frame.stamps.at(2 * part)->GetData(&start, sizeof start, 0) != S_OK ||
-            frame.stamps.at((2 * part) + 1)->GetData(&end, sizeof end, 0) != S_OK)
-        {
-            frame.stamped = {};
-            return;
-        }
-        ms.at(part) = 1000.0 * static_cast<double>(end - start) / static_cast<double>(frequency);
-    }
-    for (std::size_t part = 0; part < kParts; ++part)
-    {
-        g_partGpuMs.at(part) += ms.at(part);
-    }
-    ++g_gpuFrames;
-    frame.stamped = {};
-}
-
-// The frame's queries ended, and the oldest frame's read to be used again.
-void EndQueries()
-{
-    FrameQueries &frame = g_queries.at(g_queryFrame);
-    if (frame.begun)
-    {
-        frame.disjoint->Issue(D3DISSUE_END);
-        frame.frequency->Issue(D3DISSUE_END);
-    }
-    g_queryFrame = (g_queryFrame + 1) % kQueryFrames;
-    ReadQueries(g_queries.at(g_queryFrame));
-}
 
 IDirect3DVertexShader9 *VariantOf(IDirect3DDevice9 *device, std::uint64_t hash)
 {
@@ -1533,9 +1410,7 @@ static void PictureDrawing(IDirect3DDevice9 *device, IDirect3DVertexShader9 *sha
             {
                 g_atlasDrawn = true;
                 const Timed timed(kSunPart);
-                Stamp(device, kSunPart, false);
                 g_atlasReady = DrawAtlas(device);
-                Stamp(device, kSunPart, true);
                 SetReceivers(device);
             }
             if (g_atlasReady)
@@ -2473,9 +2348,7 @@ static void EffectsDrawing(IDirect3DDevice9 *device)
         g_effectsDrawn = true;
         g_lightsMost = std::max(g_lightsMost, effectlights::Handed().size());
         const Timed timed(kEffectsPart);
-        Stamp(device, kEffectsPart, false);
         g_effectsReady = DrawEffectShadows(device);
-        Stamp(device, kEffectsPart, true);
     }
     if (g_effectsReady)
     {
@@ -2586,16 +2459,12 @@ void Presented()
         {
             const double cpu =
                 1000.0 * static_cast<double>(g_partTicks.at(part)) / static_cast<double>(frequency.QuadPart) / kEvery;
-            const double gpu = g_gpuFrames > 0 ? g_partGpuMs.at(part) / g_gpuFrames : 0.0;
-            parts += fmt::format("{}{} {:.2f} ms called, {:.2f} on the GPU", part == 0 ? "" : "; ", kPartNames.at(part),
-                                 cpu, gpu);
+            parts += fmt::format("{}{} {:.2f} ms", part == 0 ? "" : "; ", kPartNames.at(part), cpu);
         }
         spdlog::info("shadows' cost: a frame: {} figures replayed into the sun's maps, {} into the effects' lights' "
-                     "maps, {} lights at the most; {} (the GPU's of {} frames)",
-                     g_figureReplays, g_effectFigureReplays, g_lightsMost, parts, g_gpuFrames);
+                     "maps, {} lights at the most; on the game's thread: {}",
+                     g_figureReplays, g_effectFigureReplays, g_lightsMost, parts);
         g_partTicks = {};
-        g_partGpuMs = {};
-        g_gpuFrames = 0;
         g_lightsMost = 0;
         std::vector<float> sizes;
         for (const auto &[key, draw] : g_seen)
@@ -2620,7 +2489,6 @@ void Presented()
     g_figureReplays = 0;
     g_effectFigureReplays = 0;
     g_measuredThisFrame = false;
-    EndQueries();
     if (g_forget.exchange(false))
     {
         ForgetSeen();
@@ -2697,10 +2565,6 @@ void Release()
         g_atlasDepth = nullptr;
     }
     ReleaseEffectAtlas();
-    for (FrameQueries &frame : g_queries)
-    {
-        ReleaseQueries(frame);
-    }
     g_tile = 0;
     g_along = {};
 }
