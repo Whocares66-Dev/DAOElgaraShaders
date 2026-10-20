@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(DAOElgaraShaders VERSION 0.2.0 LANGUAGES CXX)
+project(DAOElgaraShaders VERSION 0.2.1 LANGUAGES CXX)
 
 # Dragon Age: Origins is a 32-bit x86 executable, so the plugin the loader
 # loads into it must be too. CMakePresets.json selects the x86 toolset and

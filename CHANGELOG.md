@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.1
+
+- Faster Improved lighting: in Denerim's market it cost about 8 to 9 ms a frame and now about 3, with the same picture (#30).
+- Softer sun shadows: sharp where an object meets the ground, blurred the farther away it is, as the sun's disc makes them.
+- The haze glows toward the sun only where the sun reaches it, not inside shade.
+- Fire, spells and flaming weapons light everything they reach, the ground and walls too, and cast shadows of characters and the level.
+- Props and furniture cast the sun's shadow.
+- Bright light, such as a Fireball's flash, keeps its color instead of turning a room flat white.
+- The sky below the horizon is no longer darkened in areas whose sky has no fog, such as the Fade (#29).
+- Needs DAOLib 0.3.0 or newer.
+
 ## 0.2.0
 
 - Improved lighting replaces Improved shadows. Out of doors one sun lights the level and the characters alike: the level casts its shadows as the sun falls (the plugin's own soft-edged shadow maps), on characters too, and a character walking into shade goes dark with the ground around it. Characters take their light from probes baked from the level's own lighting, and the haze glows toward the sun. Shade is lifted a little, so it reads as shade rather than black.
