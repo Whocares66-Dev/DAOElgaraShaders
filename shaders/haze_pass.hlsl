@@ -225,8 +225,8 @@ float4 main(float2 uv : TEXCOORD0, float2 pixel : VPOS) : COLOR0
     {
         return float4(max(scene.rgb - fog * DaoShadedHaze(ray, 1 - sunLit), 0), scene.a);
     }
-    const float3 light = DaoHazeLight(dot(ray, float3(fDaoSunX, fDaoSunY, fDaoSunZ)), float3(fDaoAirR, fDaoAirG, fDaoAirB),
-                                      0, fDaoHazeG) +
+    const float3 light = DaoHazeLight(dot(ray, float3(fDaoSunX, fDaoSunY, fDaoSunZ)),
+                                      float3(fDaoAirR, fDaoAirG, fDaoAirB), 0, fDaoHazeG) +
                          DaoShadedHaze(ray, sunLit);
     return float4(max(scene.rgb + fog * (light - float3(fDaoFogR, fDaoFogG, fDaoFogB)), 0), scene.a);
 }

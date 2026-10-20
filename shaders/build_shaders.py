@@ -2557,8 +2557,13 @@ def main(argv):
         kernel32 = ctypes.windll.kernel32
         # The handle is a pointer: as ctypes' default int, a 64-bit Python passes a bad one.
         kernel32.GetCurrentProcess.restype = ctypes.wintypes.HANDLE
-        kernel32.SetPriorityClass.argtypes = (ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD)
-        kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), below_normal_priority_class)
+        kernel32.SetPriorityClass.argtypes = (
+            ctypes.wintypes.HANDLE,
+            ctypes.wintypes.DWORD,
+        )
+        kernel32.SetPriorityClass(
+            kernel32.GetCurrentProcess(), below_normal_priority_class
+        )
     show = "share" if "show-share" in argv else "show-occlusion" in argv
     antialias = "no-smaa" not in argv
     data = os.path.join(script_commands.GAME, "packages", "core", "data")
