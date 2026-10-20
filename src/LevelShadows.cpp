@@ -21,6 +21,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <numbers>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -68,14 +69,22 @@ using shadercode::Constant;
 using shadercode::ConstantsOf;
 using shadercode::RegisterOf;
 
-std::uint64_t Fnv(const std::vector<std::byte> &bytes)
+constexpr std::uint64_t kFnvStart = 14695981039346656037ULL;
+
+// FNV-1a over `size` bytes at `data`, from `hash`.
+std::uint64_t FnvOn(std::uint64_t hash, const void *data, std::size_t size)
 {
-    std::uint64_t hash = 14695981039346656037ULL;
-    for (const std::byte b : bytes)
+    const auto *bytes = static_cast<const unsigned char *>(data);
+    for (std::size_t at = 0; at < size; ++at)
     {
-        hash = (hash ^ static_cast<std::uint64_t>(b)) * 1099511628211ULL;
+        hash = (hash ^ bytes[at]) * 1099511628211ULL;
     }
     return hash;
+}
+
+std::uint64_t Fnv(const std::vector<std::byte> &bytes)
+{
+    return FnvOn(kFnvStart, bytes.data(), bytes.size());
 }
 
 std::vector<std::byte> ReadFile(const std::filesystem::path &path)
@@ -161,8 +170,10 @@ std::unordered_set<std::uint64_t> g_cutVariants;                // by the game's
 std::unordered_map<std::uint64_t, std::wstring> g_variantNames; // the game's shader's, by its hash
 // A developer's: the kinds of draw left out of the maps (outdoors.tune's
 // LevelShadowsSkip): 1 terrain, 2 buildings and furnishings, 4 trees'
-// branches, 8 their fronds and leaves.
+// branches, 8 their fronds and leaves, 16 the figures (the engine's shadow
+// pass's draws, replayed into each map).
 std::atomic<unsigned> g_skipped{0};
+constexpr unsigned kSkipFigures = 16;
 std::vector<std::byte> g_cutCode;
 IDirect3DPixelShader9 *g_cut = nullptr;
 std::unordered_map<std::uint64_t, std::vector<std::byte>> g_measureCode;
@@ -195,9 +206,19 @@ struct GameShader
 };
 std::unordered_map<IDirect3DVertexShader9 *, GameShader> g_gameShaders;
 // The engine's shadow pass's, each with the register its partition's matrix is
-// in: c4 in pssmmesh.vsh, after the bones in pssmskinmesh.vsh (taken for c4 at
-// first, a bone's matrix was drawn by, 2026-10-16).
-std::unordered_map<IDirect3DVertexShader9 *, UINT> g_engineShadow;
+// in (c4 in pssmmesh.vsh, after the bones in pssmskinmesh.vsh: taken for c4 at
+// first, a bone's matrix was drawn by, 2026-10-16), its model's matrix's
+// (aur_mWorld, the figure's place; a tree's shaders have none), and how many
+// registers it reads from c0: all a replay of its draw sets (setting all 256
+// for each of some 1100 replays a frame was a third of Denerim's market's
+// cost on the game's thread, issue 30).
+struct EngineShader
+{
+    UINT partition = 0;
+    std::optional<UINT> world;
+    UINT registers = 0;
+};
+std::unordered_map<IDirect3DVertexShader9 *, EngineShader> g_engineShadow;
 std::vector<std::byte> g_castCode;
 IDirect3DPixelShader9 *g_cast = nullptr;
 IDirect3DStateBlock9 *g_saved = nullptr;
@@ -388,9 +409,16 @@ void SetSampler(IDirect3DDevice9 *device, DWORD sampler, D3DSAMPLERSTATETYPE typ
 // One of the engine's draws of a figure into its shadow maps, as the device
 // had it, to be drawn into each of the atlas's: the engine draws the same
 // figure into both its maps, or into one, or none past its own reach.
+// Where a figure's draw stands and how far about that it reaches.
+struct Reach
+{
+    std::array<float, 3> centre{};
+    float reach = 0;
+};
+
 struct FigureDraw
 {
-    std::uint64_t key = 0; // the buffers, the part and the constants but the map's matrix
+    std::uint64_t key = 0; // the buffers, the part and where it is
     IDirect3DVertexShader9 *vertex = nullptr;
     IDirect3DPixelShader9 *pixel = nullptr;
     IDirect3DVertexDeclaration9 *declaration = nullptr;
@@ -403,7 +431,9 @@ struct FigureDraw
     UINT vertices = 0;
     UINT first = 0;
     UINT count = 0;
-    UINT partition = 0; // the register of the map's matrix
+    UINT partition = 0;          // the register of the map's matrix
+    UINT registers = 0;          // how many of vertexConstants its shader reads, from c0
+    std::optional<Reach> bounds; // none where its shader names no place
     std::array<float, 256 * 4> vertexConstants{};
     std::array<float, 16 * 4> pixelConstants{};
     std::array<DWORD, 4> states{}; // alpha test, its reference and function, culling
@@ -422,6 +452,173 @@ constexpr UINT kReceiverRegisters = 14;
 int g_frames = 0;
 int g_engineDraws = 0;
 int g_drawnInto = 0;
+
+// What the shadows cost a frame (issue 30, a player's frame rate in Denerim's
+// market from 150 to 100 with Improved lighting): the figures replayed into
+// the sun's maps and the effects' lights' maps, the most lights handed, and the
+// time each part took over the log's interval, on the game's thread
+// (QueryPerformanceCounter, what the calls took to be made) and on the GPU
+// (timestamp queries, read kQueryFrames frames later, never waited on).
+enum Part : std::size_t
+{
+    kSunPart,     // DrawAtlas: the caches kept, each tile copied, what moves and the figures
+    kEffectsPart, // DrawEffectShadows: each light's six faces
+    kNotePart,    // NoteFigure and NoteLevel: the draws read off the device
+    kParts
+};
+constexpr std::array<std::string_view, kParts> kPartNames{"sun's maps", "effects' maps", "noting"};
+int g_figureReplays = 0;
+int g_effectFigureReplays = 0;
+std::size_t g_lightsMost = 0;
+std::array<LONGLONG, kParts> g_partTicks{};
+std::array<double, kParts> g_partGpuMs{};
+int g_gpuFrames = 0; // frames whose queries were read
+
+// A part's time on the game's thread, from its making to its end.
+class Timed
+{
+  public:
+    explicit Timed(Part part) : m_part(part)
+    {
+        QueryPerformanceCounter(&m_start);
+    }
+    ~Timed()
+    {
+        LARGE_INTEGER now{};
+        QueryPerformanceCounter(&now);
+        g_partTicks.at(m_part) += now.QuadPart - m_start.QuadPart;
+    }
+    Timed(const Timed &) = delete;
+    Timed &operator=(const Timed &) = delete;
+    Timed(Timed &&) = delete;
+    Timed &operator=(Timed &&) = delete;
+
+  private:
+    Part m_part;
+    LARGE_INTEGER m_start{};
+};
+
+// One frame's queries: whether the GPU's clock held steady, its rate, and a
+// timestamp before and after each part drawn.
+constexpr std::size_t kQueryFrames = 4;
+struct FrameQueries
+{
+    IDirect3DQuery9 *disjoint = nullptr;
+    IDirect3DQuery9 *frequency = nullptr;
+    std::array<IDirect3DQuery9 *, 2 * kParts> stamps{};
+    std::array<bool, kParts> stamped{};
+    bool begun = false;
+};
+std::array<FrameQueries, kQueryFrames> g_queries{};
+std::size_t g_queryFrame = 0;
+bool g_queriesFailed = false;
+
+void ReleaseQueries(FrameQueries &frame)
+{
+    for (IDirect3DQuery9 *query : frame.stamps)
+    {
+        if (query != nullptr)
+        {
+            query->Release();
+        }
+    }
+    for (IDirect3DQuery9 *query : {frame.disjoint, frame.frequency})
+    {
+        if (query != nullptr)
+        {
+            query->Release();
+        }
+    }
+    frame = FrameQueries{};
+}
+
+// A timestamp at a part's start or end on the GPU, in this frame's queries.
+void Stamp(IDirect3DDevice9 *device, Part part, bool end)
+{
+    if (g_queriesFailed)
+    {
+        return;
+    }
+    FrameQueries &frame = g_queries.at(g_queryFrame);
+    if (frame.disjoint == nullptr)
+    {
+        bool made = SUCCEEDED(device->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT, &frame.disjoint)) &&
+                    SUCCEEDED(device->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ, &frame.frequency));
+        for (IDirect3DQuery9 *&query : frame.stamps)
+        {
+            made = made && SUCCEEDED(device->CreateQuery(D3DQUERYTYPE_TIMESTAMP, &query));
+        }
+        if (!made)
+        {
+            spdlog::info("level shadows: the GPU's timestamps cannot be had; its times are not logged");
+            ReleaseQueries(frame);
+            g_queriesFailed = true;
+            return;
+        }
+    }
+    if (!frame.begun)
+    {
+        frame.disjoint->Issue(D3DISSUE_BEGIN);
+        frame.begun = true;
+    }
+    frame.stamps.at((2 * part) + (end ? 1 : 0))->Issue(D3DISSUE_END);
+    frame.stamped.at(part) = frame.stamped.at(part) || end;
+}
+
+// A frame's queries' answers added to the parts' GPU times, if the GPU has
+// them; the frame's set made free either way.
+void ReadQueries(FrameQueries &frame)
+{
+    if (!frame.begun)
+    {
+        return;
+    }
+    frame.begun = false;
+    BOOL disjoint = TRUE;
+    UINT64 frequency = 0;
+    if (frame.disjoint->GetData(&disjoint, sizeof disjoint, 0) != S_OK || disjoint != FALSE ||
+        frame.frequency->GetData(&frequency, sizeof frequency, 0) != S_OK || frequency == 0)
+    {
+        frame.stamped = {};
+        return;
+    }
+    std::array<double, kParts> ms{};
+    for (std::size_t part = 0; part < kParts; ++part)
+    {
+        if (!frame.stamped.at(part))
+        {
+            continue;
+        }
+        UINT64 start = 0;
+        UINT64 end = 0;
+        if (frame.stamps.at(2 * part)->GetData(&start, sizeof start, 0) != S_OK ||
+            frame.stamps.at((2 * part) + 1)->GetData(&end, sizeof end, 0) != S_OK)
+        {
+            frame.stamped = {};
+            return;
+        }
+        ms.at(part) = 1000.0 * static_cast<double>(end - start) / static_cast<double>(frequency);
+    }
+    for (std::size_t part = 0; part < kParts; ++part)
+    {
+        g_partGpuMs.at(part) += ms.at(part);
+    }
+    ++g_gpuFrames;
+    frame.stamped = {};
+}
+
+// The frame's queries ended, and the oldest frame's read to be used again.
+void EndQueries()
+{
+    FrameQueries &frame = g_queries.at(g_queryFrame);
+    if (frame.begun)
+    {
+        frame.disjoint->Issue(D3DISSUE_END);
+        frame.frequency->Issue(D3DISSUE_END);
+    }
+    g_queryFrame = (g_queryFrame + 1) % kQueryFrames;
+    ReadQueries(g_queries.at(g_queryFrame));
+}
 
 IDirect3DVertexShader9 *VariantOf(IDirect3DDevice9 *device, std::uint64_t hash)
 {
@@ -1112,8 +1309,18 @@ void Created(const DWORD *code, IDirect3DVertexShader9 *shader)
     }
     if (const std::optional<UINT> partition = RegisterOf(bytes, kEnginePartitionName))
     {
-        g_engineShadow[shader] = *partition;
-        spdlog::info("level shadows: an engine shadow pass shader, its partition at c{}", *partition);
+        EngineShader engine;
+        engine.partition = *partition;
+        engine.world = RegisterOf(bytes, "aur_mWorld");
+        engine.registers = *partition + kMatrixRegisters;
+        for (const shadercode::Constant &constant : ConstantsOf(bytes))
+        {
+            engine.registers = std::max(engine.registers, constant.first + constant.count);
+        }
+        engine.registers = std::min<UINT>(engine.registers, 256);
+        g_engineShadow[shader] = engine;
+        spdlog::info("level shadows: an engine shadow pass shader, its partition at c{}, {} registers read", *partition,
+                     engine.registers);
     }
 }
 
@@ -1136,12 +1343,88 @@ static void Let(FigureDraw &draw)
     }
 }
 
-// The engine's draw of a figure into the map `map`, kept as the device has it.
-static void NoteFigure(IDirect3DDevice9 *device, UINT partition, D3DPRIMITIVETYPE type, INT base, UINT least,
-                       UINT vertices, UINT first, UINT count)
+// Where a figure's draw stands and how far it reaches about that: its model's
+// matrix's translation (aur_mWorld, at `world`), and the farthest of its bones
+// from there (bsm_bones, three registers a bone from c0 to its model's
+// matrix), or for a draw with no bones (a weapon, a shield) a reach any such
+// thing is within. Only which maps it is drawn into is decided by it, so it is
+// taken wide.
+static Reach FigureReach(const std::array<float, 256 * 4> &constants, UINT world)
 {
+    const std::size_t at = static_cast<std::size_t>(world) * 4;
+    Reach bounds{{constants.at(at + 3), constants.at(at + 7), constants.at(at + 11)}, 0};
+    constexpr float kThingReach = 2.5F; // metres: a weapon, a shield, a staff
+    constexpr float kFlesh = 1.0F;      // metres past the farthest bone
+    constexpr float kBoneFarthest = 30.0F;
+    bounds.reach = kThingReach;
+    for (std::size_t bone = 0; (bone * 3) + 3 <= world; ++bone)
+    {
+        const float x = constants.at((bone * 12) + 3);
+        const float y = constants.at((bone * 12) + 7);
+        const float z = constants.at((bone * 12) + 11);
+        const float d = std::sqrt((x * x) + (y * y) + (z * z));
+        if (std::isfinite(d) && d < kBoneFarthest)
+        {
+            bounds.reach = std::max(bounds.reach, d + kFlesh);
+        }
+    }
+    return bounds;
+}
+
+// The engine's draw of a figure into one of its maps, kept as the device has
+// it, once: the engine draws the same figure into both its maps, or into one.
+// A draw is known by its buffers, the part of them and where it is, its
+// model's matrix, the same in both maps; one whose shader names none (a
+// tree's), by every register its shader reads but the map's matrix. It is
+// known before anything else is read of it: a key of all 256 registers,
+// hashed for each of the 259 draws a frame in Denerim's market, and each
+// draw read whole before it was found to be the other map's, took some 4.7 ms
+// of the game's thread (issue 30).
+static void NoteFigure(IDirect3DDevice9 *device, const EngineShader &engine, D3DPRIMITIVETYPE type, INT base,
+                       UINT least, UINT vertices, UINT first, UINT count)
+{
+    const Timed timed(kNotePart);
+    IDirect3DVertexBuffer9 *buffer = nullptr;
+    UINT offset = 0;
+    UINT stride = 0;
+    device->GetStreamSource(0, &buffer, &offset, &stride);
+    IDirect3DIndexBuffer9 *indices = nullptr;
+    device->GetIndices(&indices);
+    std::uint64_t key = FnvOn(kFnvStart, static_cast<const void *>(&buffer), sizeof(void *));
+    key = FnvOn(key, static_cast<const void *>(&indices), sizeof(void *));
+    for (const UINT part : {static_cast<UINT>(base), first, count, offset})
+    {
+        key = FnvOn(key, &part, sizeof part);
+    }
+    for (IUnknown *held : {static_cast<IUnknown *>(buffer), static_cast<IUnknown *>(indices)})
+    {
+        if (held != nullptr)
+        {
+            held->Release();
+        }
+    }
+    std::array<float, kMatrixRegisters * 4> world{};
+    if (engine.world)
+    {
+        device->GetVertexShaderConstantF(*engine.world, world.data(), kMatrixRegisters);
+        key = FnvOn(key, world.data(), sizeof world);
+    }
+    else
+    {
+        std::array<float, 256 * 4> constants{};
+        device->GetVertexShaderConstantF(0, constants.data(), engine.registers);
+        std::fill_n(constants.begin() + (static_cast<std::ptrdiff_t>(engine.partition) * 4), kMatrixRegisters * 4,
+                    0.0F);
+        key = FnvOn(key, constants.data(), engine.registers * 4 * sizeof(float));
+    }
+    if (!g_figureKeys.insert(key).second)
+    {
+        return;
+    }
     FigureDraw &draw = g_figureDraws.emplace_back();
-    draw.partition = partition;
+    draw.key = key;
+    draw.partition = engine.partition;
+    draw.registers = engine.registers;
     draw.type = type;
     draw.base = base;
     draw.least = least;
@@ -1158,37 +1441,22 @@ static void NoteFigure(IDirect3DDevice9 *device, UINT partition, D3DPRIMITIVETYP
     }
     device->GetIndices(&draw.indices);
     device->GetTexture(0, &draw.texture);
-    device->GetVertexShaderConstantF(0, draw.vertexConstants.data(), 256);
+    device->GetVertexShaderConstantF(0, draw.vertexConstants.data(), draw.registers);
     device->GetPixelShaderConstantF(0, draw.pixelConstants.data(), 16);
     for (std::size_t at = 0; at < kFigureStates.size(); ++at)
     {
         device->GetRenderState(kFigureStates.at(at), &draw.states.at(at));
     }
-    std::vector<std::byte> key((sizeof(void *) * 2) + (sizeof(UINT) * 4));
-    std::memcpy(key.data(), static_cast<const void *>(&draw.streams[0].buffer), sizeof(void *));
-    std::memcpy(key.data() + sizeof(void *), static_cast<const void *>(&draw.indices), sizeof(void *));
-    for (std::size_t at = 0; const UINT part : {static_cast<UINT>(base), first, count, draw.streams[0].offset})
+    if (engine.world)
     {
-        std::memcpy(key.data() + (sizeof(void *) * 2) + (sizeof(UINT) * at++), &part, sizeof part);
-    }
-    // The constants but the map's matrix: where the figure is and how it stands.
-    std::array<float, 256 * 4> constants = draw.vertexConstants;
-    std::fill_n(constants.begin() + (static_cast<std::ptrdiff_t>(partition) * 4), kMatrixRegisters * 4, 0.0F);
-    const auto *bytes = reinterpret_cast<const std::byte *>(constants.data());
-    key.insert(key.end(), bytes, bytes + sizeof constants);
-    draw.key = Fnv(key);
-    // The same figure in both the engine's maps is drawn once into each of ours.
-    if (!g_figureKeys.insert(draw.key).second)
-    {
-        Let(draw);
-        g_figureDraws.pop_back();
+        draw.bounds = FigureReach(draw.vertexConstants, *engine.world);
     }
 }
 
 // An engine's draw of its shadow pass: the map it draws into, its matrix (the
 // sun's frame where the lighting has said none), and the figure kept.
-static void EngineDrawing(IDirect3DDevice9 *device, UINT partition, D3DPRIMITIVETYPE type, INT base, UINT least,
-                          UINT vertices, UINT first, UINT count)
+static void EngineDrawing(IDirect3DDevice9 *device, const EngineShader &engine, D3DPRIMITIVETYPE type, INT base,
+                          UINT least, UINT vertices, UINT first, UINT count)
 {
     IDirect3DSurface9 *target = nullptr;
     device->GetRenderTarget(0, &target);
@@ -1204,10 +1472,10 @@ static void EngineDrawing(IDirect3DDevice9 *device, UINT partition, D3DPRIMITIVE
     {
         target->Release();
     }
-    device->GetVertexShaderConstantF(partition, g_partition.data(), kMatrixRegisters);
+    device->GetVertexShaderConstantF(engine.partition, g_partition.data(), kMatrixRegisters);
     if (g_wanted.load(std::memory_order_relaxed) || g_effectsWanted.load(std::memory_order_relaxed))
     {
-        NoteFigure(device, partition, type, base, least, vertices, first, count);
+        NoteFigure(device, engine, type, base, least, vertices, first, count);
     }
     g_mapDrawn = true;
     g_passThisFrame = true;
@@ -1241,6 +1509,7 @@ static void Lend(IDirect3DDevice9 *device, DWORD sampler, Lent &lent = g_lent, I
 static void NoteLevel(IDirect3DDevice9 *device, IDirect3DVertexShader9 *shader, D3DPRIMITIVETYPE type, INT base,
                       UINT least, UINT vertices, UINT first, UINT count)
 {
+    const Timed timed(kNotePart);
     if (const auto game = g_gameShaders.find(shader); game != g_gameShaders.end())
     {
         if (IDirect3DVertexShader9 *variant = VariantOf(device, game->second.hash))
@@ -1263,7 +1532,10 @@ static void PictureDrawing(IDirect3DDevice9 *device, IDirect3DVertexShader9 *sha
             if (!g_atlasDrawn && (g_passThisFrame || !g_passLastFrame))
             {
                 g_atlasDrawn = true;
+                const Timed timed(kSunPart);
+                Stamp(device, kSunPart, false);
                 g_atlasReady = DrawAtlas(device);
+                Stamp(device, kSunPart, true);
                 SetReceivers(device);
             }
             if (g_atlasReady)
@@ -1802,7 +2074,7 @@ static void Replay(IDirect3DDevice9 *device, const FigureDraw &draw, const casca
     }
     device->SetIndices(draw.indices);
     device->SetTexture(0, draw.texture);
-    device->SetVertexShaderConstantF(0, draw.vertexConstants.data(), 256);
+    device->SetVertexShaderConstantF(0, draw.vertexConstants.data(), draw.registers);
     device->SetVertexShaderConstantF(draw.partition, clip.data(), kMatrixRegisters);
     device->SetPixelShaderConstantF(0, draw.pixelConstants.data(), 16);
     for (std::size_t at = 0; at < kFigureStates.size(); ++at)
@@ -1846,6 +2118,27 @@ static void KeepCaches(IDirect3DDevice9 *device)
     }
 }
 
+// Whether a figure's bounds are wholly off a sun's map, across it: the map
+// looks along the sun, so what is off its square casts nothing into it. Every
+// figure was replayed into all four maps, the finest 6 m across (issue 30).
+// Its depth is not tested: what is nearer the sun than the map's depth casts
+// all the same.
+static bool OffMap(const Reach &bounds, const cascades::Matrix &clip)
+{
+    const auto &[x, y, z] = bounds.centre;
+    for (std::size_t row = 0; row < 2; ++row)
+    {
+        const float *r = clip.data() + (row * 4);
+        const float at = (r[0] * x) + (r[1] * y) + (r[2] * z) + r[3];
+        const float scale = std::sqrt((r[0] * r[0]) + (r[1] * r[1]) + (r[2] * r[2]));
+        if (std::abs(at) > 1 + (bounds.reach * scale))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 // One tile of the atlas: its cache, with its depth, then what moves and every
 // figure, by the map's matrix, where they are nearer the sun than what is there.
 static void DrawTile(IDirect3DDevice9 *device, std::size_t map)
@@ -1868,9 +2161,17 @@ static void DrawTile(IDirect3DDevice9 *device, std::size_t map)
     g_partition = fitted->clip;
     DrawLevel(device, true);
     device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+    if ((g_skipped.load(std::memory_order_relaxed) & kSkipFigures) != 0)
+    {
+        return;
+    }
     for (const FigureDraw &draw : g_figureDraws)
     {
-        Replay(device, draw, fitted->clip);
+        if (!draw.bounds || !OffMap(*draw.bounds, fitted->clip))
+        {
+            Replay(device, draw, fitted->clip);
+            ++g_figureReplays;
+        }
     }
 }
 
@@ -2008,46 +2309,52 @@ static cascades::Matrix EffectFace(const std::array<float, 4> &light, std::size_
     return clip;
 }
 
-// Where a figure's draw stands and how far it reaches about that: its world
-// matrix's translation (the four registers before its map's matrix, in both
-// the engine's skinned and plain shadow shaders, aur_mWorld), and the
-// farthest of its bones from there, or for a draw with no bones (a weapon,
-// a shield) a reach any such thing is within. Only what is drawn into a
-// light's maps is decided by it, so it is taken wide.
-static std::pair<std::array<float, 3>, float> FigureBounds(const FigureDraw &draw)
+// Whether a figure's bounds are wholly out of one face of a light's cube
+// (EffectFace's): behind one of the face's four sides, each a quarter turn
+// from its way. A figure was replayed into all six (issue 30).
+static bool OffFace(const Reach &bounds, const std::array<float, 4> &light, std::size_t face)
 {
-    const std::size_t world = (draw.partition - 4) * 4;
-    const std::array<float, 3> at{draw.vertexConstants.at(world + 3), draw.vertexConstants.at(world + 7),
-                                  draw.vertexConstants.at(world + 11)};
-    constexpr float kThingReach = 2.5F; // metres: a weapon, a shield, a staff
-    constexpr float kFlesh = 1.0F;      // metres past the farthest bone
-    constexpr float kBoneFarthest = 30.0F;
-    float reach = kThingReach;
-    if (draw.partition > 4)
+    const std::size_t axis = face / 2;
+    const float sign = face % 2 == 0 ? 1.0F : -1.0F;
+    const std::array<float, 3> way{bounds.centre[0] - light[0], bounds.centre[1] - light[1],
+                                   bounds.centre[2] - light[2]};
+    const float ahead = sign * way.at(axis);
+    // A side's plane through the light, its normal the face's way less the
+    // other axis's, over the square root of 2: the centre's distance from it
+    // against the reach.
+    const float slack = bounds.reach * std::numbers::sqrt2_v<float>;
+    for (std::size_t other = 0; other < 3; ++other)
     {
-        // Skinned: bsm_bones, a bone three registers, from c0.
-        for (std::size_t bone = 0; (bone * 3) + 3 <= draw.partition - 4; ++bone)
+        if (other != axis && ahead - std::abs(way.at(other)) < -slack)
         {
-            const float x = draw.vertexConstants.at((bone * 12) + 3);
-            const float y = draw.vertexConstants.at((bone * 12) + 7);
-            const float z = draw.vertexConstants.at((bone * 12) + 11);
-            const float d = std::sqrt((x * x) + (y * y) + (z * z));
-            if (std::isfinite(d) && d < kBoneFarthest)
-            {
-                reach = std::max(reach, d + kFlesh);
-            }
+            return true;
         }
     }
-    return {at, reach};
+    return false;
 }
 
 // One light's six maps, in its row of the atlas: each face the level's own
 // surfaces within the light's reach (a wall between the light and what is
-// behind it), then the figures whose bounds (`bounds`, by g_figureDraws) come
-// within it.
-static void DrawEffectLight(IDirect3DDevice9 *device, std::size_t light, const std::array<float, 4> &place,
-                            const std::vector<std::pair<std::array<float, 3>, float>> &bounds)
+// behind it), then the figures whose bounds come within it and the face. A
+// draw that names no place (a tree's) is left out.
+static void DrawEffectLight(IDirect3DDevice9 *device, std::size_t light, const std::array<float, 4> &place)
 {
+    std::vector<const FigureDraw *> reached;
+    for (const FigureDraw &draw : g_figureDraws)
+    {
+        if (!draw.bounds)
+        {
+            continue;
+        }
+        const float x = draw.bounds->centre[0] - place[0];
+        const float y = draw.bounds->centre[1] - place[1];
+        const float z = draw.bounds->centre[2] - place[2];
+        const float within = place[3] + draw.bounds->reach;
+        if ((x * x) + (y * y) + (z * z) <= within * within)
+        {
+            reached.push_back(&draw);
+        }
+    }
     for (std::size_t face = 0; face < 6; ++face)
     {
         const D3DVIEWPORT9 viewport{static_cast<DWORD>(face * kEffectTile),
@@ -2065,16 +2372,12 @@ static void DrawEffectLight(IDirect3DDevice9 *device, std::size_t light, const s
         DrawLevel(device, true);
         g_drawingFor.reset();
         device->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED);
-        for (std::size_t at = 0; at < g_figureDraws.size(); ++at)
+        for (const FigureDraw *draw : reached)
         {
-            const auto &[centre, reach] = bounds[at];
-            const float x = centre[0] - place[0];
-            const float y = centre[1] - place[1];
-            const float z = centre[2] - place[2];
-            const float within = place[3] + reach;
-            if ((x * x) + (y * y) + (z * z) <= within * within)
+            if (!OffFace(*draw->bounds, place, face))
             {
-                Replay(device, g_figureDraws[at], clip, true);
+                Replay(device, *draw, clip, true);
+                ++g_effectFigureReplays;
             }
         }
     }
@@ -2119,15 +2422,9 @@ static bool DrawEffectShadows(IDirect3DDevice9 *device)
         device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
         device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
         device->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED);
-        std::vector<std::pair<std::array<float, 3>, float>> bounds;
-        bounds.reserve(g_figureDraws.size());
-        for (const FigureDraw &draw : g_figureDraws)
-        {
-            bounds.push_back(FigureBounds(draw));
-        }
         for (std::size_t light = 0; light < lights.size() && light < kEffectLightsMost; ++light)
         {
-            DrawEffectLight(device, light, lights[light], bounds);
+            DrawEffectLight(device, light, lights[light]);
         }
         std::error_code error;
         if (!g_dumpAsked.empty() && std::filesystem::exists(g_dumpAsked, error))
@@ -2174,7 +2471,11 @@ static void EffectsDrawing(IDirect3DDevice9 *device)
     if (!g_effectsDrawn)
     {
         g_effectsDrawn = true;
+        g_lightsMost = std::max(g_lightsMost, effectlights::Handed().size());
+        const Timed timed(kEffectsPart);
+        Stamp(device, kEffectsPart, false);
         g_effectsReady = DrawEffectShadows(device);
+        Stamp(device, kEffectsPart, true);
     }
     if (g_effectsReady)
     {
@@ -2278,6 +2579,24 @@ void Presented()
                      "caches drawn {} times since",
                      g_gameShaders.size(), g_engineShadow.size(), g_noted, g_engineDraws, g_drawnInto, g_seen.size(),
                      g_measuredCount, g_cacheDrawn);
+        LARGE_INTEGER frequency{};
+        QueryPerformanceFrequency(&frequency);
+        std::string parts;
+        for (std::size_t part = 0; part < kParts; ++part)
+        {
+            const double cpu =
+                1000.0 * static_cast<double>(g_partTicks.at(part)) / static_cast<double>(frequency.QuadPart) / kEvery;
+            const double gpu = g_gpuFrames > 0 ? g_partGpuMs.at(part) / g_gpuFrames : 0.0;
+            parts += fmt::format("{}{} {:.2f} ms called, {:.2f} on the GPU", part == 0 ? "" : "; ", kPartNames.at(part),
+                                 cpu, gpu);
+        }
+        spdlog::info("shadows' cost: a frame: {} figures replayed into the sun's maps, {} into the effects' lights' "
+                     "maps, {} lights at the most; {} (the GPU's of {} frames)",
+                     g_figureReplays, g_effectFigureReplays, g_lightsMost, parts, g_gpuFrames);
+        g_partTicks = {};
+        g_partGpuMs = {};
+        g_gpuFrames = 0;
+        g_lightsMost = 0;
         std::vector<float> sizes;
         for (const auto &[key, draw] : g_seen)
         {
@@ -2298,7 +2617,10 @@ void Presented()
     g_engineDraws = 0;
     g_drawnInto = 0;
     g_noted = 0;
+    g_figureReplays = 0;
+    g_effectFigureReplays = 0;
     g_measuredThisFrame = false;
+    EndQueries();
     if (g_forget.exchange(false))
     {
         ForgetSeen();
@@ -2375,6 +2697,10 @@ void Release()
         g_atlasDepth = nullptr;
     }
     ReleaseEffectAtlas();
+    for (FrameQueries &frame : g_queries)
+    {
+        ReleaseQueries(frame);
+    }
     g_tile = 0;
     g_along = {};
 }

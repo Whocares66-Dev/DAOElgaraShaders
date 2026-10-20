@@ -1434,7 +1434,9 @@ void KeepLookRegisters()
     outdoors::Want(lighting);
     // Effects light everything they reach, indoors and out.
     effectlights::Want(lighting);
-    levelshadows::WantEffectShadows(lighting);
+    // outdoors.tune's EffectShadows = 0, a developer's: their cost without them
+    // (issue 30).
+    levelshadows::WantEffectShadows(lighting && outdoors::Tune("EffectShadows", 1) > 0);
     // The level drawn into the sun's maps only where it has a sun: underground
     // the engine still draws maps for its figures' own light, and the level's
     // surfaces took the shade of it in place of their baked light (the Ruined

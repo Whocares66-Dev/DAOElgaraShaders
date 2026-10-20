@@ -73,7 +73,8 @@ void Drawn(IDirect3DDevice9 *device);
 void Leaving(IDirect3DDevice9 *device);
 
 // A developer's: the kinds of draw left out of the maps, 1 terrain, 2
-// buildings and furnishings, 4 trees' branches, 8 their fronds and leaves.
+// buildings and furnishings, 4 trees' branches, 8 their fronds and leaves, 16
+// the figures.
 void Skip(unsigned kinds);
 
 // The way the sun's light travels, a unit vector, which the maps fitted to
