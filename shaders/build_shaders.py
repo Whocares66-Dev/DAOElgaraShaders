@@ -2,6 +2,11 @@
 
     python shaders/build_shaders.py <folder to write to>
         [show-occlusion] [show-share] [no-smaa]
+    python shaders/build_shaders.py inputs
+
+`inputs` lists, separated by semicolons, every file the build reads (the
+game's archives, fxc.exe, the HLSL and SMAA files and the Python it runs):
+CMake builds the shaders again when one of them changes, and only then.
 
 Each shader is read from the game's shaders.erf, listed by fxc, turned into
 HLSL (tools/shader_hlsl.py), given a function of ours in place of or after
@@ -99,6 +104,32 @@ def find_fxc():
     )
     found = sorted(glob.glob(os.path.join(kits, "*", "x86", "fxc.exe")))
     return found[-1] if found else None
+
+
+# The game's archives the build reads, in packages/core/data.
+GAME_ARCHIVES = ("shaders.erf", "postprocesseffects.erf", "materials.erf", "states.erf")
+
+
+def inputs():
+    """Every file the build reads, as full paths with forward slashes."""
+    data = os.path.join(script_commands.GAME, "packages", "core", "data")
+    files = [os.path.join(data, name) for name in GAME_ARCHIVES]
+    files.append(find_fxc() or "")
+    files += glob.glob(os.path.join(HERE, "*.hlsl"))
+    files += glob.glob(os.path.join(HERE, "smaa", "*"))
+    files += [
+        os.path.abspath(__file__),
+        script_commands.__file__,
+        shader_hlsl.__file__,
+        smaa.__file__,
+    ]
+    return sorted(
+        {
+            os.path.abspath(f).replace("\\", "/")
+            for f in files
+            if f and os.path.isfile(f)
+        }
+    )
 
 
 def with_our_shadow(shader):
@@ -2548,6 +2579,9 @@ def main(argv):
     if not argv:
         print(__doc__)
         return 2
+    if argv[0] == "inputs":
+        print(";".join(inputs()))
+        return 0
     out = argv[0]
     # Below normal priority, which its eight fxc processes inherit, run alone as
     # under tools/build.ps1: other sessions' builds and games share the cores

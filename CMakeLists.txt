@@ -154,22 +154,56 @@ target_link_libraries(
 )
 dao_apply_warnings(elgarashaders_materials)
 
-# The shaders, a chain and a material are the game's own, changed: made on
-# every build from the install's shaders.erf into the plugin's override
-# folder (shaders/build_shaders.py, which writes nothing and says why where
-# the game or the Windows SDK's fxc.exe is not found).
+# The shaders, a chain and a material are the game's own, changed: made from
+# the install's shaders.erf into the plugin's override folder
+# (shaders/build_shaders.py, which writes nothing and says why where the game
+# or the Windows SDK's fxc.exe is not found). They were made on every build,
+# minutes of fxc a time on a busy machine, the 0.2.2 release's build among
+# them (the user, 2026-10-20: "we shouldn't have to recompile things that
+# didn't change"). Now when a file the script says it reads changes: the
+# game's archives, fxc, the HLSL and SMAA files, the Python. A new HLSL file
+# configures again (ELGARA_HLSL's glob), and so asks the script again.
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+    file(
+        GLOB ELGARA_SMAA
+        CONFIGURE_DEPENDS
+        "${CMAKE_SOURCE_DIR}/shaders/smaa/*"
+    )
+    set(ELGARA_SHADERS_RUN
+        "${CMAKE_COMMAND}"
+        -E
+        env
+        "DAOLIB_TOOLS=${ELGARA_DAOLIB}/tools"
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/shaders/build_shaders.py"
+    )
+    execute_process(
+        COMMAND ${ELGARA_SHADERS_RUN} inputs
+        OUTPUT_VARIABLE ELGARA_SHADER_INPUTS
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE ELGARA_SHADER_INPUTS_RESULT
+    )
+    if(NOT ELGARA_SHADER_INPUTS_RESULT EQUAL 0)
+        message(
+            FATAL_ERROR
+            "shaders/build_shaders.py inputs failed (${ELGARA_SHADER_INPUTS_RESULT})"
+        )
+    endif()
+    add_custom_command(
+        OUTPUT "${CMAKE_BINARY_DIR}/shaders.stamp"
+        COMMAND
+            ${ELGARA_SHADERS_RUN}
+            "${CMAKE_BINARY_DIR}/daolib/plugins/elgarashaders/override"
+        COMMAND "${CMAKE_COMMAND}" -E touch "${CMAKE_BINARY_DIR}/shaders.stamp"
+        DEPENDS ${ELGARA_SHADER_INPUTS} ${ELGARA_HLSL} ${ELGARA_SMAA}
+        COMMENT "elgarashaders: the game's shaders, rebuilt"
+        VERBATIM
+    )
     add_custom_target(
         elgarashaders_shaders
         ALL
-        COMMAND
-            "${CMAKE_COMMAND}" -E env "DAOLIB_TOOLS=${ELGARA_DAOLIB}/tools"
-            "${Python3_EXECUTABLE}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/build_shaders.py"
-            "${CMAKE_BINARY_DIR}/daolib/plugins/elgarashaders/override"
-        COMMENT "elgarashaders: the game's shaders, rebuilt"
-        VERBATIM
+        DEPENDS "${CMAKE_BINARY_DIR}/shaders.stamp"
     )
 endif()
 
