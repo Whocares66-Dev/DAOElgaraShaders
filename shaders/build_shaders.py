@@ -93,6 +93,24 @@ RECEIVERS = [
 # and armour, cloth, faces, weapons, hair and eyes.
 CHARACTERS = ("ch1", "ch2", "cloth", "face", "weapon", "hair", "eye")
 
+# The plants that take the sun's shadow besides (with_plant_shadow): a tree's
+# leaves, as cards and as meshes, which hand their place in the world to the
+# pixel shader (with_world_out); and the bushes and grass the level scatters,
+# lit by the vertex, whose vertex shader hands the sun's part of its light
+# down apart (with_sun_part). None read a shadow map in vanilla: under a
+# tree or a hill they were as lit as in the open, and at night, the moon all
+# their light, they stood out lit in the shade (the user, 2026-10-22: "some
+# of these plants are day-lit").
+PLANT_LEAVES = ("spt_leafcards", "spt_leafmeshes", "spt_billboards0")
+# Their vertex shaders: a distant tree is drawn as its billboard, by either
+# of two, and was moonlit in the shade it fell dark in as one came near
+# enough to draw it whole (the user, 2026-10-22).
+PLANT_LEAF_VERTICES = ("spt_leafcards", "spt_leafmeshes", "spt_billboards0", "spt_billboards1")
+PLANT_BUSHES = ("instancing1",)
+# How far towards the sun from a leaf or a bush its shadow is asked for, in
+# metres: off its own surface, which casts into the maps too.
+PLANT_LIFT = 0.25
+
 
 def find_fxc():
     """The newest fxc.exe of the Windows SDKs installed, or None."""
@@ -329,6 +347,90 @@ def takes_sun_shadow(stem, listing):
         and "g_vShadowData" not in listing
         and "ps_3_0" in listing
     )
+
+
+def with_world_out(shader):
+    """A tree's leaf's vertex shader handing its place in the world to the
+    pixel shader (TEXCOORD8, with_plant_shadow): what it places a vertex by
+    the view's matrix from (`dp4 o0.x, c<g_mViewProjection>, r<N>`), the
+    tree's own code having made it, wind and all."""
+    view = shader.parameters["g_mViewProjection"]
+    placed = shader.find(rf"^dp4 o0\.x, c{view.base}, (r\d+)$")
+    world = re.search(r", (r\d+)$", shader.statements[placed].asm).group(1)
+    shader.insert(placed, [f"daoWorld = {world};"])
+    shader.insert(-1, ["float4 daoWorld = 0;"])
+    shader.add_output("daoWorld", "float4", "TEXCOORD8", "daoWorld")
+
+
+def with_sun_part(shader):
+    """A bush's vertex shader handing the sun's part of its light down apart
+    (TEXCOORD2, with_plant_shadow). instancing1.vsh lights by the vertex: the
+    sun's diffuse and highlight are each its colour times a factor
+    (`<r> = <f> * g_vLightParams[3]`), added to the rest, scaled by the
+    instance's direct light (`mad <r>.xyz, <r>, v<N>.w, <r>`) and kept
+    through the fog by `mad o<N>.xyz, <kept>, <r>, c<fog>`; the pixel shader
+    multiplies the whole by the leaf's colour. Its place in the world it
+    hands down already (TEXCOORD1)."""
+    sun = f"{shader.parameters['g_vLightParams'].name}[3]"
+    parts = [
+        i
+        for i, st in enumerate(shader.statements)
+        if re.match(rf"^\w+\.\w+ = \w+\.\w+ \* {re.escape(sun)}\.xyz;", st.hlsl)
+    ]
+    if len(parts) != 2:
+        raise shader_hlsl.ShaderError(f"{len(parts)} of the sun's parts, not 2")
+    scale = shader.find(r"^mad r\d+\.xyz, r\d+, (v\d+)\.w, r\d+(\.\w+)?$")
+    direct = re.search(r", (v\d+)\.w,", shader.statements[scale].asm).group(1)
+    fog = shader.parameters["mml_vFogParams"].base
+    fogged = shader.find(rf"^mad o\d+\.xyz, (r\d+\.x), r\d+, c{fog}$")
+    kept = re.match(r"mad o\d+\.xyz, (r\d+\.x),", shader.statements[fogged].asm).group(1)
+    shader.insert(fogged, [f"daoSunPart = float4({kept} * {direct}.w * daoSun, 0);"])
+    for at in reversed(parts):
+        target = shader.statements[at].hlsl.split(" = ")[0]
+        shader.insert(at, [f"daoSun += {target};"])
+    shader.insert(-1, ["float3 daoSun = 0;", "float4 daoSunPart = 0;"])
+    shader.add_output("daoSunPart", "float4", "TEXCOORD2", "daoSunPart")
+
+
+def plant_shadow(world):
+    """The HLSL of a plant's lit part at `world`: by the plugin's own maps
+    where it has them (daoShadowData[12].x), else lit as in vanilla. The
+    game's g_vShadowData is not handed to a plant's every draw, and read as
+    0 it made a point's place in the maps a division by 0: the whole picture
+    went black through the bloom (2026-10-22)."""
+    return (
+        f"(daoShadowData[12].x > 0 ? DaoShadow({world} - normalize(daoShadowData[2].xyz) * {PLANT_LIFT},"
+        " input.pixel) : 1)"
+    )
+
+
+def with_plant_shadow(shader, stem):
+    """A plant's sun by the shadow where it stands (PLANT_LEAVES,
+    PLANT_BUSHES). A leaf's light is `max(N.L, 0) * g_vLightDiffuse` and its
+    ambient tint: the first is the sun's, multiplied by the shadow. A bush's
+    sun is its vertex shader's part handed down apart (with_sun_part): the
+    colour it is drawn with loses what the shadow takes of it."""
+    shader.add_input("pixel", "float2", "VPOS")
+    if stem in PLANT_LEAVES:
+        shader.add_input("daoWorld", "float4", "TEXCOORD8")
+        uses = [st for st in shader.statements if "g_vLightDiffuse" in st.hlsl]
+        if not uses:
+            raise shader_hlsl.ShaderError("no sun's light read")
+        for st in uses:
+            st.hlsl = st.hlsl.replace("g_vLightDiffuse", "(g_vLightDiffuse * daoPlantSun)")
+        shader.insert(-1, [f"const float daoPlantSun = {plant_shadow('input.daoWorld.xyz')};"])
+    else:
+        shader.add_input("daoWorld", "float4", "TEXCOORD1")
+        shader.add_input("daoSunPart", "float4", "TEXCOORD2")
+        colour = next(
+            re.search(r"(v\d+)", st.asm).group(1)
+            for st in shader.statements
+            if re.match(r"^mul r\d+, r\d+, v\d+$", st.asm)
+        )
+        shader.insert(
+            -1,
+            [f"{colour}.xyz += input.daoSunPart.xyz * ({plant_shadow('input.daoWorld.xyz')} - 1);"],
+        )
 
 
 def with_sun_shadow(shader):
@@ -1835,6 +1937,17 @@ def with_baked_tree_light(shader):
         )
 
 
+def with_baked_billboard_light(shader, tint):
+    """A distant tree's billboard's ambient light by the hour's baked light
+    (look.hlsl's DAO_BAKED_LIGHT), as a near tree's (with_baked_tree_light):
+    a billboard takes its tree's tint as an input (`tint`, its TEXCOORD5,
+    added to the sun's part: `mad r.xyz, <sun>, <shade>, v<N>`; DAOLib's
+    dev/TREES.md), not as g_vColorMultiplier, and the trees away off stayed
+    day-lit at night, going dark as they came near enough to be drawn whole
+    (the user, 2026-10-22)."""
+    shader.insert(-1, [f"{tint}.xyz *= DAO_BAKED_LIGHT;"])
+
+
 def with_baked_light(shader):
     """The level's baked light by the hour, where the lightmap is read
     (night_sky.hlsl): the day's colour, times the hour's (look.hlsl's
@@ -2629,6 +2742,9 @@ def changes_for(stem, listing, show):
     if stem in RECEIVERS:
         changes.append(with_our_shadow)
         preamble += shadow
+    if stem in PLANT_LEAVES + PLANT_BUSHES:
+        changes.append(lambda s: with_plant_shadow(s, stem))
+        preamble += ours("look.hlsl") + shadow_parameters(stem) + shadow
     if takes_sun_shadow(stem, listing):
         changes += [with_sun_shadow, with_materials, without_cut]
         # Not a face: skin is soft, and its map is pores and lines, which
@@ -2688,8 +2804,12 @@ def changes_for(stem, listing, show):
         if "DAO_LOOK_HLSL" not in preamble:
             preamble += ours("look.hlsl")
         preamble += ours("night_sky.hlsl")
+    billboard = re.search(r"dcl_texcoord5 (v\d+)", listing) if stem.startswith("spt_billboards") else None
     if stem.startswith("spt_") and "g_vColorMultiplier" in listing:
         changes.append(with_baked_tree_light)
+    elif billboard:
+        changes.append(lambda s, tint=billboard.group(1): with_baked_billboard_light(s, tint))
+    if (stem.startswith("spt_") and "g_vColorMultiplier" in listing) or billboard:
         if "DAO_LOOK_HLSL" not in preamble:
             preamble += ours("look.hlsl")
     # The materials, for a prop and a level's surface as for a figure: first,
@@ -2886,6 +3006,15 @@ def main(argv):
                 for theirs, ours_, _, change in DEPTH_VERTICES
             ]
             + [(DEPTH_PIXEL, depth_pixel_by_texture, "sampler2D smpDecal;\n")]
+            # The plants' own vertex shaders, built under their own names.
+            + [
+                ((name + ".vsh.fxo", name + ".vsh.fxo"), with_world_out, "")
+                for name in PLANT_LEAF_VERTICES
+            ]
+            + [
+                ((name + ".vsh.fxo", name + ".vsh.fxo"), with_sun_part, "")
+                for name in PLANT_BUSHES
+            ]
 
             + [
                 (
