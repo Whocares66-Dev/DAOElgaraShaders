@@ -165,10 +165,23 @@ def with_our_shadow(shader):
     choice = shader.find(r"^cmp r\d+\.[xyzw], -", taps[-1])
     lit = re.match(r"cmp (r\d+\.[xyzw]),", shader.statements[choice].asm).group(1)
     shader.add_input("pixel", "float2", "VPOS")
+    # Looked up first, behind a branch of its own, and only its answer kept:
+    # at the game's own choice a branch holds all the game has live there
+    # beside the lookup's own, more than 32 registers (fxc's X4505), and run
+    # on every pixel the lookup cost its whole price with the option off
+    # (2026-10-22).
+    shader.insert(
+        -1,
+        [
+            f"DaoTakeSlopes({world}.xyz);",
+            "float daoSunLit = 1;",
+            f"[branch] if (DAO_SHADOWS > 0) daoSunLit = DaoShadow({world}.xyz, input.pixel);",
+        ],
+    )
     shader.insert(
         choice,
         [
-            f"if (DAO_SHADOWS > 0) {lit} = DaoShadow({world}.xyz, input.pixel);",
+            f"if (DAO_SHADOWS > 0) {lit} = daoSunLit;",
             f"daoSunShadow = {lit};",
         ],
     )
@@ -392,16 +405,18 @@ def with_sun_part(shader):
     shader.add_output("daoSunPart", "float4", "TEXCOORD2", "daoSunPart")
 
 
-def plant_shadow(world):
-    """The HLSL of a plant's lit part at `world`: by the plugin's own maps
-    where it has them (daoShadowData[12].x), else lit as in vanilla. The
-    game's g_vShadowData is not handed to a plant's every draw, and read as
-    0 it made a point's place in the maps a division by 0: the whole picture
-    went black through the bloom (2026-10-22)."""
-    return (
-        f"(daoShadowData[12].x > 0 ? DaoShadow({world} - normalize(daoShadowData[2].xyz) * {PLANT_LIFT},"
-        " input.pixel) : 1)"
-    )
+def plant_shadow(world, into):
+    """The HLSL setting `into` to a plant's lit part at `world`: by the
+    plugin's own maps where it has them (daoShadowData[12].x), else lit as in
+    vanilla, behind a branch so that no part of it runs where there are none.
+    The game's g_vShadowData is not handed to a plant's every draw, and read
+    as 0 it made a point's place in the maps a division by 0: the whole
+    picture went black through the bloom (2026-10-22)."""
+    return [
+        f"float {into} = 1;",
+        "[branch] if (daoShadowData[12].x > 0)",
+        f"    {into} = DaoShadow({world} - normalize(daoShadowData[2].xyz) * {PLANT_LIFT}, input.pixel);",
+    ]
 
 
 def with_plant_shadow(shader, stem):
@@ -418,7 +433,7 @@ def with_plant_shadow(shader, stem):
             raise shader_hlsl.ShaderError("no sun's light read")
         for st in uses:
             st.hlsl = st.hlsl.replace("g_vLightDiffuse", "(g_vLightDiffuse * daoPlantSun)")
-        shader.insert(-1, [f"const float daoPlantSun = {plant_shadow('input.daoWorld.xyz')};"])
+        shader.insert(-1, ["DaoTakeSlopes(input.daoWorld.xyz);", *plant_shadow("input.daoWorld.xyz", "daoPlantSun")])
     else:
         shader.add_input("daoWorld", "float4", "TEXCOORD1")
         shader.add_input("daoSunPart", "float4", "TEXCOORD2")
@@ -429,7 +444,11 @@ def with_plant_shadow(shader, stem):
         )
         shader.insert(
             -1,
-            [f"{colour}.xyz += input.daoSunPart.xyz * ({plant_shadow('input.daoWorld.xyz')} - 1);"],
+            [
+                "DaoTakeSlopes(input.daoWorld.xyz);",
+                *plant_shadow("input.daoWorld.xyz", "daoPlantSun"),
+                f"{colour}.xyz += input.daoSunPart.xyz * (daoPlantSun - 1);",
+            ],
         )
 
 
@@ -464,18 +483,23 @@ def with_sun_shadow(shader):
     for use in uses:
         statement = shader.statements[use]
         statement.hlsl = statement.hlsl.replace(sun, f"({sun} * daoSun)")
-    # Before the block the first use is in, where every use can see it.
-    before = uses[0]
-    while shader.statements[before].depth > 0:
-        before -= 1
+    # First of all, behind a branch of its own, with only its answer kept:
+    # where the first use is, the branch held all the game's shader has
+    # live there beside the lookup's own (31 of the 32 registers), and
+    # blended in by the option it ran with the option off (2026-10-22). The
+    # point is an input, there from the start.
     shader.add_input("pixel", "float2", "VPOS")
     shader.insert(
-        before - 1,
+        -1,
         [
+            f"DaoTakeSlopes({world}.xyz);",
+            "float daoSun = 1;",
+            "[branch] if (DAO_SHADOW_ON_FIGURES > 0)",
+            "{",
             # The near map's depth axis is the way the sun's light travels.
-            f"const float3 daoLifted = {world}.xyz - normalize(g_vShadowData[2].xyz) * {SHADOW_LIFT};",
-            f"const float daoSun = lerp(1, lerp({SHADOW_LEFT}, 1, DaoShadow(daoLifted, input.pixel)),"
-            " DAO_SHADOW_ON_FIGURES);",
+            f"    const float3 daoLifted = {world}.xyz - normalize(g_vShadowData[2].xyz) * {SHADOW_LIFT};",
+            f"    daoSun = lerp(1, lerp({SHADOW_LEFT}, 1, DaoShadow(daoLifted, input.pixel)), DAO_SHADOW_ON_FIGURES);",
+            "}",
         ],
     )
 

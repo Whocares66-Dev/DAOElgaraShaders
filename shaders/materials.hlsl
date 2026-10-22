@@ -128,9 +128,21 @@ static const float kDaoMirrorOfMask = 0.04 / 0.12;
 // part-metal materials say under a half) kept a fifth of a mirror and lost
 // the rest of its light: the shield was a dark glass where the game has a
 // matte bronze (issue 17; the user: "shield is a little too reflective").
+//
+// Each heavy part of Improved materials is behind a branch on DAO_MATERIALS,
+// its slopes over the screen taken before it (a derivative is not taken
+// inside a branch): blended in by the switch, it ran with the option off,
+// some 140 instructions of static1.psh's every pixel (2026-10-22).
 float DaoMetal(float2 uv, float said)
 {
-    return saturate(mml_fDaoMetal * tex2D(smpDaoMetal, uv).g) * saturate(said) * saturate(DAO_MATERIALS);
+    const float2 dx = ddx(uv);
+    const float2 dy = ddy(uv);
+    float metal = 0;
+    [branch] if (DAO_MATERIALS > 0)
+    {
+        metal = saturate(mml_fDaoMetal * tex2Dgrad(smpDaoMetal, uv, dx, dy).g) * saturate(said) * saturate(DAO_MATERIALS);
+    }
+    return metal;
 }
 
 // What the normal map at `uv` adds to the square of a lobe's width: the
@@ -141,11 +153,16 @@ float DaoBumps(float2 uv)
 {
     const float2 across = ddx(uv) * mml_vDaoBumps.xy;
     const float2 down = ddy(uv) * mml_vDaoBumps.xy;
-    const float texels = sqrt(max(dot(across, across), dot(down, down)));
-    const float level = min(log2(max(texels, 1.0)), 6.0);
-    const float2 near = saturate(1 - abs(level - float2(1, 2)));
-    const float4 far = saturate(1 - abs(level - float4(3, 4, 5, 6)));
-    return dot(near, mml_vDaoBumps.zw) + dot(far, mml_vDaoBumpsFar);
+    float bumps = 0;
+    [branch] if (DAO_MATERIALS > 0)
+    {
+        const float texels = sqrt(max(dot(across, across), dot(down, down)));
+        const float level = min(log2(max(texels, 1.0)), 6.0);
+        const float2 near = saturate(1 - abs(level - float2(1, 2)));
+        const float4 far = saturate(1 - abs(level - float4(3, 4, 5, 6)));
+        bumps = dot(near, mml_vDaoBumps.zw) + dot(far, mml_vDaoBumpsFar);
+    }
+    return bumps;
 }
 
 // The power a surface's highlights and its reflection are made by: its own,
@@ -172,9 +189,14 @@ float DaoCalmed(float power, float3 normal, float bumps)
 {
     const float3 across = ddx(normal);
     const float3 down = ddy(normal);
-    const float turns = min(0.5 * (dot(across, across) + dot(down, down)) + bumps, 0.18);
-    const float width = min(2 / (power + 2) + turns, 1.0);
-    return lerp(power, max(2 / width - 2, 1.0), saturate(DAO_MATERIALS));
+    float calmed = power;
+    [branch] if (DAO_MATERIALS > 0)
+    {
+        const float turns = min(0.5 * (dot(across, across) + dot(down, down)) + bumps, 0.18);
+        const float width = min(2 / (power + 2) + turns, 1.0);
+        calmed = lerp(power, max(2 / width - 2, 1.0), saturate(DAO_MATERIALS));
+    }
+    return calmed;
 }
 
 // A light's highlight, in place of the game's pow(N.H, power): the GGX lobe
@@ -241,8 +263,13 @@ float3 DaoCubeMean(samplerCUBE cube)
 // cubes, Lazarov 2013).
 float3 DaoCubeLight(samplerCUBE cube, float3 stored)
 {
-    const float3 counted = stored / max(DaoCubeMean(cube), 1.0 / 255);
-    return lerp(stored, counted, saturate(DAO_MATERIALS));
+    float3 light = stored;
+    [branch] if (DAO_MATERIALS > 0)
+    {
+        const float3 counted = stored / max(DaoCubeMean(cube), 1.0 / 255);
+        light = lerp(stored, counted, saturate(DAO_MATERIALS));
+    }
+    return light;
 }
 
 // What a cube is multiplied by where a surface mirrors it: the light that
@@ -308,6 +335,10 @@ float3 DaoMirror(float3 lights, float3 env, float3 mirror, float3 own, float met
                  float edge, float said)
 {
     const float3 theirs = (lights + env) * mirror;
+    gDaoEnvSent = env * mirror;
+    float3 sentAll = theirs;
+    [branch] if (DAO_MATERIALS > 0)
+    {
     const float3 both = own + mirror;
     const float3 asMetal = both / max(1.0, max(both.r, max(both.g, both.b)));
     const float mirrors = saturate(metal);
@@ -319,5 +350,7 @@ float3 DaoMirror(float3 lights, float3 env, float3 mirror, float3 own, float met
     const float2 share = DaoSurround(sqrt(sqrt(2 / (power + 2))), saturate(facing));
     const float3 sent = env * (faceOnEnv * share.x + edgeOn * (1 - mirrors + whole) * share.y);
     gDaoEnvSent = lerp(env * mirror, sent, saturate(DAO_MATERIALS));
-    return lerp(theirs, lights * (faceOn + (edgeOn - faceOn) * saturate(edge)) + sent, saturate(DAO_MATERIALS));
+    sentAll = lerp(theirs, lights * (faceOn + (edgeOn - faceOn) * saturate(edge)) + sent, saturate(DAO_MATERIALS));
+    }
+    return sentAll;
 }

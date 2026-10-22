@@ -63,12 +63,24 @@ static const float2 kDaoDisc[16] = {
     float2(0.14383161, -0.14100790),
 };
 
-// The depth's slope over a map at `at`, from the three's slopes over the
-// screen; taken where every pixel of a quad runs it.
-float2 DaoSlope(float3 at)
+// The world place's slopes over the screen, taken by DaoTakeSlopes where
+// every pixel of a quad runs: derivatives cannot be taken inside a branch
+// the pixels of a quad may take apart, and fxc ran all of DaoShadow, both
+// its ways, on every pixel to take them where they were asked (some 370
+// instructions of static1.psh's 683 that ran whatever the options said,
+// read 2026-10-22). Taken first, the shadow is behind a branch of its own.
+static float3 daoWorldDx = 0;
+static float3 daoWorldDy = 0;
+void DaoTakeSlopes(float3 world)
 {
-    const float3 dx = ddx(at);
-    const float3 dy = ddy(at);
+    daoWorldDx = ddx(world);
+    daoWorldDy = ddy(world);
+}
+
+// The depth's slope over a map from the map's place's slopes over the
+// screen, `dx` and `dy`.
+float2 DaoSlope(float3 dx, float3 dy)
+{
     const float det = dx.x * dy.y - dx.y * dy.x;
     const float2 slope = float2(dy.y * dx.z - dx.y * dy.z, dx.x * dy.z - dy.x * dx.z);
     return abs(det) > 1e-12 ? slope / det : 0;
@@ -130,10 +142,14 @@ float DaoShadowMap(sampler2D map, float3 at, float3 oldAt, float share, float2 s
     return lit / 16;
 }
 
-// The lit part of a disc around `at` as the game's maps are read.
-float DaoShadowMap(sampler2D map, float3 at, float2 turn, float radius, float bias)
+// The lit part of a disc around `at` as the game's maps are read, `m0` to
+// `m2` its matrix's first three rows, over `w`.
+float DaoShadowMap(sampler2D map, float3 at, float4 m0, float4 m1, float4 m2, float w, float2 turn, float radius,
+                   float bias)
 {
-    return DaoShadowMap(map, at, at, 1, DaoSlope(at), turn, radius, bias, 0, 1);
+    const float3 dx = float3(dot(m0.xyz, daoWorldDx), dot(m1.xyz, daoWorldDx), dot(m2.xyz, daoWorldDx)) / w;
+    const float3 dy = float3(dot(m0.xyz, daoWorldDy), dot(m1.xyz, daoWorldDy), dot(m2.xyz, daoWorldDy)) / w;
+    return DaoShadowMap(map, at, at, 1, DaoSlope(dx, dy), turn, radius, bias, 0, 1);
 }
 
 // The tangent of the sun's angular radius (0.267 degrees, as seen from the
@@ -229,7 +245,13 @@ float DaoAtlasShadow(int tile, DaoInMap placed, float2 turn)
     // map's alone.
     const bool oldHolds = all(placed.oldAt.xy > 0) && all(placed.oldAt.xy < 1);
     const float share = oldHolds ? DaoNewShare() : 1;
-    const float2 slope = DaoSlope(placed.at);
+    // The depth's slope over the map, by the map's rows from the world's
+    // slopes over the screen.
+    const float4 m0 = daoShadowData[tile * 3];
+    const float4 m1 = daoShadowData[tile * 3 + 1];
+    const float4 m2 = daoShadowData[tile * 3 + 2];
+    const float2 slope = DaoSlope(float3(dot(m0.xyz, daoWorldDx), dot(m1.xyz, daoWorldDx), dot(m2.xyz, daoWorldDx)),
+                                  float3(dot(m0.xyz, daoWorldDy), dot(m1.xyz, daoWorldDy), dot(m2.xyz, daoWorldDy)));
     const float search = max(kDaoSunRadius * (placed.at.z / placed.deep) * placed.across, placed.radius);
     const float2 blocker =
         DaoBlocker(smpShadowPartition1, placed.at, placed.oldAt, share, slope, turn, search, placed.bias, origin, 0.5);
@@ -301,42 +323,46 @@ DaoInMap DaoPlaceIn(int first, float4 point4, float3 facing, float least)
 // "blocky & pixelated").
 float DaoViewShadow(float4 point4, float3 facing, float2 turn, float least)
 {
+    // Only how far the point is inside each map is kept while the maps are
+    // chosen, and a map's placing is made again where it is read: the four
+    // placings held at once, behind a branch, left the level's shaders no
+    // registers (fxc's X4505, 2026-10-22).
     daoShadowCovered = 1;
-    const DaoInMap in0 = DaoPlaceIn(0, point4, facing, least);
-    if (in0.inside >= 1)
+    const float inside0 = DaoPlaceIn(0, point4, facing, least).inside;
+    if (inside0 >= 1)
     {
-        return DaoAtlasShadow(0, in0, turn);
+        return DaoAtlasShadow(0, DaoPlaceIn(0, point4, facing, least), turn);
     }
-    const DaoInMap in1 = DaoPlaceIn(3, point4, facing, least);
+    const float inside1 = DaoPlaceIn(3, point4, facing, least).inside;
     float lit = 1;
     float covered = 0;
-    if (in1.inside < 1)
+    if (inside1 < 1)
     {
-        const DaoInMap in2 = DaoPlaceIn(6, point4, facing, least);
-        if (in2.inside < 1)
+        const float inside2 = DaoPlaceIn(6, point4, facing, least).inside;
+        if (inside2 < 1)
         {
-            const DaoInMap in3 = DaoPlaceIn(9, point4, facing, least);
-            if (in3.inside > 0)
+            const float inside3 = DaoPlaceIn(9, point4, facing, least).inside;
+            if (inside3 > 0)
             {
-                lit = lerp(1, DaoAtlasShadow(3, in3, turn), in3.inside);
-                covered = in3.inside;
+                lit = lerp(1, DaoAtlasShadow(3, DaoPlaceIn(9, point4, facing, least), turn), inside3);
+                covered = inside3;
             }
         }
-        if (in2.inside > 0)
+        if (inside2 > 0)
         {
-            lit = lerp(lit, DaoAtlasShadow(2, in2, turn), in2.inside);
-            covered = lerp(covered, 1, in2.inside);
+            lit = lerp(lit, DaoAtlasShadow(2, DaoPlaceIn(6, point4, facing, least), turn), inside2);
+            covered = lerp(covered, 1, inside2);
         }
     }
-    if (in1.inside > 0)
+    if (inside1 > 0)
     {
-        lit = lerp(lit, DaoAtlasShadow(1, in1, turn), in1.inside);
-        covered = lerp(covered, 1, in1.inside);
+        lit = lerp(lit, DaoAtlasShadow(1, DaoPlaceIn(3, point4, facing, least), turn), inside1);
+        covered = lerp(covered, 1, inside1);
     }
-    if (in0.inside > 0)
+    if (inside0 > 0)
     {
-        lit = lerp(lit, DaoAtlasShadow(0, in0, turn), in0.inside);
-        covered = lerp(covered, 1, in0.inside);
+        lit = lerp(lit, DaoAtlasShadow(0, DaoPlaceIn(0, point4, facing, least), turn), inside0);
+        covered = lerp(covered, 1, inside0);
     }
     daoShadowCovered = covered;
     return lit;
@@ -344,7 +370,7 @@ float DaoViewShadow(float4 point4, float3 facing, float2 turn, float least)
 
 // The lit part at a point of the world, as the game's shaders choose between
 // the two maps and fade the far one out. `pixel` is the pixel's place on the
-// screen (VPOS).
+// screen (VPOS). DaoTakeSlopes must have been given the point first.
 float DaoShadow(float3 world, float2 pixel)
 {
     const float4 point4 = float4(world, 1);
@@ -352,11 +378,11 @@ float DaoShadow(float3 world, float2 pixel)
     const float angle = 6.2831853 * frac(52.9829189 * frac(dot(pixel, float2(0.06711056, 0.00583715))));
     const float2 turn = float2(cos(angle), sin(angle));
     const float least = kDaoLeastTexels / DAO_SHADOW_MAP_SIZE;
-    if (daoShadowData[12].x > 0)
+    [branch] if (daoShadowData[12].x > 0)
     {
         // The surface's facing from its own slopes over the screen, turned
         // to the sun's side: the side a surface is looked up off.
-        const float3 across = cross(ddx(world), ddy(world));
+        const float3 across = cross(daoWorldDx, daoWorldDy);
         const float3 toSun = -normalize(daoShadowData[2].xyz);
         float3 facing = dot(across, across) > 0 ? normalize(across) : toSun;
         facing = dot(facing, toSun) < 0 ? -facing : facing;
@@ -377,8 +403,10 @@ float DaoShadow(float3 world, float2 pixel)
     const float farRadius = max(kDaoPenumbra * length(g_vShadowData[4].xyz) / farW, least);
     const float farBias = kDaoBias * length(g_vShadowData[6].xyz) / farW;
 
-    const float nearLit = DaoShadowMap(smpShadowPartition1, nearAt, turn, nearRadius, nearBias);
-    const float farLit = DaoShadowMap(smpShadowPartition2, farAt, turn, farRadius, farBias);
+    const float nearLit = DaoShadowMap(smpShadowPartition1, nearAt, g_vShadowData[0], g_vShadowData[1],
+                                       g_vShadowData[2], nearW, turn, nearRadius, nearBias);
+    const float farLit = DaoShadowMap(smpShadowPartition2, farAt, g_vShadowData[4], g_vShadowData[5],
+                                      g_vShadowData[6], farW, turn, farRadius, farBias);
 
     const float side = dot(world, g_vShadowData[8].xyz) + g_vShadowData[8].w;
     const float fade = saturate((g_vShadowData[7].w - side) / (0.25 * g_vShadowData[7].w));
