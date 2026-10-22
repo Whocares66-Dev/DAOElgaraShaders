@@ -16,5 +16,6 @@ Better materials, shadows and anti-aliasing for Dragon Age: Origins.
 - **Exposure**: a brighter or darker picture.
 - **Ambient occlusion**: shade in corners and creases.
 - **Anisotropic filtering**: sharper ground and walls at a slant.
+- **Day / night cycle**: the sun and moon cross the sky (Redcliffe only for now).
 
 See [Getting started]({{ '/getting-started/' | relative_url }}) and [Options]({{ '/options/' | relative_url }}).

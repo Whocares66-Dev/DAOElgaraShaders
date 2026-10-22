@@ -5,6 +5,10 @@ nav_order: 3
 
 # Comparisons
 
+## Day and night in Redcliffe
+
+![Redcliffe by day and by night]({{ "/assets/img/daynight.jpg" | relative_url }}){: .screenshot loading="lazy"}
+
 ## Cailan's armor
 
 ![Cailan's armor, vanilla and Elgara Shaders]({{ "/assets/img/cailan.jpg" | relative_url }}){: .screenshot loading="lazy"}
