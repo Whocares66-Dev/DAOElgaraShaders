@@ -42,9 +42,13 @@ namespace
 // four registers each: the same matrix, the same way about.
 constexpr UINT kPartitionRegister = 240;
 constexpr UINT kMatrixRegisters = 4;
-// The level's vertex shaders read constants up to c38 (spt_branch.vsh's
-// tree's rotation); a draw's are kept from c0 to here.
-constexpr UINT kConstants = 48;
+// The level's vertex shaders read constants up to c58 (spt_leafmeshes.vsh's
+// leaf angles' scalars, after the tree's place at c56); a draw's are kept
+// from c0 to here. Kept to c47, a tree's leaf meshes were replayed and
+// measured by whatever the device last held there and known apart by the
+// order they were drawn in alone: their bounds came to 1e21 m with the clock
+// running, and the windmill's shadow flickered (2026-10-22).
+constexpr UINT kConstants = 64;
 constexpr UINT kStreams = 4;
 // The engine's shadow pass's vertex shaders are known by the matrix they
 // name in their constant table.
@@ -366,6 +370,7 @@ struct Along
 {
     std::optional<std::array<float, 2>> span;
     std::array<float, 2> place{};
+    cascades::Vector light{};
     std::uint64_t seen = ~std::uint64_t{0};
 };
 std::array<Along, 4> g_along;
@@ -2018,15 +2023,17 @@ static void MakePatches()
 
 // Each map's depth along the sun: the least and most of the level's measured
 // bounds that fall in the map's square, reckoned again when the map moves or
-// more of the level is seen. A surface outside a map's depth is read from the
-// next (shadow.hlsl), and one nearer the sun than all of it, read as lit, was
-// a bright patch on a hillside (2026-10-16).
+// more of the level is seen, or the sun turns: under a day and night a map
+// whose place comes out the same after a turn of the sun would otherwise keep
+// the last way's depth (2026-10-22). A surface outside a
+// map's depth is read from the next (shadow.hlsl), and one nearer the sun
+// than all of it, read as lit, was a bright patch on a hillside (2026-10-16).
 static std::optional<std::array<float, 2>> DepthAlong(std::size_t map, const cascades::Matrix &clip,
                                                       const cascades::Vector &light)
 {
     Along &along = g_along.at(map);
     const std::array<float, 2> place{clip[3], clip[7]};
-    if (along.place == place && along.seen == g_seenGeneration)
+    if (along.place == place && along.light == light && along.seen == g_seenGeneration)
     {
         return along.span;
     }
@@ -2061,6 +2068,7 @@ static std::optional<std::array<float, 2>> DepthAlong(std::size_t map, const cas
         most = std::max(most, span[5]);
     }
     along.place = place;
+    along.light = light;
     along.seen = g_seenGeneration;
     along.span = least <= most ? std::optional<std::array<float, 2>>(std::array<float, 2>{least, most}) : std::nullopt;
     return along.span;
