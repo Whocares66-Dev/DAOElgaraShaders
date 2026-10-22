@@ -37,6 +37,7 @@
 // - Anisotropic filtering, which the game has no setting for.
 //
 // What it does goes to elgarashaders.log.
+#include "DayNight.h"
 #include "EffectLights.h"
 #include "GameFolder.h"
 #include "LevelShadows.h"
@@ -123,6 +124,14 @@ std::atomic<int> g_anisotropyStop{kAnisotropyByDefault};
 constexpr std::array<float, 5> kExposureStops{-0.5F, -0.25F, 0.0F, 0.25F, 0.5F}; // in EV
 constexpr std::array<const wchar_t *, 5> kExposureNames{L"-0.5", L"-0.25", L"0", L"+0.25", L"+0.5"};
 std::atomic<int> g_exposureStop{kExposureByDefault};
+// A test of the day and night (DayNight.h; the user, 2026-10-21: "add a test
+// slider ... so we can control time of day"): Off, the area's own light;
+// Running, the clock going on by itself; or an hour held, every half hour.
+constexpr bool kDayNightByDefault = false; // a test for now, where a level has a day and a night
+std::atomic<bool> g_dayNight{kDayNightByDefault};
+constexpr int kTimeStops = 48;               // 0:00, 0:30, ... 23:30
+constexpr int kTimeByDefault = 24;           // noon, the sun near its highest (DayNight.cpp kSolarNoon)
+std::atomic<int> g_timeStop{kTimeByDefault}; // the hour last set, kept for the next session
 
 // One of the sun's shadow maps as the engine is asked for it.
 // Notes on Partition: read 2026-10-10 in the function that asks (0x00455580):
@@ -165,6 +174,16 @@ constexpr std::size_t kShadows = 3;
 constexpr std::size_t kShadowMapSize = 4;
 constexpr std::size_t kUncut = 5;
 constexpr std::size_t kShadowShow = 6; // look.hlsl's DAO_SHADOW_SHOW, outdoors.tune's ShadowShow
+// The level's baked light's multiplier less 1, three of them (look.hlsl's
+// DAO_BAKED_LIGHT): the hour's under a day and a night (DayNight.h), 1 where
+// the frame's own picture is not drawn into (HandFills).
+constexpr std::size_t kBakedLight = 8;
+// The sky's disc's colour, w 1 where it is ours (DayNight.h's Disc;
+// build_shaders.py's with_one_disc): in a pixel register no shader reaches,
+// after the shadows' (c193 to c213: LevelShadows.cpp's kFadeRegister and
+// kReceiverRegister).
+constexpr UINT kDiscRegister = 214;
+constexpr UINT kNightSkyRegister = 215; // night_sky.hlsl's daoNightSky
 // The air's light the sky, the clouds and the effects fog towards
 // (outdoors::Haze), in registers of their own below these (look.hlsl's
 // daoHaze): the sky's part and whether it is ours, the sun's part and its
@@ -684,6 +703,7 @@ enum class HairDistance : std::uint8_t
     First,  // the first: a pass that draws distances only
 };
 std::unordered_map<void *, HairDistance> g_hair;
+
 // What a hair draw had of what it holds back from, given back after it: the
 // distance's target, and the picture's alpha where that is the ambient share
 // (ShareAsked): hair says no share of its own (build_shaders.py's
@@ -964,6 +984,31 @@ bool IsPicture(IDirect3DDevice9 *device, IDirect3DSurface9 *surface)
 void HandFills(IDirect3DDevice9 *device)
 {
     levelshadows::Receiving(device, g_drawsPicture);
+    std::array<float, 4> baked{0, 0, 0, g_look.at(kBakedLight + 3).load(std::memory_order_relaxed)};
+    if (g_drawsPicture)
+    {
+        const std::array<float, 3> hour = daynight::Baked();
+        for (std::size_t c = 0; c < hour.size(); ++c)
+        {
+            baked.at(c) = hour.at(c) - 1;
+        }
+    }
+    device->SetPixelShaderConstantF(kLookRegister + (kBakedLight / 4), baked.data(), 1);
+    // The night sky's light on the bake (night_sky.hlsl), in the frame's own
+    // picture alone: a portrait's and the inventory's figures are lit as ever.
+    std::array<float, 4> night{};
+    if (g_drawsPicture)
+    {
+        const std::array<float, 3> sky = daynight::NightSky();
+        night = {daynight::NightShare(), sky[0], sky[1], sky[2]};
+    }
+    device->SetPixelShaderConstantF(kNightSkyRegister, night.data(), 1);
+    std::array<float, 4> disc{};
+    if (const std::optional<std::array<float, 3>> colour = g_drawsPicture ? daynight::Disc() : std::nullopt)
+    {
+        disc = {colour->at(0), colour->at(1), colour->at(2), 1};
+    }
+    device->SetPixelShaderConstantF(kDiscRegister, disc.data(), 1);
     const std::array<float, 4> fills{g_drawsPicture ? g_fills.load(std::memory_order_relaxed) : 1.0F, 0, 0, 0};
     device->SetPixelShaderConstantF(kFillRegister, fills.data(), 1);
 }
@@ -1365,6 +1410,15 @@ void ReadChosen(const std::filesystem::path &folder)
         {
             g_anisotropyStop.store(StopOf(value, kAnisotropyStops.size()), std::memory_order_relaxed);
         }
+        if (key == "TimeOfDay")
+        {
+            g_timeStop.store(StopOf(value, kTimeStops), std::memory_order_relaxed);
+            daynight::SetHour(0.5F * static_cast<float>(g_timeStop.load(std::memory_order_relaxed)));
+        }
+        if (key == "DayNight")
+        {
+            g_dayNight.store(value == "On", std::memory_order_relaxed);
+        }
     }
 }
 
@@ -1378,7 +1432,9 @@ void KeepChosen()
         << "\nAntiAliasing = " << (g_smaa ? "SMAA" : "Off")
         << "\nAmbientOcclusion = " << g_occlusionStop.load(std::memory_order_relaxed)
         << "\nAnisotropicFiltering = " << g_anisotropyStop.load(std::memory_order_relaxed)
-        << "\nExposure = " << g_exposureStop.load(std::memory_order_relaxed) << '\n';
+        << "\nExposure = " << g_exposureStop.load(std::memory_order_relaxed)
+        << "\nDayNight = " << said(g_dayNight.load(std::memory_order_relaxed))
+        << "\nTimeOfDay = " << g_timeStop.load(std::memory_order_relaxed) << '\n';
     if (!out)
     {
         spdlog::warn("{} was not written: the choice lasts this session", kChosenFile);
@@ -1445,6 +1501,7 @@ void KeepLookRegisters()
     g_look.at(kShadowShow).store(outdoors::Tune("ShadowShow", 0), std::memory_order_relaxed);
     levelshadows::Skip(static_cast<unsigned>(outdoors::Tune("LevelShadowsSkip", 0)));
     outdoors::WantSunlitFigures(lighting);
+    outdoors::WantClock(g_dayNight.load(std::memory_order_relaxed));
     const outdoors::SkyHaze haze = outdoors::Haze();
     for (std::size_t c = 0; c < 3; ++c)
     {
@@ -1684,6 +1741,32 @@ dao::options::Choice StopSlider(std::atomic<int> &stop, int byDefault, const std
     return slider;
 }
 
+// The time of day's slider: the clock's hour, every half hour. It shows the
+// hour as the screen opens, and sets it; the clock goes on from there while
+// the cycle runs (the user, 2026-10-21: a checkbox for the cycle, "the slider
+// can still control time of day").
+dao::options::Choice TimeSlider()
+{
+    dao::options::Choice slider;
+    slider.name = L"GraphicsTimeOfDay";
+    slider.label = L"Time of day";
+    slider.tooltip = L"The hour of the day and night cycle";
+    for (int half = 0; half < kTimeStops; ++half)
+    {
+        slider.values.push_back(std::to_wstring(half / 2) + (half % 2 == 0 ? L":00" : L":30"));
+    }
+    slider.get = [] { return static_cast<std::int32_t>(std::lround(daynight::Hour() * 2)) % kTimeStops; };
+    slider.set = [](std::int32_t wanted) {
+        g_timeStop.store(std::clamp(wanted, 0, kTimeStops - 1), std::memory_order_relaxed);
+        daynight::SetHour(0.5F * static_cast<float>(g_timeStop.load(std::memory_order_relaxed)));
+        spdlog::info("time of day: {:.1f}", daynight::Hour());
+        KeepChosen();
+        return wanted;
+    };
+    slider.defaultValue = kTimeByDefault;
+    return slider;
+}
+
 void AddToOptions()
 {
     dao::options::Toggle smaa;
@@ -1706,6 +1789,8 @@ void AddToOptions()
                       "improved materials"),
              Checkbox(g_lighting, kLightingByDefault, L"GraphicsLighting", L"Improved lighting",
                       L"More natural sunlight, shadows and haze", "improved lighting"),
+             Checkbox(g_dayNight, kDayNightByDefault, L"GraphicsDayNight", L"Day / night cycle",
+                      L"Changing time of day", "day / night cycle"),
              smaa},
             {StopSlider(g_exposureStop, kExposureByDefault, kExposureNames, L"GraphicsExposure", L"Exposure",
                         L"How bright the picture is, in stops", "exposure"),
@@ -1714,7 +1799,8 @@ void AddToOptions()
                         "ambient occlusion"),
              StopSlider(g_anisotropyStop, kAnisotropyByDefault, kAnisotropyNames, L"GraphicsAnisotropic",
                         L"Anisotropic filtering", L"Keeps textures sharp where they are seen at a slant",
-                        "anisotropic filtering")},
+                        "anisotropic filtering"),
+             TimeSlider()},
             dao::options::Column::Right, dao::options::Tab::Video))
     {
         spdlog::warn("the options screen did not take the section");
@@ -1764,6 +1850,7 @@ extern "C" __declspec(dllexport) bool __cdecl DAOLib_Load(const dao::LoaderInfo 
     materialpatch::Start(dao::Module::OwnFolder());
     KeepLookRegisters();
     probes::Install();
+    daynight::Install();
     effectlights::Install();
     if (!g_setPartitions.Attach(dao::addr::kShadowMaps_SetPartitions, &SetPartitions))
     {

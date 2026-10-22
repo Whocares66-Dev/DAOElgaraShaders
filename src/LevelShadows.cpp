@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -123,6 +124,7 @@ struct LevelDraw
     // none known (drawn into every map) where nothing was measured.
     bool measured = false;
     std::optional<std::array<float, 6>> bounds;
+    std::uint64_t measuring = 0; // the batch it is being measured in (MeasureSlot), 0 for none
     IDirect3DVertexDeclaration9 *declaration = nullptr;
     std::array<Stream, kStreams> streams{};
     IDirect3DIndexBuffer9 *indices = nullptr;
@@ -180,10 +182,22 @@ std::unordered_map<std::uint64_t, std::vector<std::byte>> g_measureCode;
 std::unordered_map<std::uint64_t, IDirect3DVertexShader9 *> g_measures;
 std::vector<std::byte> g_measurePixelCode;
 IDirect3DPixelShader9 *g_measurePixel = nullptr;
-// The two targets a batch is measured into, the greatest and the least, and
-// their copies in system memory to read.
-std::array<IDirect3DSurface9 *, 2> g_measureTargets{};
-std::array<IDirect3DSurface9 *, 2> g_measureCopies{};
+// The batches of draws being measured, each into two targets, the greatest
+// and the least, read back when the GPU has drawn them. Read as soon as drawn
+// (GetRenderTargetData), the CPU waited on the GPU on almost every frame of a
+// walk, and frames ran past 16.7 ms whenever the GPU had more to do (measured
+// 2026-10-21): so the targets are lockable, locked without waiting
+// (D3DLOCK_DONOTWAIT), and a few batches are in flight. A draw not yet
+// measured is drawn into every map meanwhile (LevelDraw's bounds).
+struct MeasureSlot
+{
+    std::array<IDirect3DSurface9 *, 2> targets{};
+    std::vector<std::uint64_t> keys; // g_seen's, by slot
+    std::uint64_t batch = 0;         // 0 for free
+};
+constexpr std::size_t kMeasureSlots = 3;
+std::array<MeasureSlot, kMeasureSlots> g_measureSlots;
+std::uint64_t g_measureBatches = 0;
 std::unordered_map<std::uint64_t, IDirect3DVertexShader9 *> g_variants;
 // The registers each variant reads of what the game's shader was given, its
 // partition's left out (set once a map): a building's model matrix alone,
@@ -290,21 +304,52 @@ struct Cache
 };
 std::array<Cache, 4> g_caches;
 
+// The shadows' blend (the user, 2026-10-21: "shadows are flickering", "Do the
+// shadow blend"). As the sun or the moon goes over, the maps are aimed anew in
+// steps (Sun), and a step's maps lay their texels a little differently over
+// the world, so every soft edge's fine pattern changed at once. So at a step
+// the old aim's maps are kept: its level as it was cached (the caches' other
+// set, which the new aim's do not draw into) and its figures drawn again each
+// frame by the old aim into an atlas of their own; and the receivers read
+// both and go from the old to the new over kFadeSeconds (shadow.hlsl's
+// DaoShadowFade). The next step waits for the fade (Sun).
+constexpr float kFadeSeconds = 1.0F;
+std::array<Cache, 4> g_oldCaches;
+std::array<std::optional<cascades::Fitted>, 4> g_oldCascades;
+std::optional<std::array<cascades::Vector, 3>> g_oldAxes;
+std::optional<std::array<cascades::Vector, 3>> g_fittedAxes; // the axes of the sun's own the maps were fitted by
+std::optional<std::chrono::steady_clock::time_point> g_fadeFrom;
+std::atomic<bool> g_fading{false}; // the drawing thread's word, read by Sun
+float g_fadeShare = 0;             // how far this frame's fade is, 0 to 1; 0 for none
+IDirect3DTexture9 *g_oldAtlas = nullptr;
+// The registers the receivers read the old aim by (shadow.hlsl's
+// daoShadowFade): the turn from the new aim's axes to the old's, by rows, and
+// for each map its across and down offsets and its depth's scale and offset.
+constexpr UINT kFadeRegister = 193;
+constexpr UINT kFadeRegisters = 7;
+
 // The level's sunlit patches read back from the two finest maps
 // (Reflected.h): a texel in every kReflectStep of each cache's rows and
 // columns drawn into a target of their own, copied to memory, and turned into
 // patches at the frame's end. Only when a cache is drawn again: a map that
 // stays put has the same.
 constexpr int kReflectStep = 16;
-struct Reflecting
+// A sample of a cache, read back once the GPU has drawn it: lockable targets
+// locked without waiting, two in flight a map, as the measuring's
+// (MeasureSlot).
+struct ReflectSlot
 {
     IDirect3DSurface9 *target = nullptr;       // kReflectStep times smaller than the map
-    IDirect3DSurface9 *memory = nullptr;       // the system's copy of it
     IDirect3DSurface9 *colourTarget = nullptr; // and of the cache's colours
-    IDirect3DSurface9 *colourMemory = nullptr;
-    std::optional<cascades::Matrix> waiting; // the matrix the copy was drawn by, until it is read
-    int texels = 0;                          // the map's
+    std::optional<cascades::Matrix> waiting;   // the matrix the sample was drawn by, until it is read
+    int texels = 0;                            // the map's
+    std::uint64_t order = 0;                   // which was drawn first
 };
+struct Reflecting
+{
+    std::array<ReflectSlot, 2> slots;
+};
+std::uint64_t g_reflectOrder = 0;
 std::array<Reflecting, 2> g_reflecting;
 std::vector<std::byte> g_copyVertexCode;
 std::vector<std::byte> g_copyPixelCode;
@@ -368,6 +413,7 @@ bool g_passLastFrame = false;
 // near map on (its smpShadowPartition1, or a face's and hair's
 // smpShadowPart1), which is given the atlas.
 std::unordered_map<IDirect3DPixelShader9 *, DWORD> g_receivers;
+std::unordered_map<IDirect3DPixelShader9 *, DWORD> g_receiversFar; // the engine's far map's sampler: the old aim's
 // The passes that read the maps for the air (haze_pass.hlsl's smpDaoSunMaps),
 // by the sampler they read them on; and whether the receivers' registers
 // were set for one, to be set back after its draw.
@@ -392,6 +438,7 @@ struct Lent
 };
 Lent g_lent;
 Lent g_lentEffects;
+Lent g_lentOld; // the old aim's atlas, on a receiver's far map's sampler while the shadows fade
 SetSamplerStateFn g_setSampler = nullptr; // UseSamplerState's
 
 void SetSampler(IDirect3DDevice9 *device, DWORD sampler, D3DSAMPLERSTATETYPE type, DWORD value)
@@ -674,6 +721,7 @@ void Note(IDirect3DDevice9 *device, IDirect3DVertexShader9 *variant, const GameS
                                              placed, game.placedCount * 4 * sizeof(float)) != 0;
         draw.measured = before.measured && !turned;
         draw.bounds = turned ? std::nullopt : before.bounds;
+        draw.measuring = turned ? 0 : before.measuring; // a turned draw's batch measured it where it was
         draw.moving = before.moving || turned;
         if (draw.moving && !before.moving)
         {
@@ -742,57 +790,92 @@ bool MakeMeasuring(IDirect3DDevice9 *device)
         g_measurePixel = nullptr;
         return false;
     }
-    for (std::size_t i = 0; i < g_measureTargets.size(); ++i)
+    for (MeasureSlot &slot : g_measureSlots)
     {
-        if (g_measureTargets.at(i) == nullptr &&
-            FAILED(device->CreateRenderTarget(kMeasuredAtOnce, 1, D3DFMT_A32B32G32R32F, D3DMULTISAMPLE_NONE, 0, FALSE,
-                                              &g_measureTargets.at(i), nullptr)))
+        for (IDirect3DSurface9 *&target : slot.targets)
         {
-            return false;
-        }
-        if (g_measureCopies.at(i) == nullptr &&
-            FAILED(device->CreateOffscreenPlainSurface(kMeasuredAtOnce, 1, D3DFMT_A32B32G32R32F, D3DPOOL_SYSTEMMEM,
-                                                       &g_measureCopies.at(i), nullptr)))
-        {
-            return false;
+            if (target == nullptr && FAILED(device->CreateRenderTarget(kMeasuredAtOnce, 1, D3DFMT_A32B32G32R32F,
+                                                                       D3DMULTISAMPLE_NONE, 0, TRUE, &target, nullptr)))
+            {
+                target = nullptr;
+                return false;
+            }
         }
     }
     return true;
 }
 
-// A measured batch read back: each draw's bounds from its pixel of the two
-// targets.
-void ReadMeasured(IDirect3DDevice9 *device, const std::vector<LevelDraw *> &batch)
+// A target's texels as floats, four a pixel; none while the GPU is still
+// drawing it, and an empty one where it cannot be read.
+std::optional<std::vector<float>> ReadFloats(IDirect3DSurface9 *target)
 {
-    std::array<std::vector<float>, 2> read;
-    for (std::size_t i = 0; i < 2; ++i)
+    D3DLOCKED_RECT locked{};
+    const HRESULT result = target->LockRect(&locked, nullptr, D3DLOCK_READONLY | D3DLOCK_DONOTWAIT);
+    if (result == D3DERR_WASSTILLDRAWING)
     {
-        D3DLOCKED_RECT locked{};
-        if (FAILED(device->GetRenderTargetData(g_measureTargets.at(i), g_measureCopies.at(i))) ||
-            FAILED(g_measureCopies.at(i)->LockRect(&locked, nullptr, D3DLOCK_READONLY)))
-        {
-            return;
-        }
-        const auto *texels = static_cast<const float *>(locked.pBits);
-        read.at(i).assign(texels, texels + (static_cast<std::size_t>(kMeasuredAtOnce) * 4));
-        g_measureCopies.at(i)->UnlockRect();
+        return std::nullopt;
     }
-    for (std::size_t slot = 0; slot < batch.size(); ++slot)
+    if (FAILED(result))
     {
-        LevelDraw &draw = *batch[slot];
-        draw.measured = true;
-        const float *most = read[0].data() + (slot * 4);
-        const float *least = read[1].data() + (slot * 4);
-        // A point was drawn to it: the first target's alpha (the second's is
-        // kept from writing while blending, Graphics.cpp's guard of the
-        // second target's alpha).
-        if (most[3] > 0)
+        return std::vector<float>{};
+    }
+    const auto *texels = static_cast<const float *>(locked.pBits);
+    std::vector<float> read(texels, texels + (static_cast<std::size_t>(kMeasuredAtOnce) * 4));
+    target->UnlockRect();
+    return read;
+}
+
+// The batches the GPU has drawn read back: each draw's bounds from its pixel
+// of the two targets. A draw replaced since, turned, is left to be measured
+// again.
+void CollectMeasured()
+{
+    for (MeasureSlot &slot : g_measureSlots)
+    {
+        if (slot.batch == 0)
         {
-            draw.bounds =
-                std::array<float, 6>{kMeasureOffset - least[0], kMeasureOffset - least[1], kMeasureOffset - least[2],
-                                     most[0] - kMeasureOffset,  most[1] - kMeasureOffset,  most[2] - kMeasureOffset};
-            ++g_measuredCount;
+            continue;
         }
+        const std::optional<std::vector<float>> most = ReadFloats(slot.targets[0]);
+        if (!most)
+        {
+            continue;
+        }
+        const std::optional<std::vector<float>> least = ReadFloats(slot.targets[1]);
+        if (!least)
+        {
+            continue;
+        }
+        const bool read = !most->empty() && !least->empty();
+        for (std::size_t at = 0; at < slot.keys.size(); ++at)
+        {
+            const auto found = g_seen.find(slot.keys[at]);
+            if (found == g_seen.end() || found->second.measuring != slot.batch)
+            {
+                continue;
+            }
+            LevelDraw &draw = found->second;
+            draw.measuring = 0;
+            if (!read)
+            {
+                continue;
+            }
+            draw.measured = true;
+            const float *greatest = most->data() + (at * 4);
+            const float *smallest = least->data() + (at * 4);
+            // A point was drawn to it: the first target's alpha (the second's
+            // is kept from writing while blending, Graphics.cpp's guard of the
+            // second target's alpha).
+            if (greatest[3] > 0)
+            {
+                draw.bounds = std::array<float, 6>{kMeasureOffset - smallest[0], kMeasureOffset - smallest[1],
+                                                   kMeasureOffset - smallest[2], greatest[0] - kMeasureOffset,
+                                                   greatest[1] - kMeasureOffset, greatest[2] - kMeasureOffset};
+                ++g_measuredCount;
+            }
+        }
+        slot.keys.clear();
+        slot.batch = 0;
     }
 }
 
@@ -802,12 +885,27 @@ void ReadMeasured(IDirect3DDevice9 *device, const std::vector<LevelDraw *> &batc
 // the caller's to keep; its targets and depth are kept here.
 void Measure(IDirect3DDevice9 *device)
 {
+    CollectMeasured();
+    MeasureSlot *free = nullptr;
+    for (MeasureSlot &slot : g_measureSlots)
+    {
+        if (slot.batch == 0)
+        {
+            free = &slot;
+            break;
+        }
+    }
+    if (free == nullptr)
+    {
+        return;
+    }
     std::vector<LevelDraw *> batch;
     for (auto &[key, draw] : g_seen)
     {
-        if (!draw.measured && batch.size() < kMeasuredAtOnce)
+        if (!draw.measured && draw.measuring == 0 && batch.size() < kMeasuredAtOnce)
         {
             batch.push_back(&draw);
+            free->keys.push_back(key);
         }
     }
     if (batch.empty())
@@ -820,11 +918,10 @@ void Measure(IDirect3DDevice9 *device)
         if (!said)
         {
             said = true;
-            spdlog::warn("level shadows: no measuring: pixel shader {}, targets {} {}, copies {} {}",
-                         static_cast<void *>(g_measurePixel), static_cast<void *>(g_measureTargets[0]),
-                         static_cast<void *>(g_measureTargets[1]), static_cast<void *>(g_measureCopies[0]),
-                         static_cast<void *>(g_measureCopies[1]));
+            spdlog::warn("level shadows: no measuring: pixel shader {}, lockable targets {}",
+                         static_cast<void *>(g_measurePixel), static_cast<void *>(g_measureSlots[0].targets[0]));
         }
+        free->keys.clear();
         return;
     }
     std::array<IDirect3DSurface9 *, 2> targets{};
@@ -832,8 +929,8 @@ void Measure(IDirect3DDevice9 *device)
     device->GetRenderTarget(0, targets.data());
     device->GetRenderTarget(1, targets.data() + 1);
     device->GetDepthStencilSurface(&depth);
-    device->SetRenderTarget(0, g_measureTargets[0]);
-    device->SetRenderTarget(1, g_measureTargets[1]);
+    device->SetRenderTarget(0, free->targets[0]);
+    device->SetRenderTarget(1, free->targets[1]);
     device->SetDepthStencilSurface(nullptr);
     const D3DVIEWPORT9 viewport{0, 0, kMeasuredAtOnce, 1, 0, 1};
     device->SetViewport(&viewport);
@@ -901,7 +998,11 @@ void Measure(IDirect3DDevice9 *device)
             held->Release();
         }
     }
-    ReadMeasured(device, batch);
+    free->batch = ++g_measureBatches;
+    for (LevelDraw *draw : batch)
+    {
+        draw->measuring = free->batch;
+    }
 }
 
 // The light an effect's light's maps are being drawn for, its place and
@@ -1416,6 +1517,11 @@ static void PictureDrawing(IDirect3DDevice9 *device, IDirect3DVertexShader9 *sha
             if (g_atlasReady)
             {
                 Lend(device, receiver->second);
+                if (const auto oldSampler = g_receiversFar.find(pixel);
+                    g_fadeShare > 0 && g_oldAtlas != nullptr && oldSampler != g_receiversFar.end())
+                {
+                    Lend(device, oldSampler->second, g_lentOld, g_oldAtlas);
+                }
             }
         }
     }
@@ -1507,9 +1613,57 @@ void Drawn(IDirect3DDevice9 *device)
     }
     GiveBack(device, g_lent);
     GiveBack(device, g_lentEffects);
+    GiveBack(device, g_lentOld);
 }
 
 static bool g_drawsPictureNow = true; // the device's first target is the frame's own picture
+
+// The old aim as the receivers read it (kFadeRegister): a point turned by Q
+// and placed by a new map's rows is where the old map has it, but for an
+// offset across and down and a scale and offset in depth. A map's rows are its
+// axes scaled, square to the sun (Cascades.h), so with A the new axes and A'
+// the old, by rows, Q = A^T A' turns each new row into the old one.
+static std::array<float, kFadeRegisters * 4> FadeData()
+{
+    std::array<float, kFadeRegisters * 4> data{};
+    if (!g_fittedAxes || !g_oldAxes)
+    {
+        return data;
+    }
+    const std::array<cascades::Vector, 3> &now = *g_fittedAxes;
+    const std::array<cascades::Vector, 3> &old = *g_oldAxes;
+    for (std::size_t r = 0; r < 3; ++r)
+    {
+        for (std::size_t c = 0; c < 3; ++c)
+        {
+            float sum = 0;
+            for (std::size_t k = 0; k < 3; ++k)
+            {
+                sum += now.at(k).at(r) * old.at(k).at(c);
+            }
+            data.at((r * 4) + c) = sum;
+        }
+    }
+    for (std::size_t map = 0; map < g_cascades.size(); ++map)
+    {
+        const std::optional<cascades::Fitted> &fitted = g_cascades.at(map);
+        const std::optional<cascades::Fitted> &was = g_oldCascades.at(map);
+        if (!fitted || !was)
+        {
+            continue;
+        }
+        const cascades::Matrix &t = fitted->texture;
+        const cascades::Matrix &o = was->texture;
+        const float deep = std::hypot(t[8], t[9], t[10]);
+        const float scale = deep > 0 ? std::hypot(o[8], o[9], o[10]) / deep : 1;
+        float *shift = data.data() + ((3 + map) * 4);
+        shift[0] = o[3] - t[3];
+        shift[1] = o[7] - t[7];
+        shift[2] = scale;
+        shift[3] = o[11] - (scale * t[11]);
+    }
+    return data;
+}
 
 // The receivers' registers: ours where the maps are fitted to the view and
 // what is drawn reads them for the frame's own picture (`picture`), else off.
@@ -1532,6 +1686,11 @@ static void SetReceiversFor(IDirect3DDevice9 *device, bool picture)
         // How far from the focus each map is read, as a share of its width:
         // a map's box holds the focus and its radius less half a step about it.
         data[49] = 0.5F - (kStepShare / 4);
+        data[50] = g_fadeShare;
+        if (g_fadeShare > 0)
+        {
+            device->SetPixelShaderConstantF(kFadeRegister, FadeData().data(), kFadeRegisters);
+        }
         if (g_fittedAround)
         {
             std::memcpy(data.data() + 52, g_fittedAround->data(), sizeof(cascades::Vector));
@@ -1686,12 +1845,10 @@ static void SetCopying(IDirect3DDevice9 *device, IDirect3DTexture9 *texture)
     device->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
 }
 
-// A cache's texture sampled at a texel in every kReflectStep into `target`,
-// and that copied to `memory`: each pixel reads the map's texel
-// kReflectStep * i + kReflectStep / 2, whose place Reflected.cpp's Make takes
-// it at.
-static bool Sample(IDirect3DDevice9 *device, IDirect3DTexture9 *texture, UINT texels, IDirect3DSurface9 *target,
-                   IDirect3DSurface9 *memory)
+// A cache's texture sampled at a texel in every kReflectStep into `target`:
+// each pixel reads the map's texel kReflectStep * i + kReflectStep / 2, whose
+// place Reflected.cpp's Make takes it at.
+static void Sample(IDirect3DDevice9 *device, IDirect3DTexture9 *texture, UINT texels, IDirect3DSurface9 *target)
 {
     const UINT size = texels / kReflectStep;
     device->SetRenderTarget(0, target);
@@ -1701,11 +1858,11 @@ static bool Sample(IDirect3DDevice9 *device, IDirect3DTexture9 *texture, UINT te
     device->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
     const std::array<Corner, 4> quad = Quad(size, size, 0.5F / static_cast<float>(texels));
     device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad.data(), sizeof(Corner));
-    return SUCCEEDED(device->GetRenderTargetData(target, memory));
 }
 
-// A cache just drawn, its depths and colours sampled and copied to memory,
-// for its patches to be made at the frame's end (Presented). The engine's
+// A cache just drawn, its depths and colours sampled into a free slot, for
+// its patches to be made once the GPU has drawn them (MakePatches); with no
+// slot free, not this time. The engine's
 // maps are G16R16, depth in red; another format has no patches.
 static void Reflect(IDirect3DDevice9 *device, const Cache &cache, Reflecting &reflecting)
 {
@@ -1718,16 +1875,30 @@ static void Reflect(IDirect3DDevice9 *device, const Cache &cache, Reflecting &re
         return;
     }
     const UINT size = desc.Width / kReflectStep;
-    if (reflecting.target == nullptr &&
-        (FAILED(device->CreateRenderTarget(size, size, desc.Format, D3DMULTISAMPLE_NONE, 0, FALSE, &reflecting.target,
-                                           nullptr)) ||
-         FAILED(device->CreateOffscreenPlainSurface(size, size, desc.Format, D3DPOOL_SYSTEMMEM, &reflecting.memory,
-                                                    nullptr)) ||
-         FAILED(device->CreateRenderTarget(size, size, D3DFMT_A8R8G8B8, D3DMULTISAMPLE_NONE, 0, FALSE,
-                                           &reflecting.colourTarget, nullptr)) ||
-         FAILED(device->CreateOffscreenPlainSurface(size, size, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM,
-                                                    &reflecting.colourMemory, nullptr))))
+    ReflectSlot *slot = nullptr;
+    for (ReflectSlot &each : reflecting.slots)
     {
+        if (!each.waiting)
+        {
+            slot = &each;
+            break;
+        }
+    }
+    if (slot == nullptr)
+    {
+        return;
+    }
+    if (slot->target == nullptr && FAILED(device->CreateRenderTarget(size, size, desc.Format, D3DMULTISAMPLE_NONE, 0,
+                                                                     TRUE, &slot->target, nullptr)))
+    {
+        slot->target = nullptr;
+        return;
+    }
+    if (slot->colourTarget == nullptr &&
+        FAILED(device->CreateRenderTarget(size, size, D3DFMT_A8R8G8B8, D3DMULTISAMPLE_NONE, 0, TRUE,
+                                          &slot->colourTarget, nullptr)))
+    {
+        slot->colourTarget = nullptr;
         return;
     }
     std::array<IDirect3DSurface9 *, 2> targets{};
@@ -1737,12 +1908,11 @@ static void Reflect(IDirect3DDevice9 *device, const Cache &cache, Reflecting &re
     device->GetDepthStencilSurface(&depth);
     device->SetRenderTarget(1, nullptr);
     device->SetDepthStencilSurface(nullptr);
-    if (Sample(device, cache.texture, desc.Width, reflecting.target, reflecting.memory) &&
-        Sample(device, cache.colours, desc.Width, reflecting.colourTarget, reflecting.colourMemory))
-    {
-        reflecting.waiting = cache.drawnBy;
-        reflecting.texels = static_cast<int>(desc.Width);
-    }
+    Sample(device, cache.texture, desc.Width, slot->target);
+    Sample(device, cache.colours, desc.Width, slot->colourTarget);
+    slot->waiting = cache.drawnBy;
+    slot->texels = static_cast<int>(desc.Width);
+    slot->order = ++g_reflectOrder;
     device->SetRenderTarget(0, targets[0]);
     device->SetRenderTarget(1, targets[1]);
     device->SetDepthStencilSurface(depth);
@@ -1755,17 +1925,22 @@ static void Reflect(IDirect3DDevice9 *device, const Cache &cache, Reflecting &re
     }
 }
 
-// The texels of a copy in memory, each a 32-bit word, by rows; none if it
-// cannot be read.
-static std::vector<std::uint32_t> Texels(IDirect3DSurface9 *memory)
+// The texels of a lockable target, each a 32-bit word, by rows; none while
+// the GPU is still drawing it, and an empty one where it cannot be read.
+static std::optional<std::vector<std::uint32_t>> Texels(IDirect3DSurface9 *target)
 {
     D3DSURFACE_DESC desc;
     std::memset(&desc, 0, sizeof desc);
-    memory->GetDesc(&desc);
+    target->GetDesc(&desc);
     D3DLOCKED_RECT locked;
-    if (FAILED(memory->LockRect(&locked, nullptr, D3DLOCK_READONLY)))
+    const HRESULT result = target->LockRect(&locked, nullptr, D3DLOCK_READONLY | D3DLOCK_DONOTWAIT);
+    if (result == D3DERR_WASSTILLDRAWING)
     {
-        return {};
+        return std::nullopt;
+    }
+    if (FAILED(result))
+    {
+        return std::vector<std::uint32_t>{};
     }
     std::vector<std::uint32_t> texels(static_cast<std::size_t>(desc.Width) * desc.Height);
     for (std::size_t row = 0; row < desc.Height; ++row)
@@ -1774,46 +1949,69 @@ static std::vector<std::uint32_t> Texels(IDirect3DSurface9 *memory)
                     static_cast<const std::byte *>(locked.pBits) + (row * static_cast<std::size_t>(locked.Pitch)),
                     desc.Width * sizeof(std::uint32_t));
     }
-    memory->UnlockRect();
+    target->UnlockRect();
     return texels;
 }
 
-// The patches of the copies made this frame, kept for the figures.
+// A map's patches from a sample's depths and colours.
+static void MakePatchesOf(std::size_t map, const std::vector<std::uint32_t> &depthTexels,
+                          const std::vector<std::uint32_t> &colourTexels, int texels, const cascades::Matrix &clip)
+{
+    // G16R16: red, the depth, in the low half. A8R8G8B8: blue in the low byte.
+    constexpr float kOfShort = 65535;
+    constexpr float kOfByte = 255;
+    std::vector<float> depths(depthTexels.size());
+    std::vector<std::array<float, 3>> colours(colourTexels.size());
+    for (std::size_t at = 0; at < depthTexels.size(); ++at)
+    {
+        depths[at] = static_cast<float>(depthTexels[at] & 0xFFFFU) / kOfShort;
+        const std::uint32_t colour = colourTexels[at];
+        colours[at] = {static_cast<float>((colour >> 16U) & 0xFFU) / kOfByte,
+                       static_cast<float>((colour >> 8U) & 0xFFU) / kOfByte,
+                       static_cast<float>(colour & 0xFFU) / kOfByte};
+    }
+    const auto size = static_cast<int>(std::lround(std::sqrt(static_cast<double>(depths.size()))));
+    if (std::optional<reflected::Patches> patches = reflected::Make(depths, colours, size, kReflectStep, texels, clip))
+    {
+        reflected::Keep(map, std::make_shared<const reflected::Patches>(std::move(*patches)));
+    }
+}
+
+// The patches of the samples the GPU has drawn, kept for the figures.
 static void MakePatches()
 {
     for (std::size_t map = 0; map < g_reflecting.size(); ++map)
     {
-        Reflecting &reflecting = g_reflecting.at(map);
-        if (!reflecting.waiting)
+        // The slots drawn, oldest first: the newest read keeps its patches. One
+        // not drawn yet stops the rest, drawn after it.
+        std::vector<ReflectSlot *> waiting;
+        for (ReflectSlot &slot : g_reflecting.at(map).slots)
         {
-            continue;
+            if (slot.waiting)
+            {
+                waiting.push_back(&slot);
+            }
         }
-        const cascades::Matrix clip = *reflecting.waiting;
-        reflecting.waiting.reset();
-        const std::vector<std::uint32_t> depthTexels = Texels(reflecting.memory);
-        const std::vector<std::uint32_t> colourTexels = Texels(reflecting.colourMemory);
-        if (depthTexels.empty() || colourTexels.size() != depthTexels.size())
+        std::ranges::sort(waiting, {}, &ReflectSlot::order);
+        for (ReflectSlot *slot : waiting)
         {
-            continue;
-        }
-        // G16R16: red, the depth, in the low half. A8R8G8B8: blue in the low byte.
-        constexpr float kOfShort = 65535;
-        constexpr float kOfByte = 255;
-        std::vector<float> depths(depthTexels.size());
-        std::vector<std::array<float, 3>> colours(colourTexels.size());
-        for (std::size_t at = 0; at < depthTexels.size(); ++at)
-        {
-            depths[at] = static_cast<float>(depthTexels[at] & 0xFFFFU) / kOfShort;
-            const std::uint32_t colour = colourTexels[at];
-            colours[at] = {static_cast<float>((colour >> 16U) & 0xFFU) / kOfByte,
-                           static_cast<float>((colour >> 8U) & 0xFFU) / kOfByte,
-                           static_cast<float>(colour & 0xFFU) / kOfByte};
-        }
-        const auto size = static_cast<int>(std::lround(std::sqrt(static_cast<double>(depths.size()))));
-        if (std::optional<reflected::Patches> patches =
-                reflected::Make(depths, colours, size, kReflectStep, reflecting.texels, clip))
-        {
-            reflected::Keep(map, std::make_shared<const reflected::Patches>(std::move(*patches)));
+            std::optional<std::vector<std::uint32_t>> depthTexels = Texels(slot->target);
+            if (!depthTexels)
+            {
+                break;
+            }
+            std::optional<std::vector<std::uint32_t>> colourTexels = Texels(slot->colourTarget);
+            if (!colourTexels)
+            {
+                break;
+            }
+            const cascades::Matrix clip = *slot->waiting;
+            slot->waiting.reset();
+            if (depthTexels->empty() || colourTexels->size() != depthTexels->size())
+            {
+                continue;
+            }
+            MakePatchesOf(map, *depthTexels, *colourTexels, slot->texels, clip);
         }
     }
 }
@@ -1883,6 +2081,18 @@ static bool FitMaps()
         axes = g_sunAxes;
         centre = g_focus;
     }
+    // The sun aimed anew (Sun): the maps as they were, kept to fade from, and
+    // their level's caches set aside for the new aim to draw the other set.
+    const bool ours = axes.has_value();
+    if (ours && g_fittedAxes && *g_fittedAxes != *axes && g_cascades[0] && !g_fading.load())
+    {
+        g_oldCascades = g_cascades;
+        g_oldAxes = g_fittedAxes;
+        std::swap(g_caches, g_oldCaches);
+        g_fadeFrom = std::chrono::steady_clock::now();
+        g_fading.store(true);
+    }
+    g_fittedAxes = ours ? axes : std::nullopt;
     if (!axes)
     {
         axes = cascades::AxesOf(g_partition);
@@ -2016,10 +2226,9 @@ static bool OffMap(const Reach &bounds, const cascades::Matrix &clip)
 
 // One tile of the atlas: its cache, with its depth, then what moves and every
 // figure, by the map's matrix, where they are nearer the sun than what is there.
-static void DrawTile(IDirect3DDevice9 *device, std::size_t map)
+static void DrawTile(IDirect3DDevice9 *device, std::size_t map, const std::optional<cascades::Fitted> &fitted,
+                     const Cache &cache)
 {
-    const std::optional<cascades::Fitted> &fitted = g_cascades.at(map);
-    const Cache &cache = g_caches.at(map);
     if (!fitted || cache.texture == nullptr)
     {
         return;
@@ -2048,6 +2257,47 @@ static void DrawTile(IDirect3DDevice9 *device, std::size_t map)
             ++g_figureReplays;
         }
     }
+}
+
+// The old aim's atlas drawn for this frame where the shadows fade: its level
+// as cached and its figures by its own maps (g_oldCascades), on the atlas's
+// depth, which the frame's own atlas is done with. The fade ended, the old
+// aim is let go.
+static void DrawOldAtlas(IDirect3DDevice9 *device)
+{
+    g_fadeShare = 0;
+    if (!g_fading.load())
+    {
+        return;
+    }
+    const float seconds = g_fadeFrom
+                              ? std::chrono::duration<float>(std::chrono::steady_clock::now() - *g_fadeFrom).count()
+                              : kFadeSeconds;
+    if (seconds >= kFadeSeconds || !g_oldCascades[0])
+    {
+        g_oldCascades = {};
+        g_fading.store(false);
+        return;
+    }
+    if (g_oldAtlas == nullptr && FAILED(device->CreateTexture(kTile * 2, kTile * 2, 1, D3DUSAGE_RENDERTARGET,
+                                                              kMapFormat, D3DPOOL_DEFAULT, &g_oldAtlas, nullptr)))
+    {
+        g_oldAtlas = nullptr;
+        return;
+    }
+    IDirect3DSurface9 *old = nullptr;
+    if (FAILED(g_oldAtlas->GetSurfaceLevel(0, &old)))
+    {
+        return;
+    }
+    device->SetRenderTarget(0, old);
+    device->SetDepthStencilSurface(g_atlasDepth);
+    for (std::size_t map = 0; map < g_oldCascades.size(); ++map)
+    {
+        DrawTile(device, map, g_oldCascades.at(map), g_oldCaches.at(map));
+    }
+    old->Release();
+    g_fadeShare = std::max(seconds / kFadeSeconds, 1e-3F);
 }
 
 // The atlas drawn for this frame, after the engine's shadow pass: the maps
@@ -2079,7 +2329,7 @@ static bool DrawAtlas(IDirect3DDevice9 *device)
         device->SetDepthStencilSurface(g_atlasDepth);
         for (std::size_t map = 0; map < g_cascades.size(); ++map)
         {
-            DrawTile(device, map);
+            DrawTile(device, map, g_cascades.at(map), g_caches.at(map));
         }
         std::error_code error;
         if (!g_dumpAsked.empty() && std::filesystem::exists(g_dumpAsked, error))
@@ -2089,6 +2339,7 @@ static bool DrawAtlas(IDirect3DDevice9 *device)
         }
         atlas->Release();
     }
+    DrawOldAtlas(device);
     device->SetRenderTarget(0, targets[0]);
     device->SetRenderTarget(1, targets[1]);
     device->SetDepthStencilSurface(depth);
@@ -2373,6 +2624,7 @@ void CreatedPixel(const DWORD *code, IDirect3DPixelShader9 *shader)
         return;
     }
     g_receivers.erase(shader); // the last made here's alone (Created)
+    g_receiversFar.erase(shader);
     g_air.erase(shader);
     g_effectReceivers.erase(shader);
     if (const std::optional<UINT> sampler = RegisterOf(CodeOf(code), "smpDaoEffectShadows"))
@@ -2395,6 +2647,14 @@ void CreatedPixel(const DWORD *code, IDirect3DPixelShader9 *shader)
             break;
         }
     }
+    for (const std::string_view name : {"smpShadowPartition2", "smpShadowPart2"})
+    {
+        if (const std::optional<UINT> sampler = RegisterOf(CodeOf(code), name))
+        {
+            g_receiversFar[shader] = *sampler;
+            break;
+        }
+    }
 }
 
 void Focus(const std::optional<std::array<float, 3>> &focus)
@@ -2404,8 +2664,33 @@ void Focus(const std::optional<std::array<float, 3>> &focus)
         focus ? std::optional<cascades::Vector>(cascades::Vector{(*focus)[0], (*focus)[1], (*focus)[2]}) : std::nullopt;
 }
 
+// The maps keep their aim until the light has turned this far from it. A map
+// aimed afresh at a light that turns a little each frame (a day and a night's
+// sun, 0.1 degree a second at an hour a day) lays its texels a little
+// differently over the world each frame, and every shadow's edge shimmers:
+// measured 2026-10-21 at night on the party, 1.4 to 3.7 of 255 changed from
+// one half second to the next with the hour going on, none with it held (the
+// user: "shadows are flickering", "characters are flickering at night too").
+// A step of 0.2 degrees moves a ten-metre tree's shadow some 3 cm.
+constexpr float kAimStep = 0.2F * std::numbers::pi_v<float> / 180;
+std::optional<std::array<float, 3>> g_aimedAt; // the game thread's
+
 void Sun(const std::array<float, 3> &going)
 {
+    if (g_fading.load())
+    {
+        return; // the next step after this one's fade
+    }
+    if (g_aimedAt)
+    {
+        const std::array<float, 3> &at = *g_aimedAt;
+        const float along = std::clamp((at[0] * going[0]) + (at[1] * going[1]) + (at[2] * going[2]), -1.0F, 1.0F);
+        if (std::acos(along) < kAimStep)
+        {
+            return;
+        }
+    }
+    g_aimedAt = going;
     const std::optional<std::array<cascades::Vector, 3>> axes = cascades::AxesToward(going);
     const std::scoped_lock lock(g_sunLock);
     g_sunAxes = axes;
@@ -2431,6 +2716,7 @@ void Receiving(IDirect3DDevice9 *device, bool picture)
 void Presented()
 {
     MakePatches();
+    CollectMeasured();
     for (FigureDraw &draw : g_figureDraws)
     {
         Let(draw);
@@ -2503,7 +2789,8 @@ void Release()
         g_saved->Release();
         g_saved = nullptr;
     }
-    for (Cache *cache : {g_caches.data(), g_caches.data() + 1, g_caches.data() + 2, g_caches.data() + 3})
+    for (Cache *cache : {g_caches.data(), g_caches.data() + 1, g_caches.data() + 2, g_caches.data() + 3,
+                         g_oldCaches.data(), g_oldCaches.data() + 1, g_oldCaches.data() + 2, g_oldCaches.data() + 3})
     {
         if (cache->texture != nullptr)
         {
@@ -2521,26 +2808,30 @@ void Release()
     }
     for (Reflecting &reflecting : g_reflecting)
     {
-        for (IDirect3DSurface9 *surface :
-             {reflecting.target, reflecting.memory, reflecting.colourTarget, reflecting.colourMemory})
+        for (ReflectSlot &slot : reflecting.slots)
         {
-            if (surface != nullptr)
+            for (IDirect3DSurface9 *surface : {slot.target, slot.colourTarget})
             {
-                surface->Release();
+                if (surface != nullptr)
+                {
+                    surface->Release();
+                }
             }
+            slot = ReflectSlot{};
         }
-        reflecting = Reflecting{};
     }
-    for (auto *surfaces : {&g_measureTargets, &g_measureCopies})
+    for (MeasureSlot &slot : g_measureSlots)
     {
-        for (IDirect3DSurface9 *&surface : *surfaces)
+        for (IDirect3DSurface9 *&target : slot.targets)
         {
-            if (surface != nullptr)
+            if (target != nullptr)
             {
-                surface->Release();
-                surface = nullptr;
+                target->Release();
+                target = nullptr;
             }
         }
+        slot.keys.clear();
+        slot.batch = 0;
     }
     if (g_map != nullptr)
     {
@@ -2564,6 +2855,14 @@ void Release()
         g_atlasDepth->Release();
         g_atlasDepth = nullptr;
     }
+    if (g_oldAtlas != nullptr)
+    {
+        g_oldAtlas->Release();
+        g_oldAtlas = nullptr;
+    }
+    g_oldCascades = {};
+    g_fittedAxes.reset();
+    g_fading.store(false);
     ReleaseEffectAtlas();
     g_tile = 0;
     g_along = {};

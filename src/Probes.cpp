@@ -1,5 +1,6 @@
 #include "Probes.h"
 
+#include "DayNight.h"
 #include "GameFolder.h"
 #include "LevelShadows.h"
 #include "ProbeBaker.h"
@@ -7,6 +8,7 @@
 
 #include "dao/Addresses.h"
 #include "dao/Hook.h"
+#include "dao/Lights.h"
 #include "dao/Log.h"
 #include "dao/core/LightProbes.h"
 #include "dao/core/Msvc8.h"
@@ -29,7 +31,6 @@
 #include <optional>
 #include <string_view>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 namespace probes
@@ -41,24 +42,15 @@ namespace
 // Where a figure's probe light goes, read in the executable 2026-10-11 (the
 // dev branch's Graphics.cpp has the whole of it): a figure's lights are chosen
 // into its light state (the groups at +0, +0x10, +0x20 for probes, +0x30), and
-// the state's own function (0x0046B260, __thiscall with one argument, `ret 4`)
-// fills from them what the shaders are handed when a material first asks in a
-// frame: the probe's three matrices at +0x130, +0x170 and +0x1B0
-// (g_mLightParams, which a figure's vertex shader makes its ambient light of
-// with the area's ambient colour), copied from the probe's blueprint (the
-// node's +0x174, there at +0x160) only when the probe chosen is not the one
-// of last time, which the state keeps at +0x110 and nothing reads but to
-// compare. So the mix is written over the three after that function has run,
-// each time, and to give a state its probe's own light back the kept probe is
-// made one no probe is, and the function copies again.
-constexpr std::size_t kLightsProbes = 0x3C;     // the manager's list of light probes
-constexpr std::size_t kStateProbes = 0x20;      // in a light state: the group of probes chosen
-constexpr std::size_t kStateProbeKept = 0x110;  // the probe its matrices were last copied from
-constexpr std::size_t kStateIrradiance = 0x130; // the three matrices
-constexpr std::size_t kProbeBlueprint = 0x174;  // in a probe's node
+// the state's own function (0x0046B260) fills from them what the shaders are
+// handed: the probe's three matrices (g_mLightParams), which DAOLib hands a
+// callback as it fills (dao::lights::OnProbe, DAOLib #225), copied afresh from
+// the probe each fill while one is added. The mix is written over them there.
+constexpr std::size_t kLightsProbes = 0x3C;    // the manager's list of light probes
+constexpr std::size_t kStateProbes = 0x20;     // in a light state: the group of probes chosen
+constexpr std::size_t kProbeBlueprint = 0x174; // in a probe's node
 constexpr std::size_t kBlueprintIrradiance = 0x160;
 constexpr std::size_t kLightNodeScore = 0x184; // a float, what the light's score leaves
-constexpr std::uintptr_t kNoProbe = 1;         // kept in a state to have its probe's light copied again
 constexpr float kProbeKeyWithin = 0.05F;       // metres: how near a level's probe is to a room's key to be it
 // How near a level's probe's light is to a room's for the room to be its:
 // the level's files and the engine's copy of them are the same numbers.
@@ -77,7 +69,6 @@ using ChooseFromListFn = std::uintptr_t(__fastcall *)(void *, int, void *, float
                                                       std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t,
                                                       void *);
 using LightScoreFn = std::uintptr_t(__fastcall *)(void *, int, const float *, float, std::uintptr_t, std::uintptr_t);
-using StateFillFn = std::uintptr_t(__fastcall *)(void *, int, std::uintptr_t);
 // The engine making a source of an archive (ECResMan::ResMan::MakeSource),
 // read 2026-10-11: __thiscall, the archive's path as the engine's wide
 // string, the source's kind, its priority and two more, `ret 0x14`.
@@ -87,7 +78,6 @@ using OpenArchiveFn = std::uintptr_t(__fastcall *)(void *, int, const dao::core:
 dao::Detour<ChooseForMovingFn> g_chooseForMoving;
 dao::Detour<ChooseFromListFn> g_chooseFromList;
 dao::Detour<LightScoreFn> g_probeScore;
-dao::Detour<StateFillFn> g_stateFill;
 dao::Detour<OpenArchiveFn> g_openArchive;
 
 std::atomic<bool> g_wanted{false};
@@ -122,7 +112,6 @@ struct Blend
     std::array<float, 3> bounceSent{};
 };
 std::unordered_map<void *, Blend> g_blends; // by light state, under g_blendsLock
-std::unordered_set<void *> g_statesWritten; // the light states whose matrices are ours now
 
 float Distance(const float *a, const float *b)
 {
@@ -295,35 +284,65 @@ void KeepBounce(Blend &blend)
     }
 }
 
-std::uintptr_t __fastcall StateFill(void *state, int unused, std::uintptr_t argument)
+// A probe's light as the hour has it: the day's times the hour's, and at
+// night, for a level's probe, without its direction, as the bake has it
+// (night_sky.hlsl): toward its mean over every direction, as the night sky's
+// even light. A probe's light at a facing n is n M n for n = (x, y, z, 1), so
+// its mean is a third of M's first three diagonal terms and its last.
+void ByTheHour(std::span<float, 48> irradiance, const std::array<float, 3> &times, float night)
 {
-    std::optional<Irradiance> mix;
+    constexpr std::size_t kPerColour = 16; // a matrix's floats: red's, then green's, then blue's
+    for (std::size_t colour = 0; colour < 3; ++colour)
     {
-        const std::scoped_lock lock(g_blendsLock);
-        if (const auto found = g_blends.find(state);
-            found != g_blends.end() && g_wanted.load(std::memory_order_relaxed))
+        float *m = irradiance.data() + (colour * kPerColour);
+        const float mean = ((m[0] + m[5] + m[10]) / 3) + m[15];
+        for (std::size_t at = 0; at < kPerColour; ++at)
         {
-            KeepBounce(found->second);
-            mix = found->second.light;
-            for (std::size_t at = 0; at < mix->size(); ++at)
-            {
-                mix->at(at) += found->second.bounce.at(at);
-            }
-        }
-        else if (g_statesWritten.erase(state) != 0)
-        {
-            // Matrices of ours left in the state are the engine's to write again.
-            std::memcpy(static_cast<std::byte *>(state) + kStateProbeKept, &kNoProbe, sizeof kNoProbe);
+            m[at] = std::lerp(m[at], at == kPerColour - 1 ? mean : 0.0F, night) * times.at(colour);
         }
     }
-    const std::uintptr_t result = g_stateFill.Original()(state, unused, argument);
-    if (mix)
+}
+
+// A probe's light as the engine hands it to a light state's fill: a figure's
+// the baked probes' mix and the bounce from the level's sunlit patches; and
+// every probe of the level's own (a room's layout, <level>_..._ll, not a
+// portrait's or the record's figure's rig) multiplied by the hour's sky light
+// where the level has a day and a night (DayNight.h): a probe is a picture of
+// the level's baked light, and goes with it. Told by the probe's model, not by
+// what is drawn into as it fills: the engine fills a state when a material
+// first asks in a frame, which may be in the sun's shadow pass, and a figure
+// decided by that went from the night's light to the day's and back (the
+// user, 2026-10-21: "characters are flickering at night").
+void OnProbe(dao::lights::ProbeLight &probe)
+{
+    // A level's probe (its layout's, <level>_ll), and the outdoor figures' rig
+    // the engine lights a figure by where no level's probe is near it
+    // (outside_day; read 2026-10-21): lit by the day, both go with the hour.
+    // With the rig left as it was, Lyna was day-lit at midnight on the
+    // bridge over Redcliffe's falls and dark a few steps on (the user).
+    constexpr std::wstring_view kLayout = L"_ll";
+    constexpr std::wstring_view kOutdoorRig = L"outside_day";
+    const bool levels =
+        (probe.model.size() >= kLayout.size() &&
+         _wcsnicmp(probe.model.data() + probe.model.size() - kLayout.size(), kLayout.data(), kLayout.size()) == 0) ||
+        (probe.model.size() == kOutdoorRig.size() &&
+         _wcsnicmp(probe.model.data(), kOutdoorRig.data(), kOutdoorRig.size()) == 0);
+    const std::array<float, 3> times = levels ? daynight::Baked() : std::array<float, 3>{1, 1, 1};
+    const float night = levels ? daynight::NightShare() : 0;
+    const std::scoped_lock lock(g_blendsLock);
+    const auto found = g_blends.find(reinterpret_cast<void *>(probe.state));
+    if (found != g_blends.end() && g_wanted.load(std::memory_order_relaxed))
     {
-        std::memcpy(static_cast<std::byte *>(state) + kStateIrradiance, mix->data(), sizeof *mix);
-        const std::scoped_lock lock(g_blendsLock);
-        g_statesWritten.insert(state);
+        KeepBounce(found->second);
+        std::ranges::copy(found->second.light, probe.irradiance.begin());
+        ByTheHour(probe.irradiance, times, night);
+        for (std::size_t at = 0; at < probe.irradiance.size(); ++at)
+        {
+            probe.irradiance[at] += found->second.bounce.at(at); // the sun's, not the bake's
+        }
+        return;
     }
-    return result;
+    ByTheHour(probe.irradiance, times, night);
 }
 
 std::uintptr_t __fastcall OpenArchive(void *self, int unused, const dao::core::WStringRep *path, std::uintptr_t a2,
@@ -343,6 +362,7 @@ std::uintptr_t __fastcall OpenArchive(void *self, int unused, const dao::core::W
         if (extension == L".rim" && _wcsicmp(file.stem().c_str(), file.parent_path().c_str()) == 0)
         {
             probebaker::Want(GameFolder() / "packages" / "core" / "env" / file);
+            daynight::Opened(GameFolder() / "packages" / "core" / "env" / file);
             levelshadows::Forget();
         }
     }
@@ -356,12 +376,12 @@ bool Install()
     if (!g_chooseForMoving.Attach(dao::addr::kLightManager_ChooseForMoving, &ChooseForMoving) ||
         !g_chooseFromList.Attach(dao::addr::kLightList_ChooseFor, &ChooseFromList) ||
         !g_probeScore.Attach(dao::addr::kObjectNodeLightProbe_Score, &ProbeScore) ||
-        !g_stateFill.Attach(dao::addr::kLightState_Fill, &StateFill) ||
         !g_openArchive.Attach(dao::addr::kResMan_MakeSource, &OpenArchive))
     {
         spdlog::warn("light probes: a detour could not be placed; figures keep their level's own probe");
         return false;
     }
+    dao::lights::OnProbe(&OnProbe);
     probebaker::Start(dao::LogDirectory() / "elgarashaders" / "probes", GameFolder(), {});
     return true;
 }

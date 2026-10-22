@@ -29,6 +29,18 @@
 // camera's focus. Where [12].x is 0, the game's g_vShadowData is read, its
 // maps fitted to its figures.
 float4 daoShadowData[14] : register(c200);
+// The shadows' blend (LevelShadows.cpp's FadeData): where the sun has just
+// been aimed anew, the old aim's maps are kept, on the engine's far map's
+// sampler, and a pixel reads the old or the new as daoShadowData[12].z goes
+// from 0 to 1 (0, no fade): the old where its own number is past it, so the
+// old edge dissolves into the new over the fade. Each pixel reads one map: a
+// mix of both in one loop ran the figures' shaders out of their 32 temporary
+// registers (2026-10-21), and costs a second lookup. [0..2] are the turn from
+// the new aim to the old, by rows: a point turned by them and placed by a new
+// map's rows is where the old map has it, but for [3 + map]'s offsets across
+// and down (x, y) and its depth's scale and offset (z, w).
+float4 daoShadowFade[7] : register(c193);
+#define DAO_SHADOW_FADE daoShadowData[12].z
 
 // The texels a side of each map of the plugin's atlas (LevelShadows.cpp's
 // kTile), whatever size the engine's own maps are.
@@ -62,23 +74,58 @@ float2 DaoSlope(float3 at)
     return abs(det) > 1e-12 ? slope / det : 0;
 }
 
+// The share of a filter's taps that read the new aim's maps: all but while
+// the shadows fade, when the rest read the old aim's (daoShadowFade).
+float DaoNewShare()
+{
+    return DAO_SHADOW_FADE > 0 ? DAO_SHADOW_FADE : 1;
+}
+
+// A map's depth at `uv`. The old aim's atlas is read as if it lay beside the
+// new one, at x from 1 to 2 (DaoTapAt), so the one filter serves both: a
+// shader with a second filter ran out of its 32 temporary registers (the
+// scenery's and the figures', 2026-10-21). The engine's own maps are read
+// below 1, never faded.
+float DaoDepthAt(sampler2D map, float2 uv)
+{
+    if (uv.x >= 1)
+    {
+        return tex2Dlod(smpShadowPartition2, float4(uv.x - 1, uv.y, 0, 0)).x;
+    }
+    return tex2Dlod(map, float4(uv, 0, 0)).x;
+}
+
+// Where tap `i` of a filter looks, x and y in the atlas and z the depth to
+// compare: the new map's place `at`, or, for the taps past the new aim's
+// share while the shadows fade, the old map's `oldAt` in the old atlas. So
+// each pixel goes from the old shadow to the new by sixteenths: a dissolve
+// of whole pixels between the two showed as a checkered edge (the user,
+// 2026-10-21: "the shadows dither when transitioning").
+float3 DaoTapAt(int i, float3 at, float3 oldAt, float share, float2 origin, float scale, float2 tap)
+{
+    const float edge = 0.5 / kDaoAtlasTile;
+    const bool old = (i + 0.5) / 16 > share;
+    const float3 from = old ? oldAt : at;
+    return float3(origin + float2(old ? 1 : 0, 0) + scale * clamp(from.xy + tap, edge, 1 - edge), from.z);
+}
+
 // The lit part of a disc around `at` (x, y in the map, z the depth there),
 // whose depth has `slope` over the map. `bias` is kDaoBias as the map's depth.
 // The map is at `origin` of the texture, `scale` of it wide: a tile of the
-// atlas, its taps kept in it.
-float DaoShadowMap(sampler2D map, float3 at, float2 slope, float2 turn, float radius, float bias, float2 origin,
-                   float scale)
+// atlas, its taps kept in it. While the shadows fade, the taps past `share`
+// read the old map at `oldAt` (DaoTapAt).
+float DaoShadowMap(sampler2D map, float3 at, float3 oldAt, float share, float2 slope, float2 turn, float radius,
+                   float bias, float2 origin, float scale)
 {
     const float reach = 2 * radius; // no tap's depth moves further than a surface at 63 degrees would
-    const float edge = 0.5 / kDaoAtlasTile;
     float lit = 0;
     [loop] for (int i = 0; i < 16; i++)
     {
         const float2 tap =
             float2(kDaoDisc[i].x * turn.x - kDaoDisc[i].y * turn.y, kDaoDisc[i].x * turn.y + kDaoDisc[i].y * turn.x) *
             radius;
-        const float2 uv = origin + scale * clamp(at.xy + tap, edge, 1 - edge);
-        lit += tex2Dlod(map, float4(uv, 0, 0)).x >= at.z + clamp(dot(tap, slope), -reach, reach) - bias ? 1.0 : 0.0;
+        const float3 tapAt = DaoTapAt(i, at, oldAt, share, origin, scale, tap);
+        lit += DaoDepthAt(map, tapAt.xy) >= tapAt.z + clamp(dot(tap, slope), -reach, reach) - bias ? 1.0 : 0.0;
     }
     return lit / 16;
 }
@@ -86,7 +133,7 @@ float DaoShadowMap(sampler2D map, float3 at, float2 slope, float2 turn, float ra
 // The lit part of a disc around `at` as the game's maps are read.
 float DaoShadowMap(sampler2D map, float3 at, float2 turn, float radius, float bias)
 {
-    return DaoShadowMap(map, at, DaoSlope(at), turn, radius, bias, 0, 1);
+    return DaoShadowMap(map, at, at, 1, DaoSlope(at), turn, radius, bias, 0, 1);
 }
 
 // The tangent of the sun's angular radius (0.267 degrees, as seen from the
@@ -100,11 +147,10 @@ static const float kDaoSunRadius = 0.00466;
 // The mean depth of what is nearer the sun than `at` within `radius` of it,
 // and how much of the disc that is: the first half of percentage-closer soft
 // shadows (Fernando 2005).
-float2 DaoBlocker(sampler2D map, float3 at, float2 slope, float2 turn, float radius, float bias, float2 origin,
-                  float scale)
+float2 DaoBlocker(sampler2D map, float3 at, float3 oldAt, float share, float2 slope, float2 turn, float radius,
+                  float bias, float2 origin, float scale)
 {
     const float reach = 2 * radius;
-    const float edge = 0.5 / kDaoAtlasTile;
     float sum = 0;
     float count = 0;
     [loop] for (int i = 0; i < 16; i++)
@@ -112,9 +158,9 @@ float2 DaoBlocker(sampler2D map, float3 at, float2 slope, float2 turn, float rad
         const float2 tap =
             float2(kDaoDisc[i].x * turn.x - kDaoDisc[i].y * turn.y, kDaoDisc[i].x * turn.y + kDaoDisc[i].y * turn.x) *
             radius;
-        const float2 uv = origin + scale * clamp(at.xy + tap, edge, 1 - edge);
-        const float depth = tex2Dlod(map, float4(uv, 0, 0)).x;
-        if (depth < at.z + clamp(dot(tap, slope), -reach, reach) - bias)
+        const float3 tapAt = DaoTapAt(i, at, oldAt, share, origin, scale, tap);
+        const float depth = DaoDepthAt(map, tapAt.xy);
+        if (depth < tapAt.z + clamp(dot(tap, slope), -reach, reach) - bias)
         {
             sum += depth;
             count += 1;
@@ -159,6 +205,7 @@ static const float kDaoBand = 0.1;
 struct DaoInMap
 {
     float3 at;
+    float3 oldAt; // where the old aim's map has the point while the shadows fade (daoShadowFade), else `at`
     float radius;
     float bias;
     float inside;
@@ -175,16 +222,24 @@ struct DaoInMap
 float DaoAtlasShadow(int tile, DaoInMap placed, float2 turn)
 {
     const float2 origin = float2(tile % 2, tile / 2) * 0.5;
+    // The old aim's map stays where it was as the party walks on, and a point
+    // the new map holds may be off the old one's edge: its taps there read the
+    // old atlas's edge, and a block of shade came and went before the party
+    // as the shadows faded (the user, 2026-10-22). Off the old map, the new
+    // map's alone.
+    const bool oldHolds = all(placed.oldAt.xy > 0) && all(placed.oldAt.xy < 1);
+    const float share = oldHolds ? DaoNewShare() : 1;
     const float2 slope = DaoSlope(placed.at);
     const float search = max(kDaoSunRadius * (placed.at.z / placed.deep) * placed.across, placed.radius);
-    const float2 blocker = DaoBlocker(smpShadowPartition1, placed.at, slope, turn, search, placed.bias, origin, 0.5);
+    const float2 blocker =
+        DaoBlocker(smpShadowPartition1, placed.at, placed.oldAt, share, slope, turn, search, placed.bias, origin, 0.5);
     if (blocker.y <= 0)
     {
         return 1;
     }
     const float penumbra = kDaoSunRadius * ((placed.at.z - blocker.x) / placed.deep) * placed.across;
-    return DaoShadowMap(smpShadowPartition1, placed.at, slope, turn, max(penumbra, placed.radius), placed.bias, origin,
-                        0.5);
+    return DaoShadowMap(smpShadowPartition1, placed.at, placed.oldAt, share, slope, turn, max(penumbra, placed.radius),
+                        placed.bias, origin, 0.5);
 }
 
 // How far a point is looked up off its surface, along its facing towards the
@@ -222,6 +277,17 @@ DaoInMap DaoPlaceIn(int first, float4 point4, float3 facing, float least)
     // shade with the fine map's edges (the user, 2026-10-16).
     const float depth = dot(daoShadowData[first + 2], point4);
     placed.inside *= saturate(min(depth, 1 - depth) / kDaoBand);
+    placed.oldAt = placed.at;
+    if (DAO_SHADOW_FADE > 0)
+    {
+        // Where the old aim's map has the point (daoShadowFade).
+        const float4 turned = float4(dot(daoShadowFade[0].xyz, offPoint.xyz), dot(daoShadowFade[1].xyz, offPoint.xyz),
+                                     dot(daoShadowFade[2].xyz, offPoint.xyz), 1);
+        const float4 shift = daoShadowFade[3 + first / 3];
+        placed.oldAt = float3(dot(daoShadowData[first], turned) + shift.x,
+                              dot(daoShadowData[first + 1], turned) + shift.y,
+                              saturate(dot(daoShadowData[first + 2], turned) * shift.z + shift.w));
+    }
     return placed;
 }
 

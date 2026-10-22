@@ -1806,6 +1806,33 @@ def with_shaped_bake(shader):
     shader.insert(-1, ["float daoRelief = 0;"])
 
 
+def with_baked_tree_light(shader):
+    """Multiply a tree's ambient light by the hour's baked light (look.hlsl's
+    DAO_BAKED_LIGHT): g_vColorMultiplier, what a leaf, frond or branch has
+    with no sun on it, which went on lighting the crowns yellow-green at
+    night (seen 2026-10-21) where the level and its grass had gone blue."""
+    for statement in shader.statements:
+        statement.hlsl = statement.hlsl.replace(
+            "g_vColorMultiplier", "(g_vColorMultiplier * float4(DAO_BAKED_LIGHT, 1))"
+        )
+
+
+def with_baked_light(shader):
+    """The level's baked light by the hour, where the lightmap is read
+    (night_sky.hlsl): the day's colour, times the hour's (look.hlsl's
+    DAO_BAKED_LIGHT) as the sun goes, and toward the night sky's even light
+    by the night's share. Its alpha, which says where the sun reaches, is
+    kept. Run after with_shaped_bake, so that its line comes first after the
+    read and what the shaped bake keeps of the light (daoBaked) has it."""
+    lightmap = shader.parameters["smpLightmap"]
+    read = shader.find(rf"^texld\w* r\d+, .*, s{lightmap.base}$")
+    register = re.match(r"texld\w* (r\d+),", shader.statements[read].asm).group(1)
+    shader.insert(
+        read,
+        [f"{register}.xyz = lerp({register}.xyz * DAO_BAKED_LIGHT, daoNightSky.yzw, daoNightSky.x);"],
+    )
+
+
 # The depth-only pass the game draws a cut-out surface's depth with (a
 # material's DepthWrite): its pixel shader, the game's and ours made from it.
 DEPTH_PIXEL = ("static_depth.psh.fxo", "daostatic_depth.psh.fxo")
@@ -2001,14 +2028,39 @@ def depth_vertex_instanced(shader):
     shader.add_output("depth", "float", "TEXCOORD0", "abs(o0.w)")
 
 
+def with_far_depth(shader):
+    """The depth pass's distance no more than 0.9 of the focal plane, as
+    with_far_distance writes it for far things where the picture's own pass
+    writes the distance. Where the game's anti-aliasing is on, the distance
+    is this pass's (a target of its own), and what lay past the focal plane,
+    the mountains behind Redcliffe's castle, was written 1, the sky's, and
+    the air's light's pass took it for sky."""
+    index = shader.find(r"^mul_sat r0\.x, r0\.x, v0\.x$")
+    shader.insert(index, ["r0.x = min(r0.x, 0.9);"])
+
+
 def depth_pixel_by_texture(shader):
     """Write no depth where the surface's texture is clear. The game's depth
     pass reads no texture, so a bush's or a fence's whole card is written, and
     the ambient occlusion shaded the card's outline on what stands behind it
     (seen in Redcliffe, 2026-10-11). The test is the one the picture's own
     pass is drawn with (DAMshPnch1S.sta: alpha over 127 of 255)."""
+    with_far_depth(shader)
     shader.add_input("uv", "float2", "TEXCOORD1")
-    shader.insert(0, ["clip(tex2D(smpDecal, input.uv).a - 0.5);"])
+    # Only by a texture whose alpha is coverage: a solid thing's texture may
+    # hold none at all, and the mountains behind Redcliffe's castle
+    # (vst_mount_d.dds, its alpha 0 throughout) were cut out of the pass
+    # whole, left the sky's distance, and the air's light's pass took them
+    # for sky: dark blue shapes in the haze toward a low sun where the game's
+    # anti-aliasing is on (the user, 2026-10-21). The smallest of the
+    # texture's pictures is its alpha's mean.
+    shader.insert(
+        0,
+        [
+            "const float covered = tex2Dlod(smpDecal, float4(input.uv, 0, 16)).a;",
+            "clip(covered > 0 ? tex2D(smpDecal, input.uv).a - 0.5 : 1);",
+        ],
+    )
 
 
 def with_textured_depth(material, vertex):
@@ -2089,6 +2141,11 @@ def compile_shader(fxc, profile, source, compiled, strict=False):
             profile,
             "/E",
             "main",
+            # fxc's most careful register allocation: at its default (/O1) the
+            # scenery's lightmapped shaders (static1 and its kind) ran out of
+            # their 32 temporary registers with the shadows' blend, and fit at
+            # /O2 and above (2026-10-21).
+            "/O3",
             "/Fo",
             compiled,
             *(["/WX"] if strict else []),
@@ -2148,6 +2205,37 @@ def with_lit_sky_fog(shader):
         -1,
         [
             f"const float4 daoSkyFog = DaoSkyFog({way}.xyz, g_vLightParams[2].xyz, mml_vFogParams[0]);"
+        ],
+    )
+
+
+# The sky's disc's colour and whether it is ours (Graphics.cpp's kDiscRegister).
+DISC = "float4 daoDisc : register(c214);\n"
+
+
+def with_one_disc(shader):
+    """Draw the sky's disc once, where the light comes from, in the hour's
+    colour (DayNight.h's Disc). The disc is the celestial body's texture laid
+    by a matrix of the light's way, and nothing checks which side of the eye
+    it is on, so it is drawn where the light comes from and again opposite
+    (lib-agent-3, read in sky.vsh and the sky's recompute 0x0055BFA0,
+    2026-10-21): vanilla's opposite is under the horizon, a sun moved by the
+    hour put it in the sky. A sky with no disc is left as it is."""
+    if "smpCelestialBody" not in shader.parameters:
+        return
+    body = shader.parameters["smpCelestialBody"]
+    way = next(
+        register
+        for _, _, semantic, register, _ in shader.inputs
+        if semantic == "TEXCOORD1"
+    )
+    read = shader.find(rf"^texld\w* r\d+, .*, s{body.base}$")
+    register = re.match(r"texld\w* (r\d+),", shader.statements[read].asm).group(1)
+    shader.insert(
+        read,
+        [
+            f"{register} *= dot(normalize({way}.xyz), -g_vLightParams[2].xyz) > 0 ? 1 : 0;",
+            f"{register}.xyz *= daoDisc.w > 0 ? daoDisc.xyz : 1;",
         ],
     )
 
@@ -2518,10 +2606,14 @@ def changes_for(stem, listing, show):
         changes.append(with_our_grade)
         preamble += ours("grade.hlsl")
     if stem in SKIES:
-        changes.append(with_lit_sky_fog)
-        preamble += ours("look.hlsl") + ours("haze.hlsl")
+        changes += [with_lit_sky_fog, with_one_disc]
+        preamble += ours("look.hlsl") + ours("haze.hlsl") + DISC
     if writes_sky_distance(stem, listing):
         changes.append(with_far_distance)
+    # The depth pass of vista and terrain, the game's own (vista.mat.xml,
+    # terrain.mat.xml); static's and prop's are daostatic_depth (DEPTH_PIXEL).
+    if stem == "static_depth":
+        changes.append(with_far_depth)
     if stem in BLOOM_MASKS:
         changes.append(with_bounded_bloom)
         # A shader of model 2, which reaches no register of look.hlsl's: the
@@ -2531,9 +2623,23 @@ def changes_for(stem, listing, show):
         changes += [with_ambient_relief, without_cut]
         preamble += ours("look.hlsl") + ours("bake.hlsl")
     if takes_baked_light(listing):
-        changes += [with_shaped_bake, without_cut]
+        changes += [with_shaped_bake, with_baked_light, without_cut]
         if "DaoShapedBake" not in preamble:
             preamble += ours("look.hlsl") + ours("bake.hlsl")
+        preamble += ours("night_sky.hlsl")
+    # The level's farther versions lay a lightmap too, with no engine lights
+    # (bakedlowlod, vista3, static2, static3, terrain3): left out of the
+    # hour's light, the hills behind Redcliffe's lake stayed day-lit at night
+    # (seen 2026-10-21).
+    if "smpLightmap" in listing and "ps_3_0" in listing and with_baked_light not in changes:
+        changes.append(with_baked_light)
+        if "DAO_LOOK_HLSL" not in preamble:
+            preamble += ours("look.hlsl")
+        preamble += ours("night_sky.hlsl")
+    if stem.startswith("spt_") and "g_vColorMultiplier" in listing:
+        changes.append(with_baked_tree_light)
+        if "DAO_LOOK_HLSL" not in preamble:
+            preamble += ours("look.hlsl")
     # The materials, for a prop and a level's surface as for a figure: first,
     # before another change rewrites a statement they are found by.
     if (stem in PROPS or takes_baked_light(listing)) and with_materials not in changes:
@@ -2675,6 +2781,7 @@ def main(argv):
             with open(os.path.join(out, name), "w", encoding="utf-8", newline="") as f:
                 f.write(text)
             written.add(name)
+
     # Every definition with a pass one of our shaders draws, whichever it is:
     # a shader reads the parameters whatever material it is drawn for, and one
     # a definition does not name is whatever the last draw left in its place
@@ -2724,6 +2831,7 @@ def main(argv):
                 for theirs, ours_, _, change in DEPTH_VERTICES
             ]
             + [(DEPTH_PIXEL, depth_pixel_by_texture, "sampler2D smpDecal;\n")]
+
             + [
                 (
                     (theirs, ours_),

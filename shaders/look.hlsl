@@ -41,6 +41,10 @@ float4 daoLook[4] : register(c220);
 // word of where the sun reaches as red and the shadow maps' as green, yellow
 // where they agree that it does and black where they agree it does not.
 #define DAO_SHADOW_SHOW daoLook[1].z
+// What a level's baked light is multiplied by, each colour (build_shaders.py's
+// with_baked_light): the sky's light of the hour where a level has a day and
+// a night (DayNight.h), else 1.
+#define DAO_BAKED_LIGHT (1 + daoLook[2].xyz)
 float3 DaoCut(float3 colour)
 {
     return lerp(saturate(colour), max(colour, 0), saturate(DAO_UNCUT));

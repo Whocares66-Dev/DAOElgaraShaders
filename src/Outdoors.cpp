@@ -1,5 +1,6 @@
 #include "Outdoors.h"
 
+#include "DayNight.h"
 #include "LevelShadows.h"
 
 #include "Probes.h"
@@ -112,7 +113,7 @@ void WatchArea()
 // The tuning file as last read, and when it was written.
 std::map<std::string, float, std::less<>> g_tune;
 std::filesystem::file_time_type g_tuneWritten{};
-bool g_tuned = false; // something of the file's is on the area now
+bool g_skySet = false; // a sky of ours is on the area now: the hour's or the file's
 
 void ReadTune(const std::filesystem::path &file)
 {
@@ -149,6 +150,23 @@ std::optional<float> Tuned(std::string_view key)
 
 // Whether the player wants the air lit (the options screen's Improved lighting).
 bool g_wanted = false;
+
+// The light of the hour where the area's level has a day and a night
+// (DayNight.h), as of this frame; none elsewhere.
+std::optional<daynight::Light> g_hourLight;
+// Whether the options screen's Day / night cycle is on (WantClock).
+bool g_clockOn = false;
+
+// The sun and the sky the plugin lights the area by: the hour's, or the
+// area's own.
+std::optional<dao::atmosphere::Sunlight> BaseSunlight()
+{
+    return g_hourLight ? std::optional(g_hourLight->sun) : dao::atmosphere::AreaOwnSunlight();
+}
+std::optional<dao::atmosphere::Sky> BaseSky()
+{
+    return g_hourLight ? std::optional(g_hourLight->sky) : dao::atmosphere::AreaOwnSky();
+}
 
 SkyHaze g_haze;
 float g_fills = 1;
@@ -202,53 +220,27 @@ bool g_sunlit = false; // out of doors with a sun on the ground (Sunlit)
 // the sun went white in the Dalish camp, whose fog is brighter than its sun;
 // the user, 2026-10-16: "Are we just applying hacks on top of a problem we
 // don't understand".)
-SkyHaze HazeOf(const dao::atmosphere::Sunlight &sun, const dao::atmosphere::Sky &sky, bool outdoors)
+// Under a day and a night the sky is the hour's, and the haze's part is the
+// sun's light scattered on, so it goes with the sun's colour over the day's
+// (`sunOverDay`); the moon's is left in the sky's own fog colour.
+SkyHaze HazeOf(const dao::atmosphere::Sunlight &sun, const dao::atmosphere::Sky &sky, bool outdoors,
+               const std::array<float, 3> &sunOverDay)
 {
     SkyHaze haze;
     const bool sunny = std::max({sun.color[0], sun.color[1], sun.color[2]}) > 0;
     haze.on = outdoors && sunny && g_wanted && Tuned("Haze").value_or(1) > 0;
-    constexpr std::array<float, 3> kRayleigh{6.95e-6F, 1.18e-5F, 2.44e-5F};               // per metre
-    constexpr std::array<double, 3> kInverseWavelength{1538461.5, 1754386.0, 2105263.25}; // per metre
-    constexpr double kPi = std::numbers::pi;
-    // Preetham's concentration factor, as the engine has it.
-    constexpr double kConcentration = 0.434; // NOLINT(modernize-use-std-numbers): not log10(e)
-    const double c = std::max((6.544 * sky.turbidity) - 6.51, 0.0) * 1e-17;
+    const daynight::Scattered scattered = daynight::Scattering(sky);
     const std::array<float, 3> fog{sky.fogRed, sky.fogGreen, sky.fogBlue};
     for (std::size_t i = 0; i < 3; ++i)
     {
-        const double rayleigh = std::max(sky.rayleighMultiplier, 0.0F) * kRayleigh.at(i);
-        const double mie = std::max(sky.mieMultiplier, 0.0F) * 0.67 * kConcentration * 4 * kPi * kPi * kPi * c *
-                           kInverseWavelength.at(i) * kInverseWavelength.at(i);
+        const double rayleigh = scattered.air.at(i);
+        const double mie = scattered.haze.at(i);
         const double mieShare = rayleigh + mie > 0 ? mie / (rayleigh + mie) : 0;
         haze.air.at(i) = static_cast<float>((1 - mieShare) * fog.at(i));
-        haze.sun.at(i) = static_cast<float>(mieShare * fog.at(i));
+        haze.sun.at(i) = static_cast<float>(mieShare * fog.at(i)) * sunOverDay.at(i);
     }
     haze.g = std::min(std::abs(sky.hg), 0.95F);
     return haze;
-}
-
-// The file's sun and sky put on the area, for a developer's trying of them.
-void ApplyTune()
-{
-    const std::optional<dao::atmosphere::Sunlight> ownSun = dao::atmosphere::AreaOwnSunlight();
-    const std::optional<dao::atmosphere::Sky> ownSky = dao::atmosphere::AreaOwnSky();
-    if (!ownSun || !ownSky)
-    {
-        return;
-    }
-    dao::atmosphere::Sky sky = *ownSky;
-    for (const dao::core::SkyField &field : dao::core::kSkyFields)
-    {
-        if (const std::optional<float> value = Tuned("sky." + Underscored(field.name)))
-        {
-            sky.*field.member = *value;
-        }
-    }
-    if (sky != dao::atmosphere::CurrentSky())
-    {
-        dao::atmosphere::SetSky(sky);
-    }
-    g_tuned = true;
 }
 
 void KeepTune()
@@ -257,10 +249,8 @@ void KeepTune()
     std::error_code error;
     if (!std::filesystem::exists(file, error))
     {
-        if (g_tuned)
+        if (g_tuneWritten != std::filesystem::file_time_type{})
         {
-            dao::atmosphere::ResetSky();
-            g_tuned = false;
             g_tune.clear();
             g_tuneWritten = {};
             spdlog::info("{} gone: the area's own light", kTuneFile);
@@ -273,7 +263,39 @@ void KeepTune()
         g_tuneWritten = written;
         ReadTune(file);
     }
-    ApplyTune();
+}
+
+// The sky on the area: the hour's or its own, with the file's values over it
+// for a developer's trying of them.
+void KeepSky()
+{
+    const std::optional<dao::atmosphere::Sky> own = dao::atmosphere::AreaOwnSky();
+    std::optional<dao::atmosphere::Sky> sky = BaseSky();
+    if (!own || !sky)
+    {
+        return;
+    }
+    for (const dao::core::SkyField &field : dao::core::kSkyFields)
+    {
+        if (const std::optional<float> value = Tuned("sky." + Underscored(field.name)))
+        {
+            (*sky).*field.member = *value;
+        }
+    }
+    if (*sky == *own)
+    {
+        if (g_skySet)
+        {
+            dao::atmosphere::ResetSky();
+            g_skySet = false;
+        }
+        return;
+    }
+    if (*sky != dao::atmosphere::CurrentSky())
+    {
+        dao::atmosphere::SetSky(*sky);
+    }
+    g_skySet = true;
 }
 
 // The air's light for the area the party is in, as the option and the file
@@ -293,8 +315,10 @@ bool OutOfDoors()
 
 void KeepAir()
 {
+    // Whether the area has a sun is its own word: under a day and a night the
+    // hour's is none at dusk, and the fills were back on figures there.
     const std::optional<dao::atmosphere::Sunlight> sun = dao::atmosphere::AreaOwnSunlight();
-    const std::optional<dao::atmosphere::Sky> sky = dao::atmosphere::AreaOwnSky();
+    const std::optional<dao::atmosphere::Sky> sky = BaseSky();
     const bool outdoors = OutOfDoors();
     static std::optional<bool> said;
     if (sun && sky && said != outdoors)
@@ -303,7 +327,9 @@ void KeepAir()
         spdlog::info("the area is {}",
                      outdoors ? "out of doors: its air is lit by its sun" : "indoors: its fog as it is");
     }
-    g_haze = sun && sky ? HazeOf(*sun, *sky, outdoors) : SkyHaze{};
+    g_haze = sun && sky
+                 ? HazeOf(*sun, *sky, outdoors, g_hourLight ? g_hourLight->sunOverDay : std::array<float, 3>{1, 1, 1})
+                 : SkyHaze{};
     g_outdoors = sun && sky && outdoors;
     const bool sunny = sun && std::max({sun->color[0], sun->color[1], sun->color[2]}) > 0;
     g_sunlit = g_outdoors && sunny;
@@ -332,11 +358,12 @@ void KeepSunBounce(const dao::atmosphere::Sunlight &sun)
 void KeepSun()
 {
     const std::optional<dao::atmosphere::Sunlight> own = dao::atmosphere::AreaOwnSunlight();
-    if (!own)
+    const std::optional<dao::atmosphere::Sunlight> base = BaseSunlight();
+    if (!own || !base)
     {
         return;
     }
-    dao::atmosphere::Sunlight sun = *own;
+    dao::atmosphere::Sunlight sun = *base;
     const float ground = Tuned("Sun").value_or(1);
     const float figures = Tuned("SunOnFigures").value_or(1);
     const bool oneSun = g_outdoors && SunlitFigures();
@@ -477,8 +504,8 @@ void KeepHaze()
     {
         return;
     }
-    const std::optional<dao::atmosphere::Sunlight> sun = dao::atmosphere::AreaOwnSunlight();
-    const std::optional<dao::atmosphere::Sky> sky = dao::atmosphere::AreaOwnSky();
+    const std::optional<dao::atmosphere::Sunlight> sun = BaseSunlight();
+    const std::optional<dao::atmosphere::Sky> sky = BaseSky();
     const std::optional<dao::world::ViewSize> size = dao::world::ScreenSize();
     const std::optional<float> lens = dao::framebuffer::Value(kChain, L"DaoLensX");
     const dao::CClientExoApp *app = dao::CClientExoApp::Get();
@@ -578,6 +605,11 @@ bool Sunlit()
     return g_sunlit;
 }
 
+void WantClock(bool on)
+{
+    g_clockOn = on;
+}
+
 void Want(bool on)
 {
     if (on != g_wanted)
@@ -600,10 +632,53 @@ namespace
 std::optional<bool> g_seenOutdoors;
 std::atomic<int> g_changes{0};
 bool g_lookNow = false;
+
+// How many minutes of play a day of the cycle takes (the user, 2026-10-21:
+// "should be 1 hour = 1 day"), where the tuning file's `DayMinutes` does not
+// say.
+constexpr float kDayMinutes = 60;
+// How bright the moon is, as a share of the night level's sun's (DayNight.h's
+// Now): the night level's own.
+constexpr float kNight = 1;
+// How much of the night level's sky light the night keeps beside the moon
+// (DayNight.h's Now): the moon lights the night, and the night sky, a dim
+// light of its own, keeps what the moon does not reach from black. With none
+// the shadows were pitch black, figures lost in them and the game's
+// highlight of what can be used (Tab), which brightens a thing's own light,
+// gone with it; at 0.15 the shadows were still "maybe too dark" (the user,
+// 2026-10-22).
+constexpr float kNightFill = 0.4F;
+
+// The light of the hour, each frame, where the area's level has a day and a
+// night and the options screen's Day / night cycle runs it (DayNight.h): out
+// of doors with Improved lighting on.
+void KeepHour()
+{
+    const std::optional<dao::atmosphere::Sunlight> sun = dao::atmosphere::AreaOwnSunlight();
+    const std::optional<dao::atmosphere::Sky> sky = dao::atmosphere::AreaOwnSky();
+    const bool running = sun && sky && g_wanted && g_outdoors && g_clockOn;
+    const bool had = g_hourLight.has_value();
+    g_hourLight = sun && sky ? daynight::Now(*sun, *sky, running, Tuned("DayMinutes").value_or(kDayMinutes),
+                                             Tuned("Night").value_or(kNight), Tuned("NightFill").value_or(kNightFill))
+                             : std::nullopt;
+    if (had != g_hourLight.has_value())
+    {
+        spdlog::info("day and night: {}", g_hourLight ? "the hour's light" : "the area's own light");
+    }
+}
 } // namespace
 
 void Poll()
 {
+    KeepHour();
+    // The hour's light moves each frame: its air, its sky (the sky's disc is
+    // placed as the sky is set) and its sun with it.
+    if (g_hourLight)
+    {
+        KeepAir();
+        KeepSky();
+        KeepSun();
+    }
     KeepHaze();
     if (++g_frames % kEvery != 0 && !g_lookNow)
     {
@@ -614,6 +689,7 @@ void Poll()
     WatchArea();
     KeepTune();
     KeepAir();
+    KeepSky();
     KeepSun();
     const bool outdoors = OutOfDoors();
     if (asked || g_seenOutdoors != outdoors)

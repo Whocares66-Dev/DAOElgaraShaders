@@ -20,6 +20,7 @@
 #pragma once
 
 #include <array>
+#include <optional>
 #include <string_view>
 
 namespace outdoors
@@ -54,6 +55,10 @@ void Want(bool on);
 // moon and less by the area's fills (Improved lighting on the options screen).
 // Call on the game's thread.
 void WantSunlitFigures(bool on);
+
+// Whether the day and night run (DayNight.h): the options screen's Day / night
+// cycle. Call on the game's thread.
+void WantClock(bool on);
 
 // A number of the developer's tuning file, or `otherwise` where it has none.
 float Tune(std::string_view key, float otherwise);
