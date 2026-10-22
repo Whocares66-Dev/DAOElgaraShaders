@@ -1316,10 +1316,15 @@ def with_effect_lights_on_ground(shader):
     """Every effect's light on a surface whose shader reckons no point light
     of its own (the ground's: the engine gives terrain the sun alone, and an
     effect never lit it): effect_lights.hlsl's DaoEffectDiffuse added to the
-    light the surface scatters, `mad <sum>.xyz, <N.L>, <sun colour>, <the
-    vertex's light>`, with the normal the sun's facing is taken from (`dp3
-    <f>, <normal>, -<sun's way>`) and the point the sun's shadow is asked at
-    (with_our_shadow's). A shader without the three is left as it is."""
+    light the surface scatters, with the normal the sun's facing is taken
+    from (`dp3 <f>, <normal>, -<sun's way>`) and the point the sun's shadow
+    is asked at (with_our_shadow's). The sun's sum, `mad <sum>.xyz, <N.L>,
+    <sun colour>, <the vertex's light>`, is shaded after (`mad <lit>.xyz,
+    <sum>, <shadow>.w, <the lightmap's>`), and a fire's light added to it was
+    shaded by the moon's shadow: the pyre lit nothing in the shadow of the
+    wall beside it (the user, 2026-10-22: "Fire light isn't overcoming moon
+    shadow"). So it is reckoned where the sun's sum is and added to what the
+    shadow has been laid on. A shader without the four is left as it is."""
     lights = shader.parameters["g_vLightParams"]
     data = shader.parameters.get("g_vShadowData")
     if lights.size < 4 or data is None:
@@ -1333,16 +1338,29 @@ def with_effect_lights_on_ground(shader):
     except shader_hlsl.ShaderError:
         return
     sum_register = re.match(r"\S+ (r\d+)", shader.statements[total].asm).group(1)
+    shaded = next(
+        (
+            i
+            for i, st in enumerate(shader.statements)
+            if i > total
+            and re.match(rf"^mad(?:_pp)? (r\d+)\.xyz, {sum_register}, r\d+\.\w, r\d+", st.asm)
+        ),
+        None,
+    )
+    if shaded is None:
+        return
+    lit_register = re.match(r"\S+ (r\d+)", shader.statements[shaded].asm).group(1)
     normal = re.search(r", (r\d+), ", shader.statements[facing].asm).group(1)
     world = re.search(r"(v\d+),", shader.statements[side].asm).group(1)
     if facing > total:
         raise shader_hlsl.ShaderError("the sun's facing after the light it scatters")
+    shader.insert(shaded, [f"{lit_register}.xyz += daoGroundEffects;"])
     shader.insert(
         total,
-        [f"{sum_register}.xyz += DaoEffectDiffuse({world}.xyz, daoGroundNormal);"],
+        [f"const float3 daoGroundEffects = DaoEffectDiffuse({world}.xyz, daoGroundNormal);"],
     )
     shader.insert(facing - 1, [f"const float3 daoGroundNormal = {normal}.xyz;"])
-    EFFECT_LIT.append(("ground", 0, {sum_register: "xyz"}))
+    EFFECT_LIT.append(("ground", 0, {lit_register: "xyz"}))
 
 
 EFFECT_UNLIT = []
@@ -1831,6 +1849,40 @@ def with_baked_light(shader):
         read,
         [f"{register}.xyz = lerp({register}.xyz * DAO_BAKED_LIGHT, daoNightSky.yzw, daoNightSky.x);"],
     )
+
+
+# The water shaders, each with the input its light comes in by: the sky's sun
+# scattered (the vertex shader's TEXCOORD2, from mml_vSkyParams), which they
+# light it by in place of the sun's own colour, as N.L times it and, in
+# waterflowing0, a share of it as is. water0 is a lake's surface with its
+# highlight, water0nospec without, waterflowing0 a river's or a fall's, with
+# its foam (smpDecal) added on top of the light.
+WATERS = {"water0": "v1", "water0nospec": "v1", "waterflowing0": "v2"}
+
+
+def with_water_light(shader, stem):
+    """Water by the hour's light (water_light.hlsl): the sky's light it is lit
+    by, and a river's foam, as strong as the hour's light makes them, the
+    light as pale as the night's is (DayNight.h's Water). Both were the
+    sky's, never the moon's, and Redcliffe's falls stayed a lit cream at
+    01:00, as bright as at noon (the user, 2026-10-22: "should be a dimmer
+    white")."""
+    sky = WATERS[stem]
+    shader.insert(
+        -1,
+        [
+            f"{sky}.xyz = lerp(dot({sky}.xyz, float3(0.2126, 0.7152, 0.0722)).xxx, {sky}.xyz, daoWaterLight.y)"
+            " * daoWaterLight.x;"
+        ],
+    )
+    if "smpDecal" not in shader.parameters:
+        return
+    # waterflowing0.psh: two reads of the foam, summed, then added on.
+    decal = shader.parameters["smpDecal"].base
+    second = shader.find(rf"^texld r\d+, .*, s{decal}$", shader.find(rf"^texld r\d+, .*, s{decal}$") + 1)
+    summed = shader.find(r"^add r\d+\.\w+, r\d+\.\w+, r\d+\.\w+$", second + 1)
+    target = re.match(r"add (r\d+\.\w+),", shader.statements[summed].asm).group(1)
+    shader.insert(summed, [f"{target} *= daoWaterLight.x;"])
 
 
 # The depth-only pass the game draws a cut-out surface's depth with (a
@@ -2675,6 +2727,9 @@ def changes_for(stem, listing, show):
             + preamble
             + ours("effect_lights.hlsl")
         )
+    if stem in WATERS:
+        changes.append(lambda s: with_water_light(s, stem))
+        preamble += ours("water_light.hlsl")
     # The alpha clamped, last: whatever else wrote it.
     if stem in SUMMED_ALPHA:
         changes.append(with_alpha_clamped)

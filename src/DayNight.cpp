@@ -384,7 +384,15 @@ std::pair<Vec3, float> SunPathThrough(const Vec3 &level, float latitude)
 Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float night, float fill)
 {
     const dao::core::Sky daySky = SkyOf(own, pair.day);
-    const dao::core::Sky nightSky = SkyOf(own, pair.night);
+    dao::core::Sky nightSky = SkyOf(own, pair.night);
+    // The night's fog is the moon's light scattered, paled as that light
+    // is: its own deep blue was what a mist and a fall's spray fogged to,
+    // and they went blue as they were dimmed (the user, 2026-10-22: "we
+    // want it to be a less bright white, not blue").
+    const std::array<float, 3> fog = Paler({nightSky.fogRed, nightSky.fogGreen, nightSky.fogBlue}, kNightColour);
+    nightSky.fogRed = fog[0];
+    nightSky.fogGreen = fog[1];
+    nightSky.fogBlue = fog[2];
     const Vec3 levelSun{-pair.day.sun.direction[0], -pair.day.sun.direction[1], -pair.day.sun.direction[2]};
     const Vec3 midnight{-pair.night.sun.direction[0], -pair.night.sun.direction[1], -pair.night.sun.direction[2]};
     const float noonHeight = Height(levelSun); // the level's sun's, as an equinox's noon
@@ -465,6 +473,32 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
         channel = brightest > 0 ? channel / brightest : 1;
     }
     light.sky.moonAlpha = sunLights ? daySky.moonAlpha * SmoothStep(kOver, -kOver, sunHeight) : nightSky.moonAlpha * up;
+    // Water: the water shaders light it by the sky's sun, scattered (the
+    // sky's sun colour and intensity), where everything else has the sun's
+    // light. The night level's sky's sun is as strong as the day's and warm
+    // (0.60, 0.43, 0.40 at 14.5 against 0.74, 0.32, 0.14 at 17.4, logged
+    // 2026-10-22), and Redcliffe's falls stayed a lit cream at 01:00 (the
+    // user: "should be a dimmer white"). So its strength goes as the hour's
+    // light against the day level's, over the hour's sky's sun against the
+    // day sky's; its colour is paled as the night's light is.
+    const auto grey = [](float r, float g, float b) { return (0.2126F * r) + (0.7152F * g) + (0.0722F * b); };
+    const float skySun = grey(light.sky.sunRed, light.sky.sunGreen, light.sky.sunBlue) * light.sky.sunIntensity;
+    const float daySkySun = grey(daySky.sunRed, daySky.sunGreen, daySky.sunBlue) * daySky.sunIntensity;
+    const float daySun = grey(pair.day.sun.color[0], pair.day.sun.color[1], pair.day.sun.color[2]);
+    const float sun = grey(light.sun.color[0], light.sun.color[1], light.sun.color[2]);
+    // What is lit about, a spray or a mist, by the light on it from above:
+    // dimmed by the sky's light alone it was darker than the moonlit rock
+    // beside it (2026-10-22), where white water by the moon is a dimmer
+    // white.
+    std::array<float, 3> sky{};
+    for (std::size_t i = 0; i < sky.size(); ++i)
+    {
+        sky.at(i) = std::lerp(nightSkyLight.at(i), ownSkyLight.at(i), day);
+    }
+    const float ownLit = daySun + grey(ownSkyLight[0], ownSkyLight[1], ownSkyLight[2]);
+    light.lit = ownLit > 0 ? (sun + grey(sky[0], sky[1], sky[2])) / ownLit : 1;
+    light.water = {skySun > 0 && daySun > 0 ? (sun / daySun) * (daySkySun / skySun) : 1,
+                   std::lerp(1.0F, kNightColour, light.nightShare)};
     return light;
 }
 
@@ -496,6 +530,8 @@ std::set<std::wstring> g_asked;
 // the disc's colour (under g_lock), and the day level's sunlight lamps with
 // what they are multiplied by.
 std::array<std::atomic<float>, 3> g_baked{1.0F, 1.0F, 1.0F};
+std::array<std::atomic<float>, 2> g_water{1.0F, 1.0F};
+std::atomic<float> g_lit{1};
 std::atomic<float> g_nightShare{0};
 std::array<std::atomic<float>, 3> g_nightSky{0.0F, 0.0F, 0.0F};
 std::optional<std::array<float, 3>> g_disc;
@@ -515,6 +551,11 @@ void Stopped()
     {
         channel.store(1, std::memory_order_relaxed);
     }
+    for (std::atomic<float> &value : g_water)
+    {
+        value.store(1, std::memory_order_relaxed);
+    }
+    g_lit.store(1, std::memory_order_relaxed);
     g_nightShare.store(0, std::memory_order_relaxed);
     g_running.store(false, std::memory_order_relaxed);
     const std::scoped_lock lock(g_lock);
@@ -650,6 +691,9 @@ std::optional<Light> Now(const dao::core::Sunlight &ownSun, const dao::core::Sky
         g_layoutLightsBy.at(i).store(light.sunOverDay.at(i), std::memory_order_relaxed);
     }
     g_nightShare.store(light.nightShare, std::memory_order_relaxed);
+    g_water[0].store(light.water[0], std::memory_order_relaxed);
+    g_water[1].store(light.water[1], std::memory_order_relaxed);
+    g_lit.store(light.lit, std::memory_order_relaxed);
     for (std::size_t i = 0; i < 3; ++i)
     {
         g_nightSky.at(i).store(light.nightSky.at(i), std::memory_order_relaxed);
@@ -664,6 +708,16 @@ std::array<float, 3> Baked()
 {
     return {g_baked[0].load(std::memory_order_relaxed), g_baked[1].load(std::memory_order_relaxed),
             g_baked[2].load(std::memory_order_relaxed)};
+}
+
+std::array<float, 2> Water()
+{
+    return {g_water[0].load(std::memory_order_relaxed), g_water[1].load(std::memory_order_relaxed)};
+}
+
+float Lit()
+{
+    return g_lit.load(std::memory_order_relaxed);
 }
 
 std::optional<std::array<float, 3>> Disc()

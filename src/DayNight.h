@@ -59,6 +59,8 @@ struct Light
     std::array<float, 3> disc{1, 1, 1}; // the sun's hue through the air, the moon's white
     float nightShare = 0;               // how far the hour is from the day's bake to the night sky's light
     std::array<float, 3> nightSky{};    // the night sky's light, as the lightmaps keep light (night_sky.hlsl)
+    std::array<float, 2> water{1, 1};   // water's light over the level's own, and its colour kept (Water)
+    float lit = 1;                      // the light on what is lit about, over the level's own (Lit)
 };
 
 // Has the level's ambient colour, its lights and the figures' share of the
@@ -97,6 +99,19 @@ std::optional<Light> Now(const dao::core::Sunlight &ownSun, const dao::core::Sky
 // The sky light's multiplier as of the last Now, 1 where there is none. Any
 // thread.
 std::array<float, 3> Baked();
+
+// How bright the light on what is lit about is (a fall's spray, a mist,
+// smoke: effects.ini's `lit`), as of the last Now: the sun's or the moon's
+// and the sky's together, over the level's own sun's and sky's, as grey.
+// 1 where the clock is not running. Any thread.
+float Lit();
+
+// Water's light as of the last Now: how strong, over the level's own by day,
+// and how much of its colour is kept (as the night keeps of the moon's and
+// the sky's). Water is lit by the sky's sun scattered (water_light.hlsl),
+// not by the sun's own light, so the hour's light does not reach it by
+// itself. 1 and 1 where the clock is not running. Any thread.
+std::array<float, 2> Water();
 
 // The colour the sky's disc is drawn in (Light's disc), or none where the
 // clock is not running. Any thread.

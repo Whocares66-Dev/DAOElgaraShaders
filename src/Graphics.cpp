@@ -43,6 +43,7 @@
 #include "LevelShadows.h"
 #include "MaterialLearn.h"
 #include "MaterialPatch.h"
+#include "NightCubes.h"
 #include "Outdoors.h"
 #include "Probes.h"
 #include "ResourceDump.h"
@@ -184,6 +185,9 @@ constexpr std::size_t kBakedLight = 8;
 // kReceiverRegister).
 constexpr UINT kDiscRegister = 214;
 constexpr UINT kNightSkyRegister = 215; // night_sky.hlsl's daoNightSky
+// Water's light (water_light.hlsl's daoWaterLight), under the effects' lights':
+// the game's pixel shaders reach c55 at the most (their listings, 2026-10-22).
+constexpr UINT kWaterLightRegister = 159;
 // The air's light the sky, the clouds and the effects fog towards
 // (outdoors::Haze), in registers of their own below these (look.hlsl's
 // daoHaze): the sky's part and whether it is ours, the sun's part and its
@@ -859,6 +863,7 @@ void FramePresented(std::string_view by)
     }
     ++g_presented;
     levelshadows::Presented();
+    nightcubes::Presented();
     if (!g_levelHashes.empty())
     {
         NoteCostFrame();
@@ -1003,6 +1008,10 @@ void HandFills(IDirect3DDevice9 *device)
         night = {daynight::NightShare(), sky[0], sky[1], sky[2]};
     }
     device->SetPixelShaderConstantF(kNightSkyRegister, night.data(), 1);
+    // Water's on every target: no portrait or inventory scene has water.
+    const std::array<float, 2> water = daynight::Water();
+    const std::array<float, 4> waterLight{water[0], water[1], 0, 0};
+    device->SetPixelShaderConstantF(kWaterLightRegister, waterLight.data(), 1);
     std::array<float, 4> disc{};
     if (const std::optional<std::array<float, 3>> colour = g_drawsPicture ? daynight::Disc() : std::nullopt)
     {
@@ -1851,6 +1860,7 @@ extern "C" __declspec(dllexport) bool __cdecl DAOLib_Load(const dao::LoaderInfo 
     KeepLookRegisters();
     probes::Install();
     daynight::Install();
+    nightcubes::Install();
     effectlights::Install();
     if (!g_setPartitions.Attach(dao::addr::kShadowMaps_SetPartitions, &SetPartitions))
     {

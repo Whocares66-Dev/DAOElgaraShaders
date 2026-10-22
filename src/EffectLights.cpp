@@ -1,5 +1,7 @@
 #include "EffectLights.h"
 
+#include "DayNight.h"
+
 #include "dao/Addresses.h"
 #include "dao/Camera.h"
 #include "dao/ClientExoApp.h"
@@ -7,18 +9,27 @@
 #include "dao/Hook.h"
 #include "dao/Module.h"
 #include "dao/Objects.h"
+#include "dao/Vfx.h"
 
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cwctype>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <mutex>
+#include <sstream>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace effectlights
@@ -85,6 +96,72 @@ std::map<void *, std::array<std::uint32_t, 2>> g_ownMost;
 std::mutex g_readLock;
 std::array<float, kRegisterFloats> g_registers{};
 std::vector<std::array<float, 4>> g_handed;
+
+// The light of a fire whose model has none: Redcliffe's pyre is
+// fxe_fire_m_ns_p, played by a script on a placeable, and lit nothing at
+// night (the user, 2026-10-22), its glow by day being the level's bake. Its
+// lit twin, fxe_fire_m_d_p, has a point light, which the engine lights the
+// scene with; data/effects.ini gives a lightless fire the light of its twin,
+// by hand: `<model> = glow <red> <green> <blue> <reach> <height> ; ...`.
+struct FireLight
+{
+    std::array<float, 3> colour{};
+    float reach = 0;
+    float height = 0; // above the effect's place, its owner's origin
+};
+std::unordered_map<std::wstring, FireLight> g_fires; // by model name, lower case; read once, at Install
+
+// The effects that scatter the light about them (water, smoke, dust: LIT in
+// data/effects.ini), which take the sky's light as the hour has it. Their
+// sprites are drawn in their own colour, lit by nothing, and Redcliffe's
+// waterfalls shone white at midnight (the user, 2026-10-22: "Water is still
+// too bright"). By model name, lower case; read once, at Install.
+std::unordered_set<std::wstring> g_lit;
+
+std::wstring Lower(std::wstring_view text)
+{
+    std::wstring lower(text);
+    for (wchar_t &c : lower)
+    {
+        c = static_cast<wchar_t>(std::towlower(c));
+    }
+    return lower;
+}
+
+// The table's fires with a light and its LIT effects.
+std::unordered_map<std::wstring, FireLight> ReadTable(const std::filesystem::path &file,
+                                                      std::unordered_set<std::wstring> &lit)
+{
+    std::unordered_map<std::wstring, FireLight> fires;
+    std::ifstream in(file);
+    std::string line;
+    while (std::getline(in, line))
+    {
+        const std::size_t equals = line.find('=');
+        if (line.empty() || line[0] == ';' || equals == std::string::npos)
+        {
+            continue;
+        }
+        std::istringstream value(line.substr(equals + 1, line.find(';') - equals - 1));
+        std::string name = line.substr(0, equals);
+        std::erase_if(name, [](char c) { return std::isspace(static_cast<unsigned char>(c)) != 0; });
+        const std::wstring model = Lower(std::wstring(name.begin(), name.end()));
+        std::string kind;
+        FireLight fire;
+        value >> kind;
+        if (kind == "lit")
+        {
+            lit.insert(model);
+        }
+        else if (kind == "glow" &&
+                 value >> fire.colour[0] >> fire.colour[1] >> fire.colour[2] >> fire.reach >> fire.height &&
+                 fire.reach > 0)
+        {
+            fires[model] = fire;
+        }
+    }
+    return fires;
+}
 
 float FloatAt(const void *base, std::size_t offset)
 {
@@ -231,6 +308,20 @@ bool Install()
         spdlog::warn("effects' lights: a detour could not be placed; the engine chooses them as it does");
         return false;
     }
+    g_fires = ReadTable(dao::Module::OwnFolder() / "effects.ini", g_lit);
+    spdlog::info("effects' lights: {} lightless fires given a light and {} effects lit by the sky, by effects.ini",
+                 g_fires.size(), g_lit.size());
+    dao::vfx::OnEmitterColor([](dao::vfx::EmitterColor &emitter) {
+        if (!emitter.modelHasLight && g_lit.contains(Lower(emitter.model)))
+        {
+            // By how bright the light on it is, not its color: the night sky's deep
+            // blue turned the falls' white spray ink blue (the user, 2026-10-22).
+            const float bright = daynight::Lit();
+            emitter.color.r *= bright;
+            emitter.color.g *= bright;
+            emitter.color.b *= bright;
+        }
+    });
     return true;
 }
 
@@ -258,6 +349,21 @@ void Read()
             if (light.place[3] > 0 && std::max({light.colour[0], light.colour[1], light.colour[2]}) > 0)
             {
                 lights.push_back(light);
+            }
+        }
+        for (const dao::vfx::RunningEffect &effect :
+             g_fires.empty() ? std::vector<dao::vfx::RunningEffect>{} : dao::vfx::RunningEffects())
+        {
+            if (effect.modelHasLight || !effect.position)
+            {
+                continue;
+            }
+            const auto fire = g_fires.find(Lower(effect.model));
+            if (fire != g_fires.end())
+            {
+                const FireLight &f = fire->second;
+                lights.push_back({{effect.position->x, effect.position->y, effect.position->z + f.height, f.reach},
+                                  {f.colour[0], f.colour[1], f.colour[2], 1}});
             }
         }
     }

@@ -122,6 +122,7 @@ add_daolib_plugin(
         src/ResourceDump.cpp
         src/Outdoors.cpp
         src/DayNight.cpp
+        src/NightCubes.cpp
         src/ProbeBaker.cpp
         src/Probes.cpp
         src/EffectLights.cpp
@@ -132,6 +133,18 @@ add_daolib_plugin(
 )
 target_link_libraries(elgarashaders PRIVATE elgara_materials)
 dao_apply_warnings(elgarashaders)
+# The effects' table (data/effects.ini, tools/effect_list.py), read as the
+# plugin starts: the lights it gives fires that have none, and the effects
+# it dims at night.
+add_custom_command(
+    TARGET elgarashaders
+    POST_BUILD
+    COMMAND
+        "${CMAKE_COMMAND}" -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/data/effects.ini"
+        "$<TARGET_FILE_DIR:elgarashaders>/effects.ini"
+    VERBATIM
+)
 
 # The plugin's baker of light probes as a command of its own: a level baked
 # with no game running, to look at what it makes and how long it takes.
