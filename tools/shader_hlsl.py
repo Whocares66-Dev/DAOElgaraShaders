@@ -298,7 +298,7 @@ class Shader:
                 while f"c{int(number) + count}" in self.definitions:
                     count += 1
                 self._tables[register] = count
-                return f"{register}_table[{relative}]", COMPONENTS
+                return f"{register}_table({relative})", COMPONENTS
             found = self._registers.get("c", {}).get(int(number))
             if found is None:
                 raise ShaderError(f"{register} is neither defined nor a parameter's")
@@ -525,6 +525,18 @@ class Shader:
         out.append("};")
         if preamble:
             out.append(preamble)
+        # A table the address register indexes, as a choice of its rows by the
+        # index: as an array of the defined constants, inside main or out,
+        # fxc 10.0.22621 packed it into fewer components than are read (the
+        # leaf cards' corner offsets, c60[a0.x].yz, were read as .x and .x,
+        # and a tree's leaves were lost: 2026-10-22).
+        for register, count in self._tables.items():
+            first = int(register[1:])
+            rows = [f"float4({', '.join(self.definitions[f'c{first + i}'])})" for i in range(count)]
+            chosen = rows[-1]
+            for i in range(count - 2, -1, -1):
+                chosen = f"(i == {i} ? {rows[i]} : {chosen})"
+            out.append(f"float4 {register}_table(int i) {{ return {chosen}; }}")
         out.append("Output main(Input input)")
         out.append("{")
         for register in sorted({r for _, _, _, r, _ in self.inputs}):
@@ -541,9 +553,6 @@ class Shader:
             out.append("    int4 a0 = 0;")
         for register, numbers in self.definitions.items():
             out.append(f"    const float4 {register} = float4({', '.join(numbers)});")
-        for register, count in self._tables.items():
-            rows = ", ".join(f"c{int(register[1:]) + i}" for i in range(count))
-            out.append(f"    const float4 {register}_table[{count}] = {{{rows}}};")
         for statement in self.statements:
             comment = f"  // {statement.asm}" if statement.asm else ""
             out.append(f"    {'    ' * statement.depth}{statement.hlsl}{comment}")

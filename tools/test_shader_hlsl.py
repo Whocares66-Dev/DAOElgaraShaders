@@ -229,10 +229,14 @@ class VertexShaderTest(unittest.TestCase):
         hlsl = shader.render()
         self.assertEqual(
             shader.statements[shader.find("c60")].hlsl,
-            "o0 = v0.xyzw + c60_table[a0.x].xyzw;",
+            "o0 = v0.xyzw + c60_table(a0.x).xyzw;",
         )
-        # c60 and c61, which follows it; c63 does not.
-        self.assertIn("const float4 c60_table[2] = {c60, c61};", hlsl)
+        # c60 and c61, which follows it; c63 does not. Chosen by the index,
+        # not an array, which fxc packed into fewer components than are read.
+        self.assertIn(
+            "float4 c60_table(int i) { return (i == 0 ? float4(0, 0.5, 0.5, 6) : float4(0, -0.5, 0.5, 4)); }",
+            hlsl,
+        )
 
     def test_a_row_of_a_matrix_in_an_array(self):
         at = self.shader.find("c206")
