@@ -6,7 +6,7 @@ nav_order: 0
 
 # Elgara Shaders
 
-Better materials, shadows and anti-aliasing for Dragon Age: Origins.
+Better materials, lighting, day/night cycles, and anti-aliasing for Dragon Age: Origins.
 
 ![Cailan's armor, vanilla and Elgara Shaders]({{ "/assets/img/cailan.jpg" | relative_url }}){: .screenshot loading="lazy"}
 

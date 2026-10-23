@@ -23,4 +23,4 @@ Then open `http://127.0.0.1:4000/DAOElgaraShaders/`. Every version, as the site 
 | Picture | From |
 |---|---|
 | `cailan.jpg`, `blooddragon.jpg`, `runic.jpg` | one save and one photo cam pose each, a launch of vanilla (no plugin) and one with every option on; cropped about the figure, side by side |
-| `video-tab.png` | the options screen's Video tab, its Elgara Shaders section cropped |
+| `video-tab.png` | the options screen's Video tab, its Elgara Shaders section cropped, every option at its default (2026-10-22, master at 1cb75a8, 1680 x 1050) |

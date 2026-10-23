@@ -5,10 +5,6 @@ nav_order: 3
 
 # Comparisons
 
-## Day and night in Redcliffe
-
-![Redcliffe by day and by night]({{ "/assets/img/daynight.jpg" | relative_url }}){: .screenshot loading="lazy"}
-
 ## Cailan's armor
 
 ![Cailan's armor, vanilla and Elgara Shaders]({{ "/assets/img/cailan.jpg" | relative_url }}){: .screenshot loading="lazy"}
@@ -20,3 +16,7 @@ nav_order: 3
 ## Grey Warden runic armor (mod)
 
 ![Grey Warden runic armor, vanilla and Elgara Shaders]({{ "/assets/img/runic.jpg" | relative_url }}){: .screenshot loading="lazy"}
+
+## Day and night in Redcliffe
+
+![Redcliffe by day and by night]({{ "/assets/img/daynight.jpg" | relative_url }}){: .screenshot loading="lazy"}

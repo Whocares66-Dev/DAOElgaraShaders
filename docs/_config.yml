@@ -2,7 +2,7 @@
 # Its pages are index.md and the pages beside it, written by hand; its pictures are the game's own
 # frames (assets/img, README.md).
 title: Elgara Shaders
-description: Better materials, shadows and anti-aliasing for Dragon Age Origins, a DAOLib plugin.
+description: Better materials, lighting, day/night cycles, and anti-aliasing for Dragon Age Origins, a DAOLib plugin.
 url: https://whocares66-dev.github.io
 baseurl: /DAOElgaraShaders
 remote_theme: just-the-docs/just-the-docs@v0.12.0
