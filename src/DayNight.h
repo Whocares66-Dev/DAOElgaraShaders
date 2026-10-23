@@ -47,6 +47,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace daynight
 {
@@ -98,6 +99,18 @@ float Hour();
 // `fires` say (torch, fire). Those keep their light by night, and the plugin
 // lights by them itself (EffectLights.cpp). Any thread, once Install has run.
 bool FireLamp(std::wstring_view model, std::wstring_view name);
+
+// A lamp of the area's level its file moves (its `move_lamp` keys): from where
+// the level puts it to where its light is to be, metres in the world.
+struct LampMove
+{
+    std::array<float, 3> from{};
+    std::array<float, 3> to{};
+};
+
+// The lamps the area the clock last ran in moves, none where it is not
+// running. Any thread.
+std::vector<LampMove> LampMoves();
 
 // The night level a day level of the cycle takes its night from, or empty
 // where the clock does not run in it. Any thread.

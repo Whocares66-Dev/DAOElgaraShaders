@@ -19,6 +19,8 @@
 // set at 0x00462210) made 0.
 #pragma once
 
+#include <filesystem>
+
 #include <d3d9.h>
 
 #include <array>
@@ -40,6 +42,10 @@ void Want(bool on);
 // Whether the level's lamps named as fires are lit by the plugin in place of
 // the engine (daynight::FireLamp): the game thread's word, with Want's.
 void WantLamps(bool on);
+
+// Says a level was opened (`levelRim` its archive of rooms): its lamps named
+// as fires are read from its layouts, off the calling thread. Any thread.
+void LevelOpened(const std::filesystem::path &levelRim);
 
 // Reads the lights of the area's effects as the engine would hand them to a
 // shader. For dao::OnFrame.

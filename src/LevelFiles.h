@@ -61,6 +61,7 @@ inline constexpr float kCubeMost = 64.0F;
 // And for what it says of a lamp, and a model's tree of a mesh's material.
 inline constexpr std::uint32_t kMaterial = 6001;   // MMHMaterialObject
 inline constexpr std::uint32_t kMeshChunk = 6006;  // the chunk of the mesh file a node draws
+inline constexpr std::uint32_t kNodeName = 6000;   // MMHName
 inline constexpr std::uint32_t kLampColour = 6007; // MMHNodePointLightColor
 inline constexpr std::uint32_t kLampReach = 6008;  // MMHNodePointLightRadius
 
@@ -242,7 +243,8 @@ struct Lamp
 {
     core::Point at{}; // in the level's space
     probes::Colour colour{};
-    float reach = 0; // metres: its light is nothing from there on
+    float reach = 0;   // metres: its light is nothing from there on
+    std::wstring name; // its node's, as the layout names it
     // Nothing for a lamp of the level's own, whose light falls off as the
     // engine's does. For a light of ours, a flame, the size in metres of
     // what burns, taken as a soft ball of light: the light falls off as the
@@ -948,6 +950,7 @@ inline void LampsUnder(const core::gff4::Struct &node, std::size_t deep, std::ve
             std::copy_n(colour.begin(), 3, lamp.colour.begin());
         }
         lamp.reach = child.Get<float>(kLampReach).value_or(0.0F);
+        lamp.name = child.String(kNodeName).value_or(L"");
         for (const core::gff4::Struct &part : child.Structs(kChildren))
         {
             if (part.Label() == "trsl")

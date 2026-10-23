@@ -1,6 +1,7 @@
 #include "EffectLights.h"
 
 #include "DayNight.h"
+#include "LevelFiles.h"
 
 #include "dao/Addresses.h"
 #include "dao/Camera.h"
@@ -26,8 +27,11 @@
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <map>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -275,42 +279,144 @@ Light LightOf(const void *node)
     return light;
 }
 
-// The level's lamps named as fires (daynight::FireLamp), as they were last
-// seen lighting an object: lit by the plugin, each pixel, as an effect's
-// light is, in place of the engine's. The engine gives a level's lamps to the
-// objects it chooses them for and reckons them by the vertex, inside the sum
-// the sun's shadow is laid on: Lothering's bonfire (fire_big_001_RT, 12 m)
-// lit the ground in a pool cut off where a hill's shadow from the moon lay
-// and at the meshes it was not chosen for (the user, 2026-10-23: "fire light
-// seems to stop on some textures?", "the fire should be overriding the
-// shadows"). Kept by value: a lamp's node is read only while the engine hands
-// it, and what was not seen lately, or was of another scene, is let go.
-struct Lamp
-{
-    Light light;
-    std::chrono::steady_clock::time_point seen;
-};
+// The level's lamps named as fires (daynight::FireLamp), lit by the plugin,
+// each pixel, as an effect's light is, in place of the engine's. The engine
+// gives a level's lamps to the objects it chooses them for and reckons them
+// by the vertex, inside the sum the sun's shadow is laid on: Lothering's
+// bonfire (fire_big_001_RT, 12 m) lit the ground in a pool cut off where a
+// hill's shadow from the moon lay and at the meshes it was not chosen for
+// (the user, 2026-10-23: "fire light seems to stop on some textures?", "the
+// fire should be overriding the shadows"). They are read from the level's
+// layouts as it is opened, every one: taken from the engine as it handed
+// them, Redcliffe castle's torches were lit only once near, the engine
+// handing a lamp for the objects about the camera alone ("torches don't
+// emit light from a distance ... but they do when closer").
 std::atomic<bool> g_lampsWanted{false};
 std::mutex g_lampLock;
-std::unordered_map<std::uintptr_t, Lamp> g_lamps; // by node, under g_lampLock
-void *g_lampScene = nullptr;                      // the scene they were seen in, the game thread's
-constexpr std::chrono::milliseconds kLampKept{2000};
+// Each level's, by its name, and the level whose layout lights the engine
+// last handed: the one the player is in. Under g_lampLock.
+std::map<std::wstring, std::shared_ptr<const std::vector<Light>>> g_levelLamps;
+std::wstring g_lampLevel;
+std::vector<std::future<void>> g_lampReads; // the loading thread's
 
-// The lamps seen lately in `scene` added to `lights`; those of another
-// scene, or not seen lately, let go.
-void AddLamps(void *scene, std::vector<Light> &lights)
+// How near a lamp must be to the place an area's file names for it, metres:
+// a lamp is named by where the level puts it, read to a tenth.
+constexpr float kLampMatch = 0.5F;
+// How near a flame must be to where a lamp is moved for the lamp to light it:
+// the lamp is put a little out of its lantern (Lothering's, half a metre).
+constexpr float kLampNear = 1.0F;
+
+bool Near(const std::array<float, 3> &a, const std::array<float, 3> &b, float within)
 {
-    const std::scoped_lock lock(g_lampLock);
-    if (scene != g_lampScene || !g_lampsWanted.load(std::memory_order_relaxed))
+    const float x = a[0] - b[0];
+    const float y = a[1] - b[1];
+    const float z = a[2] - b[2];
+    return (x * x) + (y * y) + (z * z) < within * within;
+}
+
+// The lamps named as fires in every layout of a level, in the world.
+std::vector<Light> ReadLamps(const std::filesystem::path &levelRim)
+{
+    std::vector<Light> lamps;
+    std::optional<levelfiles::Archive> rooms = levelfiles::Archive::Open(levelRim);
+    if (!rooms)
     {
-        g_lamps.clear();
-        g_lampScene = scene;
+        return lamps;
     }
-    const auto now = std::chrono::steady_clock::now();
-    std::erase_if(g_lamps, [&](const auto &lamp) { return now - lamp.second.seen > kLampKept; });
-    for (const auto &[node, lamp] : g_lamps)
+    const std::wstring name = Lower(levelRim.stem().wstring());
+    levelfiles::Level level(levelRim.parent_path(), name, std::move(*rooms), nullptr, nullptr);
+    for (const std::wstring &room : level.Rooms())
     {
-        lights.push_back(lamp.light);
+        std::wstring layout = name;
+        layout += L"_";
+        layout += room;
+        layout += L"_ll";
+        for (const levelfiles::Lamp &lamp : level.LampsOf(room))
+        {
+            if (lamp.reach > 0 && daynight::FireLamp(layout, lamp.name))
+            {
+                lamps.push_back({{lamp.at[0], lamp.at[1], lamp.at[2], lamp.reach},
+                                 {lamp.colour[0], lamp.colour[1], lamp.colour[2], 1}});
+            }
+        }
+    }
+    return lamps;
+}
+
+// A level's lamps read and kept, off the loading thread.
+void KeepLamps(const std::filesystem::path &levelRim, const std::wstring &level)
+{
+    auto lamps = std::make_shared<const std::vector<Light>>(ReadLamps(levelRim));
+    spdlog::info("effects' lights: {} lamps named as fires in {}'s layouts", lamps->size(),
+                 std::filesystem::path(level).string());
+    const std::scoped_lock lock(g_lampLock);
+    g_levelLamps[level] = std::move(lamps);
+}
+
+// The lamps of the level the player is in added to `lights`, each where the
+// area's file moves it.
+void AddLamps(std::vector<Light> &lights)
+{
+    if (!g_lampsWanted.load(std::memory_order_relaxed))
+    {
+        return;
+    }
+    std::shared_ptr<const std::vector<Light>> lamps;
+    {
+        const std::scoped_lock lock(g_lampLock);
+        if (const auto found = g_levelLamps.find(g_lampLevel); found != g_levelLamps.end())
+        {
+            lamps = found->second;
+        }
+    }
+    if (!lamps)
+    {
+        return;
+    }
+    const std::vector<daynight::LampMove> moves = daynight::LampMoves();
+    for (Light lamp : *lamps)
+    {
+        // Where the area's file moves it: Lothering's Dane's Refuge lamp is
+        // put 3.2 m from its lantern, and lit each pixel its pool lay beside
+        // the lantern (the user, 2026-10-23: "lamp light seems off center").
+        for (const daynight::LampMove &move : moves)
+        {
+            if (Near({lamp.place[0], lamp.place[1], lamp.place[2]}, move.from, kLampMatch))
+            {
+                lamp.place = {move.to[0], move.to[1], move.to[2], lamp.place[3]};
+            }
+        }
+        lights.push_back(lamp);
+    }
+}
+
+// The lightless fires effects.ini gives a light, each at its effect's place.
+void AddFires(std::vector<Light> &lights)
+{
+    if (g_fires.empty())
+    {
+        return;
+    }
+    const std::vector<daynight::LampMove> moves = daynight::LampMoves();
+    for (const dao::vfx::RunningEffect &effect : dao::vfx::RunningEffects())
+    {
+        if (effect.modelHasLight || !effect.position)
+        {
+            continue;
+        }
+        // A flame a lamp is moved onto is lit by the lamp: one light, the
+        // level makers'.
+        const std::array<float, 3> at{effect.position->x, effect.position->y, effect.position->z};
+        if (std::ranges::any_of(moves, [&](const daynight::LampMove &move) { return Near(at, move.to, kLampNear); }))
+        {
+            continue;
+        }
+        const auto fire = g_fires.find(Lower(effect.model));
+        if (fire != g_fires.end())
+        {
+            const FireLight &f = fire->second;
+            lights.push_back({{at[0], at[1], at[2] + f.height, f.reach}, {f.colour[0], f.colour[1], f.colour[2], 1}});
+        }
     }
 }
 
@@ -353,27 +459,27 @@ bool Install()
     spdlog::info("effects' lights: {} lightless fires given a light and {} effects lit by the sky, by effects.ini",
                  g_fires.size(), g_lit.size());
     dao::lights::OnPointLight([](dao::lights::PointLight &light) {
-        if (!g_wanted.load(std::memory_order_relaxed) || !g_lampsWanted.load(std::memory_order_relaxed) ||
-            !daynight::FireLamp(light.model, light.name))
+        if (!g_wanted.load(std::memory_order_relaxed) || !g_lampsWanted.load(std::memory_order_relaxed))
         {
             return;
         }
-        const Light lamp = LightOf(reinterpret_cast<const void *>(light.node));
-        light.color = {0, 0, 0, light.color[3]};
-        // Handed before its place is: at the world's origin with no reach, as the area comes in.
-        if (lamp.place[3] <= 0)
-        {
-            return;
-        }
+        // A room's layout (<level>_<x>_<y>_<d>_ll): the level the player is in.
+        const std::wstring model = Lower(light.model);
+        if (const std::size_t end = model.find(L'_'); end != std::wstring::npos && model.ends_with(L"_ll"))
         {
             const std::scoped_lock lock(g_lampLock);
-            if (!g_lamps.contains(light.node))
+            if (model.substr(0, end) != g_lampLevel)
             {
-                spdlog::info("effects' lights: the lamp {} lit as an effect's light, at {:.1f} {:.1f} {:.1f}, {:.1f} m",
-                             std::filesystem::path(light.name).string(), lamp.place[0], lamp.place[1], lamp.place[2],
-                             lamp.place[3]);
+                g_lampLevel = model.substr(0, end);
+                const auto found = g_levelLamps.find(g_lampLevel);
+                spdlog::info("effects' lights: in {}, {} of its lamps lit by the plugin",
+                             std::filesystem::path(g_lampLevel).string(),
+                             found != g_levelLamps.end() ? found->second->size() : 0);
             }
-            g_lamps[light.node] = {lamp, std::chrono::steady_clock::now()};
+        }
+        if (daynight::FireLamp(light.model, light.name))
+        {
+            light.color = {0, 0, 0, light.color[3]};
         }
     });
     dao::vfx::OnEmitterColor([](dao::vfx::EmitterColor &emitter) {
@@ -388,6 +494,23 @@ bool Install()
         }
     });
     return true;
+}
+
+void LevelOpened(const std::filesystem::path &levelRim)
+{
+    const std::wstring level = Lower(levelRim.stem().wstring());
+    {
+        const std::scoped_lock lock(g_lampLock);
+        if (g_levelLamps.contains(level))
+        {
+            return;
+        }
+        g_levelLamps[level] = std::make_shared<const std::vector<Light>>();
+        std::erase_if(g_lampReads, [](const std::future<void> &read) {
+            return read.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+        });
+        g_lampReads.push_back(std::async(std::launch::async, KeepLamps, levelRim, level));
+    }
 }
 
 void WantLamps(bool on)
@@ -421,22 +544,8 @@ void Read()
                 lights.push_back(light);
             }
         }
-        AddLamps(scene, lights);
-        for (const dao::vfx::RunningEffect &effect :
-             g_fires.empty() ? std::vector<dao::vfx::RunningEffect>{} : dao::vfx::RunningEffects())
-        {
-            if (effect.modelHasLight || !effect.position)
-            {
-                continue;
-            }
-            const auto fire = g_fires.find(Lower(effect.model));
-            if (fire != g_fires.end())
-            {
-                const FireLight &f = fire->second;
-                lights.push_back({{effect.position->x, effect.position->y, effect.position->z + f.height, f.reach},
-                                  {f.colour[0], f.colour[1], f.colour[2], 1}});
-            }
-        }
+        AddLamps(lights);
+        AddFires(lights);
     }
     // More than the shaders take: the nearest the camera.
     if (lights.size() > kMostLights)

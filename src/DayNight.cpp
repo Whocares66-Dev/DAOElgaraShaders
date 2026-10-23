@@ -90,12 +90,13 @@ struct Pair
 {
     LevelLight day;
     LevelLight night;
-    std::wstring area;     // the area the clock runs in (its area's file)
-    Vec3 midnight{};       // the way to the moon at midnight (its area's file)
-    float latitude = 0;    // radians (its area's file)
-    float declination = 0; // the sun's, radians (its area's file)
-    float noon = 0;        // the hour the sun is highest (its area's file)
-    float nightFill = 0;   // the share of the night sky's light kept by night (its area's file)
+    std::wstring area;               // the area the clock runs in (its area's file)
+    Vec3 midnight{};                 // the way to the moon at midnight (its area's file)
+    float latitude = 0;              // radians (its area's file)
+    float declination = 0;           // the sun's, radians (its area's file)
+    float noon = 0;                  // the hour the sun is highest (its area's file)
+    float nightFill = 0;             // the share of the night sky's light kept by night (its area's file)
+    std::vector<LampMove> lampMoves; // its file's `move_lamp`s
 };
 
 std::wstring Lower(std::wstring text)
@@ -347,6 +348,7 @@ struct Cycled
     float declination = 0;
     float noon = 0;
     float nightFill = 0;
+    std::vector<LampMove> lampMoves;
 };
 // The sun's and the moon's radius as seen, radians: a body is gone when its
 // disc is.
@@ -551,6 +553,7 @@ std::atomic<float> g_lit{1};
 std::atomic<float> g_nightShare{0};
 std::array<std::atomic<float>, 3> g_nightSky{0.0F, 0.0F, 0.0F};
 std::optional<std::array<float, 3>> g_disc;
+std::vector<LampMove> g_lampMoves;  // the running area's, under g_lock
 std::atomic<bool> g_running{false}; // the clock runs in a level with a night
 std::array<std::atomic<float>, 3> g_layoutLightsBy{1.0F, 1.0F, 1.0F};
 
@@ -576,6 +579,7 @@ void Stopped()
     g_running.store(false, std::memory_order_relaxed);
     const std::scoped_lock lock(g_lock);
     g_disc.reset();
+    g_lampMoves.clear();
 }
 
 // A line's text without its comment and the spaces about it.
@@ -624,6 +628,25 @@ Keys ReadKeys(const std::filesystem::path &file)
         }
     }
     return keys;
+}
+
+// An area's `move_lamp<anything> = x y z > x y z`: a lamp the level puts at
+// the first place lit at the second.
+std::vector<LampMove> LampMovesOf(const Keys &keys)
+{
+    std::vector<LampMove> moves;
+    for (const auto &[key, value] : keys)
+    {
+        std::istringstream in(value);
+        LampMove move;
+        char to = 0;
+        if (key.starts_with("move_lamp") && in >> move.from[0] >> move.from[1] >> move.from[2] >> to && to == '>' &&
+            in >> move.to[0] >> move.to[1] >> move.to[2])
+        {
+            moves.push_back(move);
+        }
+    }
+    return moves;
 }
 
 Table ReadTable(const std::filesystem::path &folder)
@@ -685,6 +708,7 @@ Table ReadTable(const std::filesystem::path &folder)
             continue;
         }
         area.nightFill = *nightFill;
+        area.lampMoves = LampMovesOf(keys);
         area.declination = *declination;
         area.noon = *noon;
         area.moonHeight = Number(said("moon_height").value_or(""));
@@ -701,6 +725,12 @@ Table ReadTable(const std::filesystem::path &folder)
 }
 
 } // namespace
+
+std::vector<LampMove> LampMoves()
+{
+    const std::scoped_lock lock(g_lock);
+    return g_lampMoves;
+}
 
 bool FireLamp(std::wstring_view model, std::wstring_view name)
 {
@@ -773,6 +803,7 @@ void Opened(const std::filesystem::path &levelRim)
         pair->declination = cycled.declination * kDegree;
         pair->noon = cycled.noon;
         pair->nightFill = cycled.nightFill;
+        pair->lampMoves = cycled.lampMoves;
         {
             const Vec3 own{-pair->night.sun.direction[0], -pair->night.sun.direction[1], -pair->night.sun.direction[2]};
             const float round = std::atan2(own[1], own[0]) + (cycled.moonTurn * kDegree);
@@ -876,6 +907,7 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
     g_running.store(true, std::memory_order_relaxed);
     const std::scoped_lock lock(g_lock);
     g_disc = light.disc;
+    g_lampMoves = pair->lampMoves;
     return light;
 }
 

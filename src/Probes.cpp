@@ -1,6 +1,7 @@
 #include "Probes.h"
 
 #include "DayNight.h"
+#include "EffectLights.h"
 #include "GameFolder.h"
 #include "LevelShadows.h"
 #include "ProbeBaker.h"
@@ -364,6 +365,7 @@ std::uintptr_t __fastcall OpenArchive(void *self, int unused, const dao::core::W
         {
             probebaker::Want(GameFolder() / "packages" / "core" / "env" / file);
             daynight::Opened(GameFolder() / "packages" / "core" / "env" / file);
+            effectlights::LevelOpened(GameFolder() / "packages" / "core" / "env" / file);
             levelshadows::Forget();
         }
     }
