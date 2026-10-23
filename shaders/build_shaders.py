@@ -165,24 +165,28 @@ def with_our_shadow(shader):
     choice = shader.find(r"^cmp r\d+\.[xyzw], -", taps[-1])
     lit = re.match(r"cmp (r\d+\.[xyzw]),", shader.statements[choice].asm).group(1)
     shader.add_input("pixel", "float2", "VPOS")
+    shader.insert(
+        choice,
+        [
+            f"if (DAO_SHADOWS > 0) {lit} = daoSunLit;",
+            f"daoSunShadow = {lit};",
+        ],
+    )
     # Looked up first, behind a branch of its own, and only its answer kept:
     # at the game's own choice a branch holds all the game has live there
     # beside the lookup's own, more than 32 registers (fxc's X4505), and run
     # on every pixel the lookup cost its whole price with the option off
-    # (2026-10-22).
+    # (2026-10-22). Put in after the answer's place: put in first, it moved
+    # the choice found three statements on, the answer went in before the
+    # game's own choice of its maps, and that choice took the game's far map
+    # back away from the party, its shadows hard blocks out of place (the
+    # user, 2026-10-22).
     shader.insert(
         -1,
         [
             f"DaoTakeSlopes({world}.xyz);",
             "float daoSunLit = 1;",
             f"[branch] if (DAO_SHADOWS > 0) daoSunLit = DaoShadow({world}.xyz, input.pixel);",
-        ],
-    )
-    shader.insert(
-        choice,
-        [
-            f"if (DAO_SHADOWS > 0) {lit} = daoSunLit;",
-            f"daoSunShadow = {lit};",
         ],
     )
     with_shadow_show(shader)
