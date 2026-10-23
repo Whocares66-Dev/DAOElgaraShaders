@@ -1,6 +1,7 @@
 #include "DayNight.h"
 
 #include "dao/Lights.h"
+#include "dao/Module.h"
 #include "dao/core/Erf.h"
 #include "dao/core/Gff4.h"
 
@@ -9,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -24,6 +26,7 @@
 #include <numbers>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -87,9 +90,11 @@ struct Pair
 {
     LevelLight day;
     LevelLight night;
-    std::wstring_view area; // the area the clock runs in (kCycled)
-    Vec3 midnight{};        // the way to the moon at midnight (kCycled)
-    float latitude = 0;     // radians (kCycled)
+    std::wstring area;     // the area the clock runs in (daynight.ini)
+    Vec3 midnight{};       // the way to the moon at midnight (daynight.ini)
+    float latitude = 0;    // radians (daynight.ini)
+    float declination = 0; // the sun's, radians (daynight.ini)
+    float noon = 0;        // the hour the sun is highest (daynight.ini)
 };
 
 std::wstring Lower(std::wstring text)
@@ -327,65 +332,20 @@ constexpr float kDayFrom = 6 * kDegree;
 // The sun's height under the horizon at which the moon is the engine's sun at
 // its whole: the end of civil twilight.
 constexpr float kMoonFrom = -6 * kDegree;
-// The sun's declination: an early summer's. The day level's noon sun (38
-// degrees up) gives the latitude as an equinox's noon (52 degrees), and an
-// equinox's sun set at 18:00: at 19:00 it was 9 degrees under, the level in
-// deep dusk, "way too dark for 7:00 PM" (the user, 2026-10-22, who chose
-// summer days). At 18 degrees it rises about 04:20, sets about 19:40 and
-// dusk lasts until about 20:30; at noon it is 56 degrees up, higher than the
-// day level's.
-constexpr float kSunDeclination = 18 * kDegree;
-// The hour the sun is highest: a summer's clock, an hour on from the sun's
-// (as clocks keep summer time). At noon it rose about 04:20, and at 4:00 the
-// morning was light already (the user, 2026-10-22: "sun rises too early");
-// at 13:00 it rises about 05:20 and sets about 20:40.
-constexpr float kSolarNoon = 13;
-// The day levels the clock runs in (Opened), the night level each takes its
-// moon, sky and sky's light from, and the one area of the level it runs in.
-// A level is the ground of several areas, and the story has its own times in
-// the others: lak100d is the village (arl100ar) and the climax's and the
-// epilogue's Redcliffe (cli100ar, epi200ar), lak200d the castle's courtyard
-// (arl200ar) and the climax's (cli150ar) (ghilana, 2026-10-22; the user,
-// 2026-10-22: "certain areas / times should not change for story reasons").
-// The castle has no night level: it takes the village's, the same valley a
-// walk away (issue 35). The courtyard is reached only after the village's
-// night battle.
-//
-// The moon at midnight is the night level's unless a level says where it is
-// (degrees up, and degrees about the upright from the night level's). The
-// village's moon, 28 degrees up, stands behind the castle's keep, and the
-// courtyard was all in its shadow, 2 of 255 at midnight; at 65 degrees from
-// the other side the keep's front, the yard and the gate's lane are lit,
-// 31 (tried at 28, 50 and 70 degrees, turned 0, 90 and 180, 2026-10-22). The
-// two are areas apart, a load between them, and each keeps its own (the
-// user, 2026-10-22: "make them separate").
-//
-// The latitude is the one at which the day level's sun would be an
-// equinox's noon, or another level's where one is named: the castle's sun,
-// 45 degrees up, gave it 45 degrees and the village's, 38 up, 52, and at one
-// hour the sun stood apart in the two, the castle's setting about 20:15 and
-// the village's about 20:40. The castle takes the village's (the user,
-// 2026-10-22: "match up the time based on the elevation of the Sun"): the sun
-// is as high in both at every hour, and each level's own sun at the hour it
-// is that high.
+// An area the clock runs in, as data/daynight.ini says it (its comments say
+// why each is as it is). Angles in degrees.
 struct Cycled
 {
-    std::wstring_view day;
-    std::wstring_view night;
-    std::wstring_view area;
-    float moonHeight = 0;         // degrees; 0 for the night level's own
-    float moonTurn = 0;           // degrees
-    std::wstring_view latitudeOf; // the level whose sun gives the latitude; empty for the day level
+    std::wstring area;
+    std::wstring day;
+    std::wstring night;
+    std::optional<float> moonHeight; // none for the night level's own
+    float moonTurn = 0;
+    std::optional<float> latitude; // none: the latitude of `latitudeOf`'s sun
+    std::wstring latitudeOf;       // empty for the day level
+    float declination = 0;
+    float noon = 0;
 };
-constexpr std::array<Cycled, 2> kCycled{{
-    {.day = L"lak100d", .night = L"lak100n", .area = L"arl100ar_redcliffe_village", .latitudeOf = {}},
-    {.day = L"lak200d",
-     .night = L"lak100n",
-     .area = L"arl200ar_redcliffe_castle",
-     .moonHeight = 65,
-     .moonTurn = 180,
-     .latitudeOf = L"lak100d"},
-}};
 // The start of the names of a layout's lights that are fires, which keep
 // their light by night (Install): the castle's layouts light its torches
 // (torch_baked, torch_animated) beside the makers' sunlight (Sunhighlight) and
@@ -414,21 +374,21 @@ std::array<float, 3> Paler(const std::array<float, 3> &colour, float kept)
     return {std::lerp(grey, colour[0], kept), std::lerp(grey, colour[1], kept), std::lerp(grey, colour[2], kept)};
 }
 
-// The sun's path through the day level's own sun: that sun is the summer's
-// (kSunDeclination) of an afternoon, at the hour it stands as high, and the
+// The sun's path through the day level's own sun: that sun is the season's
+// (`declination`) of an afternoon, at the hour it stands as high, and the
 // path is turned about the upright so that at that hour it is where the
 // level's is. Noon is higher, and the level's own light, its bake's, is the
 // afternoon's (the user, 2026-10-22: "perhaps the default isn't noon, but
 // something more like 10:AM or 3:PM"). The latitude is the one at which the
 // level's sun would be an equinox's noon. Returns the path's transit and the
 // level's sun's hour angle (radians after noon).
-std::pair<Vec3, float> SunPathThrough(const Vec3 &level, float latitude)
+std::pair<Vec3, float> SunPathThrough(const Vec3 &level, float latitude, float declination)
 {
     const float height = Height(level);
-    const float cosine = (std::sin(height) - (std::sin(latitude) * std::sin(kSunDeclination))) /
-                         (std::cos(latitude) * std::cos(kSunDeclination));
+    const float cosine = (std::sin(height) - (std::sin(latitude) * std::sin(declination))) /
+                         (std::cos(latitude) * std::cos(declination));
     const float after = std::acos(std::clamp(cosine, -1.0F, 1.0F));
-    const Vec3 then = OnPath(level, latitude, kSunDeclination, after);
+    const Vec3 then = OnPath(level, latitude, declination, after);
     const float turned = std::atan2(level[1], level[0]) - std::atan2(then[1], then[0]);
     const float c = std::cos(turned);
     const float s = std::sin(turned);
@@ -461,8 +421,9 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
     const Vec3 &midnight = pair.midnight;
     const float noonHeight = Height(levelSun); // the level's sun's, as its colour was made for
     const float latitude = pair.latitude;
-    const float turn = (hour - kSolarNoon) * 15 * kDegree;
-    const Vec3 toSun = OnPath(SunPathThrough(levelSun, latitude).first, latitude, kSunDeclination, turn);
+    const float turn = (hour - pair.noon) * 15 * kDegree;
+    const Vec3 toSun =
+        OnPath(SunPathThrough(levelSun, latitude, pair.declination).first, latitude, pair.declination, turn);
     const float moonTilt = Height(midnight) - ((std::numbers::pi_v<float> / 2) - latitude);
     const Vec3 toMoon = OnPath(midnight, latitude, moonTilt, turn + std::numbers::pi_v<float>);
     const float sunHeight = Height(toSun);
@@ -504,7 +465,7 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
     for (std::size_t i = 0; i < 3; ++i)
     {
         // No more than the level's own: a summer's sun higher than the day
-        // level's noon is as bright as that noon (kSunDeclination).
+        // level's noon is as bright as that noon (the area's declination).
         const float air = std::exp(-depth.at(i) * std::max(mass - atHighest, 0.0F));
         const float through = air * up;
         light.disc.at(i) = sunLights ? air : 1;
@@ -576,9 +537,10 @@ bool Same(const dao::core::Sunlight &a, const dao::core::Sunlight &b)
     return true;
 }
 
-// Every level of a pair opened, by its name, and the levels looked at, under
-// g_lock.
+// The areas of daynight.ini (Install), every area of a level opened, by its
+// tag, and the levels looked at, under g_lock.
 std::mutex g_lock;
+std::vector<Cycled> g_cycled;
 std::map<std::wstring, std::shared_ptr<const Pair>> g_pairs;
 std::set<std::wstring> g_asked;
 // What the hour's light hands the render thread: the sky light's multiplier,
@@ -617,6 +579,97 @@ void Stopped()
     g_disc.reset();
 }
 
+// A line's text without its comment and the spaces about it.
+std::string Trimmed(std::string line)
+{
+    line.erase(std::min(line.find(';'), line.size()));
+    const auto space = [](char c) { return std::isspace(static_cast<unsigned char>(c)) != 0; };
+    while (!line.empty() && space(line.back()))
+    {
+        line.pop_back();
+    }
+    const auto first = std::ranges::find_if_not(line, space);
+    return {first, line.end()};
+}
+
+std::optional<float> Number(const std::string &text)
+{
+    std::istringstream in(text);
+    float value = 0;
+    return in >> value && (in >> std::ws).eof() ? std::optional<float>(value) : std::nullopt;
+}
+
+// The areas of daynight.ini (its head says what each key is): every section
+// but [defaults] an area, with [defaults]'s values where it says none.
+std::vector<Cycled> ReadAreas(const std::filesystem::path &file)
+{
+    using Keys = std::map<std::string, std::string>;
+    std::vector<std::pair<std::string, Keys>> sections;
+    std::ifstream in(file);
+    std::string line;
+    while (std::getline(in, line))
+    {
+        line = Trimmed(line);
+        if (line.size() > 2 && line.front() == '[' && line.back() == ']')
+        {
+            sections.emplace_back(line.substr(1, line.size() - 2), Keys{});
+        }
+        else if (const std::size_t equals = line.find('='); equals != std::string::npos && !sections.empty())
+        {
+            sections.back().second[Trimmed(line.substr(0, equals))] = Trimmed(line.substr(equals + 1));
+        }
+    }
+    Keys defaults;
+    if (const auto found = std::ranges::find(sections, std::string("defaults"), &decltype(sections)::value_type::first);
+        found != sections.end())
+    {
+        defaults = found->second;
+    }
+    const auto wide = [](const std::string &text) { return Lower(std::wstring(text.begin(), text.end())); };
+    std::vector<Cycled> areas;
+    for (const auto &[tag, keys] : sections)
+    {
+        const auto said = [&](const std::string &key) -> std::optional<std::string> {
+            if (const auto value = keys.find(key); value != keys.end())
+            {
+                return value->second;
+            }
+            if (const auto value = defaults.find(key); value != defaults.end())
+            {
+                return value->second;
+            }
+            return std::nullopt;
+        };
+        if (tag == "defaults")
+        {
+            continue;
+        }
+        Cycled area;
+        area.area = wide(tag);
+        area.day = wide(said("level").value_or(""));
+        area.night = wide(said("night").value_or(""));
+        const std::optional<float> declination = Number(said("declination").value_or(""));
+        const std::optional<float> noon = Number(said("noon").value_or(""));
+        if (area.day.empty() || area.night.empty() || !declination || !noon)
+        {
+            spdlog::warn("day and night: daynight.ini's [{}] lacks its level, its night, the declination or noon", tag);
+            continue;
+        }
+        area.declination = *declination;
+        area.noon = *noon;
+        area.moonHeight = Number(said("moon_height").value_or(""));
+        area.moonTurn = Number(said("moon_turn").value_or("")).value_or(0);
+        const std::string latitude = said("latitude").value_or("");
+        area.latitude = Number(latitude);
+        if (!area.latitude)
+        {
+            area.latitudeOf = wide(latitude);
+        }
+        areas.push_back(std::move(area));
+    }
+    return areas;
+}
+
 } // namespace
 
 Scattered Scattering(const dao::core::Sky &sky)
@@ -649,58 +702,64 @@ void Opened(const std::filesystem::path &levelRim)
     }
     // A level with a day and a night is two, named alike but for the last
     // letter: d for the day's, n for the night's (lak100d and lak100n). The
-    // clock runs in the day levels named in kCycled alone: the night level is
-    // the story's night, and the other places are left until the story's
-    // times are known.
+    // clock runs in the areas daynight.ini names alone: a night level is the
+    // story's night, and the other places are left until the story's times
+    // are known.
+    std::vector<Cycled> areas;
     {
         const std::scoped_lock lock(g_lock);
         g_asked.insert(level);
-    }
-    const auto cycled = std::ranges::find(kCycled, level, &Cycled::day);
-    if (cycled == kCycled.end())
-    {
-        return;
+        std::ranges::copy_if(g_cycled, std::back_inserter(areas),
+                             [&](const Cycled &cycled) { return cycled.day == level; });
     }
     const std::filesystem::path env = levelRim.parent_path().parent_path();
-    const std::wstring other(cycled->night);
-    // Some small files (the two .arl and the layouts), read as the level is
-    // opened.
-    std::optional<LevelLight> day = ReadLevel(env, level);
-    std::optional<LevelLight> night = ReadLevel(env, other);
-    if (!day || !night)
+    for (const Cycled &cycled : areas)
     {
-        spdlog::warn("day and night: {} or {} could not be read", std::filesystem::path(level).string(),
-                     std::filesystem::path(other).string());
-        return;
+        // Some small files (the two .arl and the layouts), read as the level
+        // is opened.
+        std::optional<LevelLight> day = ReadLevel(env, level);
+        std::optional<LevelLight> night = ReadLevel(env, cycled.night);
+        if (!day || !night)
+        {
+            spdlog::warn("day and night: {} or {} could not be read", std::filesystem::path(level).string(),
+                         std::filesystem::path(cycled.night).string());
+            continue;
+        }
+        auto pair = std::make_shared<Pair>();
+        pair->day = std::move(*day);
+        pair->night = std::move(*night);
+        pair->area = cycled.area;
+        pair->declination = cycled.declination * kDegree;
+        pair->noon = cycled.noon;
+        {
+            const Vec3 own{-pair->night.sun.direction[0], -pair->night.sun.direction[1], -pair->night.sun.direction[2]};
+            const float round = std::atan2(own[1], own[0]) + (cycled.moonTurn * kDegree);
+            const float up = cycled.moonHeight ? *cycled.moonHeight * kDegree : Height(own);
+            pair->midnight = {std::cos(up) * std::cos(round), std::cos(up) * std::sin(round), std::sin(up)};
+        }
+        {
+            LevelLight of;
+            const std::wstring &latitudeOf = cycled.latitudeOf.empty() ? level : cycled.latitudeOf;
+            const dao::core::Sunlight &by =
+                latitudeOf == level || !ReadArl(env / (latitudeOf + L".arl"), of) ? pair->day.sun : of.sun;
+            pair->latitude = cycled.latitude ? *cycled.latitude * kDegree
+                                             : (std::numbers::pi_v<float> / 2) -
+                                                   Height({-by.direction[0], -by.direction[1], -by.direction[2]});
+            const Vec3 levelSun{-pair->day.sun.direction[0], -pair->day.sun.direction[1], -pair->day.sun.direction[2]};
+            const float at =
+                pair->noon + (SunPathThrough(levelSun, pair->latitude, pair->declination).second / (15 * kDegree));
+            spdlog::info("day and night: {}'s level's sun is the season's at {:02d}:{:02d}, at {:.1f} degrees' "
+                         "latitude",
+                         std::filesystem::path(cycled.area).string(), static_cast<int>(at),
+                         static_cast<int>((at - std::floor(at)) * 60), pair->latitude / kDegree);
+        }
+        spdlog::info("day and night: {} and {}, their skies' light {:.3f} {:.3f} {:.3f} and {:.3f} {:.3f} {:.3f}",
+                     std::filesystem::path(level).string(), std::filesystem::path(cycled.night).string(),
+                     pair->day.skyLight[0], pair->day.skyLight[1], pair->day.skyLight[2], pair->night.skyLight[0],
+                     pair->night.skyLight[1], pair->night.skyLight[2]);
+        const std::scoped_lock lock(g_lock);
+        g_pairs[cycled.area] = std::move(pair);
     }
-    auto pair = std::make_shared<Pair>();
-    pair->day = std::move(*day);
-    pair->night = std::move(*night);
-    pair->area = cycled->area;
-    {
-        const Vec3 own{-pair->night.sun.direction[0], -pair->night.sun.direction[1], -pair->night.sun.direction[2]};
-        const float round = std::atan2(own[1], own[0]) + (cycled->moonTurn * kDegree);
-        const float up = cycled->moonHeight > 0 ? cycled->moonHeight * kDegree : Height(own);
-        pair->midnight = {std::cos(up) * std::cos(round), std::cos(up) * std::sin(round), std::sin(up)};
-    }
-    {
-        LevelLight of;
-        const std::wstring latitudeOf = cycled->latitudeOf.empty() ? level : std::wstring(cycled->latitudeOf);
-        const dao::core::Sunlight &by =
-            latitudeOf == level || !ReadArl(env / (latitudeOf + L".arl"), of) ? pair->day.sun : of.sun;
-        pair->latitude =
-            (std::numbers::pi_v<float> / 2) - Height({-by.direction[0], -by.direction[1], -by.direction[2]});
-        const Vec3 levelSun{-pair->day.sun.direction[0], -pair->day.sun.direction[1], -pair->day.sun.direction[2]};
-        const float at = kSolarNoon + (SunPathThrough(levelSun, pair->latitude).second / (15 * kDegree));
-        spdlog::info("day and night: the day level's sun is the summer's at {:02d}:{:02d}, at {:.1f} degrees' latitude",
-                     static_cast<int>(at), static_cast<int>((at - std::floor(at)) * 60), pair->latitude / kDegree);
-    }
-    spdlog::info("day and night: {} and {}, their skies' light {:.3f} {:.3f} {:.3f} and {:.3f} {:.3f} {:.3f}",
-                 std::filesystem::path(level).string(), std::filesystem::path(other).string(), pair->day.skyLight[0],
-                 pair->day.skyLight[1], pair->day.skyLight[2], pair->night.skyLight[0], pair->night.skyLight[1],
-                 pair->night.skyLight[2]);
-    const std::scoped_lock lock(g_lock);
-    g_pairs[level] = std::move(pair);
 }
 
 float NightShare()
@@ -726,8 +785,9 @@ float Hour()
 
 std::wstring NightLevel(std::wstring_view day)
 {
-    const auto cycled = std::ranges::find(kCycled, day, &Cycled::day);
-    return cycled != kCycled.end() ? std::wstring(cycled->night) : std::wstring();
+    const std::scoped_lock lock(g_lock);
+    const auto cycled = std::ranges::find(g_cycled, day, &Cycled::day);
+    return cycled != g_cycled.end() ? cycled->night : std::wstring();
 }
 
 std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownSun, const dao::core::Sky &ownSky,
@@ -736,9 +796,9 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
     std::shared_ptr<const Pair> pair;
     {
         const std::scoped_lock lock(g_lock);
-        for (const auto &[level, each] : g_pairs)
+        for (const auto &[tag, each] : g_pairs)
         {
-            if (each->area == Lower(std::wstring(area)) && Same(each->day.sun, ownSun))
+            if (tag == Lower(std::wstring(area)) && Same(each->day.sun, ownSun))
             {
                 pair = each;
                 break;
@@ -801,6 +861,12 @@ std::optional<std::array<float, 3>> Disc()
 
 void Install()
 {
+    {
+        std::vector<Cycled> areas = ReadAreas(dao::Module::OwnFolder() / "daynight.ini");
+        spdlog::info("day and night: {} areas by daynight.ini", areas.size());
+        const std::scoped_lock lock(g_lock);
+        g_cycled = std::move(areas);
+    }
     // The ambient colour the engine adds to a level's surfaces and props: the
     // level's sky light, which goes with the hour as its bake does.
     dao::lights::OnAmbient([](dao::lights::Ambient &ambient) {

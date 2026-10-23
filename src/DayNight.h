@@ -7,16 +7,18 @@
 // (lak100d and lak100n), Denerim's market (den200d, den200n) and hrt201. Each
 // has its own sun or moon and its own sky and fog (its .arl), and its own
 // sky's light (its layout's ambient light, which its lightmaps were baked
-// with). The clock runs in the day level, and takes of the night level its
-// moon, its sky and its sky's light; Redcliffe's castle (lak200d) has no night
-// level and takes the village's (DayNight.cpp's kCycled):
+// with). The clock runs in the areas data/daynight.ini names, each on its
+// day level, and takes of a night level its moon, its sky and its sky's
+// light; Redcliffe's castle (lak200d) has no night level and takes the
+// village's. The table says, by area, how its sun and moon go:
 //
-// - The day level's sun is a summer afternoon's, at 15:22 by a clock an hour
-//   on from the sun's (kSolarNoon): the latitude is 90 degrees less its
-//   height (Redcliffe's 38 is 52, England's), and the sun goes round the sky
-//   by the hour on that latitude's path at 18 degrees' declination, through
-//   the level's own sun. The moon goes round the same sky, at the night
-//   level's moon at midnight.
+// - The day level's sun is an afternoon's of the area's season (its
+//   declination, a summer's 18 degrees by default) at the hour it is that
+//   high: the latitude is 90 degrees less its height (Redcliffe's 38 is 52,
+//   England's) or the table's, and the sun goes round the sky by the hour on
+//   that latitude's path, highest at the table's noon (13:00, a summer's
+//   clock). The moon goes round the same sky, highest at midnight, at the
+//   night level's moon or where the table puts it.
 // - The sun's colour is the day's, less what the air takes out of it on the
 //   longer way through it as the sun goes low (each channel by the area's own
 //   scattering, Scattering), and none under the horizon. The engine's one sun
@@ -66,8 +68,10 @@ struct Light
     float lit = 1;                      // the light on what is lit about, over the level's own (Lit)
 };
 
-// Has the level's ambient colour, its lights and the figures' share of the
-// sun follow the hour (dao::lights). Call once, as the plugin loads.
+// Reads data/daynight.ini (the areas the clock runs in, from the plugin's
+// folder), and has the level's ambient colour, its lights and the figures'
+// share of the sun follow the hour (dao::lights). Call once, as the plugin
+// loads.
 void Install();
 
 // The night's light on what the level's bake lights (night_sky.hlsl): how

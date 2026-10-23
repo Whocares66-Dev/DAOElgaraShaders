@@ -133,25 +133,29 @@ add_daolib_plugin(
 )
 target_link_libraries(elgarashaders PRIVATE elgara_materials)
 dao_apply_warnings(elgarashaders)
-# The effects' table (data/effects.ini, tools/effect_list.py), read as the
-# plugin starts: the lights it gives fires that have none, and the effects
-# it dims at night. A step with the table for its input: copied after the
-# DLL's link, a change to the table alone never reached the build
-# (2026-10-23).
-add_custom_command(
-    OUTPUT "${CMAKE_BINARY_DIR}/daolib/plugins/elgarashaders/effects.ini"
-    COMMAND
-        "${CMAKE_COMMAND}" -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/data/effects.ini"
-        "${CMAKE_BINARY_DIR}/daolib/plugins/elgarashaders/effects.ini"
-    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/data/effects.ini"
-    VERBATIM
-)
-add_custom_target(
-    elgarashaders_effects
-    ALL
-    DEPENDS "${CMAKE_BINARY_DIR}/daolib/plugins/elgarashaders/effects.ini"
-)
+# The plugin's tables, read as it starts: data/effects.ini (tools/effect_list.py),
+# the lights it gives fires that have none and the effects it dims at night;
+# data/daynight.ini, the areas the day and night runs in and how their sun and
+# moon go. A step with the tables for its input: copied after the DLL's link,
+# a change to a table alone never reached the build (2026-10-23).
+set(ELGARA_TABLES effects.ini daynight.ini)
+set(ELGARA_TABLES_OUT)
+foreach(table IN LISTS ELGARA_TABLES)
+    add_custom_command(
+        OUTPUT "${CMAKE_BINARY_DIR}/daolib/plugins/elgarashaders/${table}"
+        COMMAND
+            "${CMAKE_COMMAND}" -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/data/${table}"
+            "${CMAKE_BINARY_DIR}/daolib/plugins/elgarashaders/${table}"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/data/${table}"
+        VERBATIM
+    )
+    list(
+        APPEND ELGARA_TABLES_OUT
+        "${CMAKE_BINARY_DIR}/daolib/plugins/elgarashaders/${table}"
+    )
+endforeach()
+add_custom_target(elgarashaders_effects ALL DEPENDS ${ELGARA_TABLES_OUT})
 
 # The plugin's baker of light probes as a command of its own: a level baked
 # with no game running, to look at what it makes and how long it takes.
