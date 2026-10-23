@@ -396,7 +396,8 @@ bool g_atlasDrawn = false; // asked for this frame
 // light, drawn with the figures within the light's reach. A face is
 // kEffectTile square, a quarter turn wide, from kEffectNear to the light's
 // reach; all of it the shaders' own reckoning, which these numbers must match.
-constexpr UINT kEffectTile = 128;
+constexpr UINT kEffectTile = 256; // effect_lights.hlsl's kDaoEffectTile; at 128 a figure's shadow from a fire was cut
+                                  // in steps (the user, 2026-10-23: "shadows are very blocky")
 constexpr UINT kEffectLightsMost = 16;
 constexpr float kEffectNear = 0.05F;
 std::atomic<bool> g_effectsWanted{false};

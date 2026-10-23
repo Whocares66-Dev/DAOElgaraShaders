@@ -22,7 +22,7 @@ float4 daoEffectCount : register(c192);
 // light, z the distance along the face's axis (the engine's shadow pass
 // writes the depth over w). Across a face its x and y are the world's two
 // other axes in order, y up the face.
-static const float kDaoEffectTile = 128;
+static const float kDaoEffectTile = 256;
 static const int kDaoEffectLightsMost = 16;
 static const float kDaoEffectNear = 0.05;
 

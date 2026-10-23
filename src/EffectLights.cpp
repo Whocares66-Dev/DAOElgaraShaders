@@ -333,11 +333,29 @@ std::vector<Light> ReadLamps(const std::filesystem::path &levelRim)
         layout += L"_ll";
         for (const levelfiles::Lamp &lamp : level.LampsOf(room))
         {
-            if (lamp.reach > 0 && daynight::FireLamp(layout, lamp.name))
+            if (lamp.reach <= 0 || !daynight::FireLamp(layout, lamp.name))
             {
-                lamps.push_back({{lamp.at[0], lamp.at[1], lamp.at[2], lamp.reach},
-                                 {lamp.colour[0], lamp.colour[1], lamp.colour[2], 1}});
+                continue;
             }
+            // Two lamps at one place are one light: Redcliffe castle's torches
+            // are each a torch_baked_ and a torch_animated_ (lak200d), and as
+            // two they took two of the shaders' sixteen, the farther torches
+            // left out.
+            const auto same = std::ranges::find_if(lamps, [&](const Light &light) {
+                return Near({light.place[0], light.place[1], light.place[2]}, {lamp.at[0], lamp.at[1], lamp.at[2]},
+                            kLampMatch);
+            });
+            if (same != lamps.end())
+            {
+                for (std::size_t c = 0; c < 3; ++c)
+                {
+                    same->colour.at(c) += lamp.colour.at(c);
+                }
+                same->place[3] = std::max(same->place[3], lamp.reach);
+                continue;
+            }
+            lamps.push_back({{lamp.at[0], lamp.at[1], lamp.at[2], lamp.reach},
+                             {lamp.colour[0], lamp.colour[1], lamp.colour[2], 1}});
         }
     }
     return lamps;
