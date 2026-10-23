@@ -1503,9 +1503,11 @@ void KeepLookRegisters()
     // The level's lamps named as fires lit by the plugin (EffectLights.cpp);
     // outdoors.tune's FireLamps = 0, a developer's, leaves them the engine's.
     effectlights::WantLamps(lighting && outdoors::Tune("FireLamps", 1) > 0);
+    effectlights::WantCulled(outdoors::Tune("LightCull", 1) > 0);
     // outdoors.tune's EffectShadows = 0, a developer's: their cost without them
     // (issue 30).
     levelshadows::WantEffectShadows(lighting && outdoors::Tune("EffectShadows", 1) > 0);
+    levelshadows::CacheEffectShadows(outdoors::Tune("EffectCache", 1) > 0);
     // The level drawn into the sun's maps only where it has a sun: underground
     // the engine still draws maps for its figures' own light, and the level's
     // surfaces took the shade of it in place of their baked light (the Ruined

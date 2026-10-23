@@ -43,6 +43,10 @@ void Want(bool on);
 // the engine (daynight::FireLamp): the game thread's word, with Want's.
 void WantLamps(bool on);
 
+// Whether lights that can light nothing on the screen are left out (a
+// developer's: outdoors.tune's LightCull = 0 keeps them). The game thread's.
+void WantCulled(bool on);
+
 // Says a level was opened (`levelRim` its archive of rooms): its lamps named
 // as fires are read from its layouts, off the calling thread. Any thread.
 void LevelOpened(const std::filesystem::path &levelRim);

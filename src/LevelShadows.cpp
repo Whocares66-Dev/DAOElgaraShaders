@@ -404,7 +404,26 @@ std::atomic<bool> g_effectsWanted{false};
 std::unordered_map<IDirect3DPixelShader9 *, DWORD> g_effectReceivers;
 IDirect3DTexture9 *g_effectAtlas = nullptr;
 IDirect3DSurface9 *g_effectDepth = nullptr;
-bool g_effectsDrawn = false; // asked for this frame
+// The level's own surfaces in each light's six maps, drawn once and copied
+// into the atlas each frame, the figures drawn over them: the level's draws
+// were five of the effects' maps' six milliseconds a frame at Redcliffe
+// castle's gate (13 lights, 997 level draws; 2026-10-23), for maps that
+// change only as the level seen does or the light moves. A row of the cache
+// is a light's, by its place and reach, kept while the level seen is the same.
+IDirect3DTexture9 *g_effectLevel = nullptr;
+IDirect3DSurface9 *g_effectLevelDepth = nullptr;
+struct EffectLevelRow
+{
+    std::array<float, 4> light{};
+    std::uint64_t seen = ~std::uint64_t{0}; // g_seenGeneration it was drawn with
+    unsigned skipping = 0;
+    std::uint64_t used = 0; // the frame it was last copied in
+};
+std::array<EffectLevelRow, kEffectLightsMost> g_effectLevelRows;
+std::uint64_t g_effectFrame = 0;
+std::atomic<bool> g_effectCache{true}; // a developer's: outdoors.tune's EffectCache = 0 draws the level each frame
+int g_effectLevelRowsDrawn = 0;        // a frame, for the log
+bool g_effectsDrawn = false;           // asked for this frame
 bool g_effectsReady = false;
 bool g_atlasReady = false; // and drawn: the receivers read it, else the engine's own maps
 // Whether the engine's shadow pass has drawn this frame, and last frame. The
@@ -522,6 +541,10 @@ enum Part : std::size_t
 };
 constexpr std::array<std::string_view, kParts> kPartNames{"sun's maps", "effects' maps", "noting"};
 int g_figureReplays = 0;
+int g_effectLevelDraws = 0;       // level draws into the effects' lights' maps, a frame
+int g_effectFaces = 0;            // faces of the effects' lights' maps drawn, a frame
+LONGLONG g_effectLevelTicks = 0;  // the effects' maps' level draws, since the last log
+LONGLONG g_effectFigureTicks = 0; // and their figures'
 int g_effectFigureReplays = 0;
 std::size_t g_lightsMost = 0;
 std::array<LONGLONG, kParts> g_partTicks{};
@@ -1207,6 +1230,10 @@ void DrawLevel(IDirect3DDevice9 *device, bool moving)
             continue;
         }
         ++g_drawnInto;
+        if (g_drawingFor)
+        {
+            ++g_effectLevelDraws;
+        }
         Bind(device, *draw, last);
         g_draw(device, draw->type, draw->base, draw->least, draw->vertices, draw->first, draw->count);
         last = draw;
@@ -2382,8 +2409,10 @@ static bool DrawAtlas(IDirect3DDevice9 *device)
 // The effects' atlas and its depth let go.
 static void ReleaseEffectAtlas()
 {
+    g_effectLevelRows = {};
     for (IUnknown **held :
-         {reinterpret_cast<IUnknown **>(&g_effectAtlas), reinterpret_cast<IUnknown **>(&g_effectDepth)})
+         {reinterpret_cast<IUnknown **>(&g_effectAtlas), reinterpret_cast<IUnknown **>(&g_effectDepth),
+          reinterpret_cast<IUnknown **>(&g_effectLevel), reinterpret_cast<IUnknown **>(&g_effectLevelDepth)})
     {
         if (*held != nullptr)
         {
@@ -2403,20 +2432,17 @@ static bool MakeEffectAtlas(IDirect3DDevice9 *device)
     if (FAILED(device->CreateTexture(kEffectTile * 6, kEffectTile * kEffectLightsMost, 1, D3DUSAGE_RENDERTARGET,
                                      kMapFormat, D3DPOOL_DEFAULT, &g_effectAtlas, nullptr)) ||
         FAILED(device->CreateDepthStencilSurface(kEffectTile * 6, kEffectTile * kEffectLightsMost, D3DFMT_D24X8,
-                                                 D3DMULTISAMPLE_NONE, 0, TRUE, &g_effectDepth, nullptr)))
+                                                 D3DMULTISAMPLE_NONE, 0, TRUE, &g_effectDepth, nullptr)) ||
+        FAILED(device->CreateTexture(kEffectTile * 6, kEffectTile * kEffectLightsMost, 1, D3DUSAGE_RENDERTARGET,
+                                     kMapFormat, D3DPOOL_DEFAULT, &g_effectLevel, nullptr)) ||
+        FAILED(device->CreateDepthStencilSurface(kEffectTile * 6, kEffectTile * kEffectLightsMost, D3DFMT_D24X8,
+                                                 D3DMULTISAMPLE_NONE, 0, TRUE, &g_effectLevelDepth, nullptr)))
     {
         spdlog::warn("effects' shadows: the atlas could not be made");
-        for (IUnknown **held :
-             {reinterpret_cast<IUnknown **>(&g_effectAtlas), reinterpret_cast<IUnknown **>(&g_effectDepth)})
-        {
-            if (*held != nullptr)
-            {
-                (*held)->Release();
-                *held = nullptr;
-            }
-        }
+        ReleaseEffectAtlas();
         return false;
     }
+    g_effectLevelRows = {};
     return true;
 }
 
@@ -2484,10 +2510,58 @@ static bool OffFace(const Reach &bounds, const std::array<float, 4> &light, std:
     return false;
 }
 
-// One light's six maps, in its row of the atlas: each face the level's own
-// surfaces within the light's reach (a wall between the light and what is
-// behind it), then the figures whose bounds come within it and the face. A
-// draw that names no place (a tree's) is left out.
+// A face's place in a row of an atlas.
+static D3DVIEWPORT9 EffectFaceView(std::size_t row, std::size_t face)
+{
+    return {
+        static_cast<DWORD>(face * kEffectTile), static_cast<DWORD>(row * kEffectTile), kEffectTile, kEffectTile, 0, 1};
+}
+
+// One light's six maps of the level's own surfaces within its reach (a wall
+// between the light and what is behind it), in a row of the level's cache,
+// whose target is set.
+static void DrawEffectLevel(IDirect3DDevice9 *device, std::size_t row, const std::array<float, 4> &place)
+{
+    LARGE_INTEGER start{};
+    LARGE_INTEGER end{};
+    QueryPerformanceCounter(&start);
+    for (std::size_t face = 0; face < 6; ++face)
+    {
+        const D3DVIEWPORT9 viewport = EffectFaceView(row, face);
+        device->SetViewport(&viewport);
+        device->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, 0xFFFFFFFF, 1.0F, 0);
+        g_partition = EffectFace(place, face);
+        g_drawingFor = place;
+        DrawLevel(device, false);
+        g_drawingFor.reset();
+    }
+    QueryPerformanceCounter(&end);
+    g_effectLevelTicks += end.QuadPart - start.QuadPart;
+    ++g_effectLevelRowsDrawn;
+}
+
+// A row of the level's cache copied into a light's row of the atlas, its
+// depths into the atlas's depth as well, for the figures to be tested against.
+static void CopyEffectLevel(IDirect3DDevice9 *device, std::size_t from, std::size_t to)
+{
+    const D3DVIEWPORT9 viewport{0, static_cast<DWORD>(to * kEffectTile), kEffectTile * 6, kEffectTile, 0, 1};
+    device->SetViewport(&viewport);
+    const float halfU = 0.5F / static_cast<float>(kEffectTile * 6);
+    const float halfV = 0.5F / static_cast<float>(kEffectTile * kEffectLightsMost);
+    const float top = static_cast<float>(from) / static_cast<float>(kEffectLightsMost);
+    const float bottom = static_cast<float>(from + 1) / static_cast<float>(kEffectLightsMost);
+    const float x = 1.0F / static_cast<float>(kEffectTile * 6);
+    const float y = 1.0F / static_cast<float>(kEffectTile);
+    const std::array<Corner, 4> quad{Corner{-1 - x, 1 + y, 0.5F, 1, halfU, top + halfV},
+                                     Corner{1 - x, 1 + y, 0.5F, 1, 1 + halfU, top + halfV},
+                                     Corner{-1 - x, -1 + y, 0.5F, 1, halfU, bottom + halfV},
+                                     Corner{1 - x, -1 + y, 0.5F, 1, 1 + halfU, bottom + halfV}};
+    device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad.data(), sizeof(Corner));
+}
+
+// One light's six maps' moving level draws and figures, over its level copied
+// into its row: the figures whose bounds come within its reach and the face.
+// A draw that names no place (a tree's) is left out.
 static void DrawEffectLight(IDirect3DDevice9 *device, std::size_t light, const std::array<float, 4> &place)
 {
     std::vector<const FigureDraw *> reached;
@@ -2508,20 +2582,19 @@ static void DrawEffectLight(IDirect3DDevice9 *device, std::size_t light, const s
     }
     for (std::size_t face = 0; face < 6; ++face)
     {
-        const D3DVIEWPORT9 viewport{static_cast<DWORD>(face * kEffectTile),
-                                    static_cast<DWORD>(light * kEffectTile),
-                                    kEffectTile,
-                                    kEffectTile,
-                                    0,
-                                    1};
+        const D3DVIEWPORT9 viewport = EffectFaceView(light, face);
         device->SetViewport(&viewport);
-        device->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, 0xFFFFFFFF, 1.0F, 0);
+        ++g_effectFaces;
         const cascades::Matrix clip = EffectFace(place, face);
         g_partition = clip;
         g_drawingFor = place;
-        DrawLevel(device, false);
+        LARGE_INTEGER start{};
+        LARGE_INTEGER middle{};
+        LARGE_INTEGER end{};
+        QueryPerformanceCounter(&start);
         DrawLevel(device, true);
         g_drawingFor.reset();
+        QueryPerformanceCounter(&middle);
         device->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED);
         for (const FigureDraw *draw : reached)
         {
@@ -2531,7 +2604,66 @@ static void DrawEffectLight(IDirect3DDevice9 *device, std::size_t light, const s
                 ++g_effectFigureReplays;
             }
         }
+        QueryPerformanceCounter(&end);
+        g_effectLevelTicks += middle.QuadPart - start.QuadPart;
+        g_effectFigureTicks += end.QuadPart - middle.QuadPart;
     }
+}
+
+// The rows of the level's cache the lights are drawn from, each light's kept
+// where the level seen is the same and drawn again where it is not, into a
+// row no other light of the frame takes.
+static std::vector<std::size_t> EffectLevelRows(IDirect3DDevice9 *device,
+                                                const std::vector<std::array<float, 4>> &lights)
+{
+    ++g_effectFrame;
+    const unsigned skipping = g_skipped.load(std::memory_order_relaxed);
+    const std::size_t count = std::min(lights.size(), kEffectLightsMost);
+    std::vector<std::size_t> rows(count, kEffectLightsMost);
+    // Those kept.
+    for (std::size_t light = 0; light < count; ++light)
+    {
+        for (std::size_t row = 0; row < g_effectLevelRows.size(); ++row)
+        {
+            EffectLevelRow &kept = g_effectLevelRows.at(row);
+            if (kept.light == lights[light] && kept.seen == g_seenGeneration && kept.skipping == skipping &&
+                kept.used != g_effectFrame && g_effectCache.load(std::memory_order_relaxed))
+            {
+                kept.used = g_effectFrame;
+                rows[light] = row;
+                break;
+            }
+        }
+    }
+    // The rest drawn, each into the row least lately used.
+    IDirect3DSurface9 *level = nullptr;
+    for (std::size_t light = 0; light < count; ++light)
+    {
+        if (rows[light] != kEffectLightsMost)
+        {
+            continue;
+        }
+        if (level == nullptr)
+        {
+            if (FAILED(g_effectLevel->GetSurfaceLevel(0, &level)))
+            {
+                return {};
+            }
+            device->SetRenderTarget(0, level);
+            device->SetDepthStencilSurface(g_effectLevelDepth);
+        }
+        const auto oldest = std::ranges::min_element(g_effectLevelRows, {}, &EffectLevelRow::used);
+        const auto row = static_cast<std::size_t>(oldest - g_effectLevelRows.begin());
+        device->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED);
+        DrawEffectLevel(device, row, lights[light]);
+        *oldest = {lights[light], g_seenGeneration, skipping, g_effectFrame};
+        rows[light] = row;
+    }
+    if (level != nullptr)
+    {
+        level->Release();
+    }
+    return rows;
 }
 
 // The effects' lights' maps for this scene: each light handed, six faces,
@@ -2573,7 +2705,22 @@ static bool DrawEffectShadows(IDirect3DDevice9 *device)
         device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
         device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
         device->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED);
-        for (std::size_t light = 0; light < lights.size() && light < kEffectLightsMost; ++light)
+        const std::vector<std::size_t> rows = EffectLevelRows(device, lights);
+        device->SetRenderTarget(0, atlas);
+        device->SetDepthStencilSurface(g_effectDepth);
+        // Each light's level, its depths too, then its figures over it.
+        SetCopying(device, g_effectLevel);
+        device->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
+        device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+        device->SetRenderState(D3DRS_ZFUNC, D3DCMP_ALWAYS);
+        for (std::size_t light = 0; light < rows.size(); ++light)
+        {
+            CopyEffectLevel(device, rows[light], light);
+        }
+        device->SetTexture(0, nullptr);
+        device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+        device->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED);
+        for (std::size_t light = 0; light < rows.size(); ++light)
         {
             DrawEffectLight(device, light, lights[light]);
         }
@@ -2635,6 +2782,11 @@ static void EffectsDrawing(IDirect3DDevice9 *device)
 void WantEffectShadows(bool on)
 {
     g_effectsWanted.store(on, std::memory_order_relaxed);
+}
+
+void CacheEffectShadows(bool on)
+{
+    g_effectCache.store(on, std::memory_order_relaxed);
 }
 
 void Leaving(IDirect3DDevice9 * /*device*/)
@@ -2741,6 +2893,11 @@ void Receiving(IDirect3DDevice9 *device, bool picture)
     SetReceivers(device);
 }
 
+std::optional<std::array<float, 16>> ToScreen()
+{
+    return g_haveCamera ? std::optional<std::array<float, 16>>(g_toScreen) : std::nullopt;
+}
+
 void Presented()
 {
     MakePatches();
@@ -2778,6 +2935,15 @@ void Presented()
         spdlog::info("shadows' cost: a frame: {} figures replayed into the sun's maps, {} into the effects' lights' "
                      "maps, {} lights at the most; on the game's thread: {}",
                      g_figureReplays, g_effectFigureReplays, g_lightsMost, parts);
+        const auto ms = [&](LONGLONG ticks) {
+            return 1000.0 * static_cast<double>(ticks) / static_cast<double>(frequency.QuadPart) / kEvery;
+        };
+        spdlog::info("shadows' cost: the effects' maps a frame: {} faces, {} lights' level drawn again, {} level "
+                     "draws ({:.2f} ms), the figures {:.2f} ms",
+                     g_effectFaces, g_effectLevelRowsDrawn, g_effectLevelDraws, ms(g_effectLevelTicks),
+                     ms(g_effectFigureTicks));
+        g_effectLevelTicks = 0;
+        g_effectFigureTicks = 0;
         g_partTicks = {};
         g_lightsMost = 0;
         std::vector<float> sizes;
@@ -2802,6 +2968,9 @@ void Presented()
     g_noted = 0;
     g_figureReplays = 0;
     g_effectFigureReplays = 0;
+    g_effectLevelDraws = 0;
+    g_effectFaces = 0;
+    g_effectLevelRowsDrawn = 0;
     g_measuredThisFrame = false;
     if (g_forget.exchange(false))
     {

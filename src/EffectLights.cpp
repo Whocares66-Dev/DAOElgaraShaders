@@ -2,6 +2,7 @@
 
 #include "DayNight.h"
 #include "LevelFiles.h"
+#include "LevelShadows.h"
 
 #include "dao/Addresses.h"
 #include "dao/Camera.h"
@@ -292,6 +293,7 @@ Light LightOf(const void *node)
 // handing a lamp for the objects about the camera alone ("torches don't
 // emit light from a distance ... but they do when closer").
 std::atomic<bool> g_lampsWanted{false};
+std::atomic<bool> g_culled{true};
 std::mutex g_lampLock;
 // Each level's, by its name, and the level whose layout lights the engine
 // last handed: the one the player is in. Under g_lampLock.
@@ -461,6 +463,76 @@ std::array<float, 3> Eye()
     return {eye.x, eye.y, eye.z};
 }
 
+// Whether a light's reach, a ball about its place, lies wholly outside the
+// camera's view: beyond one of the six planes of its clip space (Direct3D's:
+// x and y within w, z from 0 to w), each a sum of the matrix's rows, measured
+// against the ball's radius.
+bool OffScreen(const std::array<float, 16> &m, const std::array<float, 4> &ball)
+{
+    const auto row = [&](std::size_t r, std::size_t c) { return m.at((r * 4) + c); };
+    for (int plane = 0; plane < 6; ++plane)
+    {
+        std::array<float, 4> p{};
+        for (std::size_t c = 0; c < 4; ++c)
+        {
+            const float w = row(3, c);
+            switch (plane)
+            {
+            case 0:
+                p.at(c) = w + row(0, c);
+                break;
+            case 1:
+                p.at(c) = w - row(0, c);
+                break;
+            case 2:
+                p.at(c) = w + row(1, c);
+                break;
+            case 3:
+                p.at(c) = w - row(1, c);
+                break;
+            case 4:
+                p.at(c) = row(2, c);
+                break;
+            default:
+                p.at(c) = w - row(2, c);
+                break;
+            }
+        }
+        const float length = std::sqrt((p[0] * p[0]) + (p[1] * p[1]) + (p[2] * p[2]));
+        if (length > 0 && (p[0] * ball[0]) + (p[1] * ball[1]) + (p[2] * ball[2]) + p[3] < -ball[3] * length)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// How many lights the view left of those there were, said once a scene, a
+// second after it is first seen to have any (a developer's).
+void NoteChoice(std::size_t had, std::size_t kept)
+{
+    static void *said = nullptr;
+    static std::optional<std::chrono::steady_clock::time_point> first;
+    void *scene = AreasScene();
+    if (scene == said || had == 0)
+    {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (!first)
+    {
+        first = now;
+        return;
+    }
+    if (now - *first < std::chrono::seconds(1))
+    {
+        return;
+    }
+    spdlog::info("effects' lights: of {}, {} could light the view, {} out of it", had, kept, had - kept);
+    said = scene;
+    first.reset();
+}
+
 } // namespace
 
 bool Install()
@@ -531,6 +603,11 @@ void LevelOpened(const std::filesystem::path &levelRim)
     }
 }
 
+void WantCulled(bool on)
+{
+    g_culled.store(on, std::memory_order_relaxed);
+}
+
 void WantLamps(bool on)
 {
     g_lampsWanted.store(on, std::memory_order_relaxed);
@@ -565,7 +642,18 @@ void Read()
         AddLamps(lights);
         AddFires(lights);
     }
-    // More than the shaders take: the nearest the camera.
+    // What lights nothing on the screen left out, then, of more than the
+    // shaders take, the nearest the camera: by nearness alone, lights behind
+    // the camera took the place of those before it (the user, 2026-10-23: "if
+    // the light is out of viewport and its light reach is beyond the
+    // viewport, we don't need it").
+    const std::size_t before = lights.size();
+    if (const std::optional<std::array<float, 16>> toScreen = levelshadows::ToScreen();
+        toScreen && g_culled.load(std::memory_order_relaxed))
+    {
+        std::erase_if(lights, [&](const Light &light) { return OffScreen(*toScreen, light.place); });
+    }
+    NoteChoice(before, lights.size());
     if (lights.size() > kMostLights)
     {
         const std::array<float, 3> eye = Eye();

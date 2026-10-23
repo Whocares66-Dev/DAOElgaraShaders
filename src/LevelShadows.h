@@ -49,6 +49,11 @@ void Want(bool on);
 // DaoEffectShadow), each light's from the figures about it: the game
 // thread's word, with Improved lighting.
 void WantEffectShadows(bool on);
+
+// Whether the level's part of the effects' lights' maps is kept from frame to
+// frame (a developer's: outdoors.tune's EffectCache = 0 draws it each frame).
+// The game thread's word.
+void CacheEffectShadows(bool on);
 // A vertex shader the game made, from `code`.
 void Created(const DWORD *code, IDirect3DVertexShader9 *shader);
 
@@ -101,6 +106,12 @@ void Forget();
 // them; else the engine's own. Call as the scene starts and as the first
 // target changes.
 void Receiving(IDirect3DDevice9 *device, bool picture);
+
+// The camera's matrix from the world to the screen's clip space, by rows (a
+// point's clip coordinates the rows times (x, y, z, 1)), as the last level
+// draw of the frame's picture had it; none before the first. The game
+// thread's.
+std::optional<std::array<float, 16>> ToScreen();
 
 // The frame is done.
 void Presented();
