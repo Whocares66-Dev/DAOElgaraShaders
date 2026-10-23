@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+- Day / night cycle: a new option on the Video tab, with a Time of day slider. The sun and moon cross the sky, a day an hour; at night the moon casts the shadows, fires are lit, and water and its spray are a dimmer white, mirroring the night sky. Redcliffe only for now; needs Improved lighting. Off by default.
+- Trees, bushes and grass take the sun's shadow, distant trees too.
+- Templar armor: the plate is metal and the robe cloth; the breastplate was matte beside the metal gauntlets (#32).
+- Faster, most of all underground and with options off: in Orzammar the plugin cost about 2.5 ms a frame with every option on and now about 1, and with every option off about 2 and now under 0.5 (#33).
+- Needs DAOLib 0.6.0 or newer.
+
 ## 0.2.2
 
 - The game no longer crashes as it closes with Improved lighting on, as 0.2.1 did.
