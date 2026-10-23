@@ -105,7 +105,12 @@ PLANT_LEAVES = ("spt_leafcards", "spt_leafmeshes", "spt_billboards0")
 # Their vertex shaders: a distant tree is drawn as its billboard, by either
 # of two, and was moonlit in the shade it fell dark in as one came near
 # enough to draw it whole (the user, 2026-10-22).
-PLANT_LEAF_VERTICES = ("spt_leafcards", "spt_leafmeshes", "spt_billboards0", "spt_billboards1")
+PLANT_LEAF_VERTICES = (
+    "spt_leafcards",
+    "spt_leafmeshes",
+    "spt_billboards0",
+    "spt_billboards1",
+)
 PLANT_BUSHES = ("instancing1",)
 # How far towards the sun from a leaf or a bush its shadow is asked for, in
 # metres: off its own surface, which casts into the maps too.
@@ -400,7 +405,9 @@ def with_sun_part(shader):
     direct = re.search(r", (v\d+)\.w,", shader.statements[scale].asm).group(1)
     fog = shader.parameters["mml_vFogParams"].base
     fogged = shader.find(rf"^mad o\d+\.xyz, (r\d+\.x), r\d+, c{fog}$")
-    kept = re.match(r"mad o\d+\.xyz, (r\d+\.x),", shader.statements[fogged].asm).group(1)
+    kept = re.match(r"mad o\d+\.xyz, (r\d+\.x),", shader.statements[fogged].asm).group(
+        1
+    )
     shader.insert(fogged, [f"daoSunPart = float4({kept} * {direct}.w * daoSun, 0);"])
     for at in reversed(parts):
         target = shader.statements[at].hlsl.split(" = ")[0]
@@ -436,8 +443,16 @@ def with_plant_shadow(shader, stem):
         if not uses:
             raise shader_hlsl.ShaderError("no sun's light read")
         for st in uses:
-            st.hlsl = st.hlsl.replace("g_vLightDiffuse", "(g_vLightDiffuse * daoPlantSun)")
-        shader.insert(-1, ["DaoTakeSlopes(input.daoWorld.xyz);", *plant_shadow("input.daoWorld.xyz", "daoPlantSun")])
+            st.hlsl = st.hlsl.replace(
+                "g_vLightDiffuse", "(g_vLightDiffuse * daoPlantSun)"
+            )
+        shader.insert(
+            -1,
+            [
+                "DaoTakeSlopes(input.daoWorld.xyz);",
+                *plant_shadow("input.daoWorld.xyz", "daoPlantSun"),
+            ],
+        )
     else:
         shader.add_input("daoWorld", "float4", "TEXCOORD1")
         shader.add_input("daoSunPart", "float4", "TEXCOORD2")
@@ -1473,7 +1488,9 @@ def with_effect_lights_on_ground(shader):
             i
             for i, st in enumerate(shader.statements)
             if i > total
-            and re.match(rf"^mad(?:_pp)? (r\d+)\.xyz, {sum_register}, r\d+\.\w, r\d+", st.asm)
+            and re.match(
+                rf"^mad(?:_pp)? (r\d+)\.xyz, {sum_register}, r\d+\.\w, r\d+", st.asm
+            )
         ),
         None,
     )
@@ -1487,7 +1504,9 @@ def with_effect_lights_on_ground(shader):
     shader.insert(shaded, [f"{lit_register}.xyz += daoGroundEffects;"])
     shader.insert(
         total,
-        [f"const float3 daoGroundEffects = DaoEffectDiffuse({world}.xyz, daoGroundNormal);"],
+        [
+            f"const float3 daoGroundEffects = DaoEffectDiffuse({world}.xyz, daoGroundNormal);"
+        ],
     )
     shader.insert(facing - 1, [f"const float3 daoGroundNormal = {normal}.xyz;"])
     EFFECT_LIT.append(("ground", 0, {lit_register: "xyz"}))
@@ -1988,7 +2007,9 @@ def with_baked_light(shader):
     register = re.match(r"texld\w* (r\d+),", shader.statements[read].asm).group(1)
     shader.insert(
         read,
-        [f"{register}.xyz = lerp({register}.xyz * DAO_BAKED_LIGHT, daoNightSky.yzw, daoNightSky.x);"],
+        [
+            f"{register}.xyz = lerp({register}.xyz * DAO_BAKED_LIGHT, daoNightSky.yzw, daoNightSky.x);"
+        ],
     )
 
 
@@ -2020,7 +2041,9 @@ def with_water_light(shader, stem):
         return
     # waterflowing0.psh: two reads of the foam, summed, then added on.
     decal = shader.parameters["smpDecal"].base
-    second = shader.find(rf"^texld r\d+, .*, s{decal}$", shader.find(rf"^texld r\d+, .*, s{decal}$") + 1)
+    second = shader.find(
+        rf"^texld r\d+, .*, s{decal}$", shader.find(rf"^texld r\d+, .*, s{decal}$") + 1
+    )
     summed = shader.find(r"^add r\d+\.\w+, r\d+\.\w+, r\d+\.\w+$", second + 1)
     target = re.match(r"add (r\d+\.\w+),", shader.statements[summed].asm).group(1)
     shader.insert(summed, [f"{target} *= daoWaterLight.x;"])
@@ -2827,16 +2850,25 @@ def changes_for(stem, listing, show):
     # (bakedlowlod, vista3, static2, static3, terrain3): left out of the
     # hour's light, the hills behind Redcliffe's lake stayed day-lit at night
     # (seen 2026-10-21).
-    if "smpLightmap" in listing and "ps_3_0" in listing and with_baked_light not in changes:
+    if (
+        "smpLightmap" in listing
+        and "ps_3_0" in listing
+        and with_baked_light not in changes
+    ):
         changes.append(with_baked_light)
         if "DAO_LOOK_HLSL" not in preamble:
             preamble += ours("look.hlsl")
         preamble += ours("night_sky.hlsl")
-    billboard = re.search(r"dcl_texcoord5 (v\d+)", listing) if stem.startswith("spt_billboards") else None
+    billboard = (
+        re.search(r"dcl_texcoord5 (v\d+)", listing)
+        if stem.startswith("spt_billboards")
+        else None
+    )
     if stem.startswith("spt_") and "g_vColorMultiplier" in listing:
         changes.append(with_baked_tree_light)
     elif billboard:
-        changes.append(lambda s, tint=billboard.group(1): with_baked_billboard_light(s, tint))
+        tint = billboard.group(1)
+        changes.append(lambda s, tint=tint: with_baked_billboard_light(s, tint))
     if (stem.startswith("spt_") and "g_vColorMultiplier" in listing) or billboard:
         if "DAO_LOOK_HLSL" not in preamble:
             preamble += ours("look.hlsl")
@@ -3043,7 +3075,6 @@ def main(argv):
                 ((name + ".vsh.fxo", name + ".vsh.fxo"), with_sun_part, "")
                 for name in PLANT_BUSHES
             ]
-
             + [
                 (
                     (theirs, ours_),

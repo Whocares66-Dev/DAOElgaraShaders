@@ -306,9 +306,9 @@ DaoInMap DaoPlaceIn(int first, float4 point4, float3 facing, float least)
         const float4 turned = float4(dot(daoShadowFade[0].xyz, offPoint.xyz), dot(daoShadowFade[1].xyz, offPoint.xyz),
                                      dot(daoShadowFade[2].xyz, offPoint.xyz), 1);
         const float4 shift = daoShadowFade[3 + first / 3];
-        placed.oldAt = float3(dot(daoShadowData[first], turned) + shift.x,
-                              dot(daoShadowData[first + 1], turned) + shift.y,
-                              saturate(dot(daoShadowData[first + 2], turned) * shift.z + shift.w));
+        placed.oldAt =
+            float3(dot(daoShadowData[first], turned) + shift.x, dot(daoShadowData[first + 1], turned) + shift.y,
+                   saturate(dot(daoShadowData[first + 2], turned) * shift.z + shift.w));
     }
     return placed;
 }
@@ -405,8 +405,8 @@ float DaoShadow(float3 world, float2 pixel)
 
     const float nearLit = DaoShadowMap(smpShadowPartition1, nearAt, g_vShadowData[0], g_vShadowData[1],
                                        g_vShadowData[2], nearW, turn, nearRadius, nearBias);
-    const float farLit = DaoShadowMap(smpShadowPartition2, farAt, g_vShadowData[4], g_vShadowData[5],
-                                      g_vShadowData[6], farW, turn, farRadius, farBias);
+    const float farLit = DaoShadowMap(smpShadowPartition2, farAt, g_vShadowData[4], g_vShadowData[5], g_vShadowData[6],
+                                      farW, turn, farRadius, farBias);
 
     const float side = dot(world, g_vShadowData[8].xyz) + g_vShadowData[8].w;
     const float fade = saturate((g_vShadowData[7].w - side) / (0.25 * g_vShadowData[7].w));

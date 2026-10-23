@@ -152,7 +152,7 @@ bool Upload(IDirect3DCubeTexture9 *texture, const Made &made)
         std::size_t at = kDdsHeader;
         for (DWORD level = 0; level < levels; ++level)
         {
-            D3DSURFACE_DESC desc{};
+            D3DSURFACE_DESC desc{D3DFMT_UNKNOWN, D3DRTYPE_SURFACE, 0, D3DPOOL_DEFAULT, D3DMULTISAMPLE_NONE, 0, 0, 0};
             if (FAILED(texture->GetLevelDesc(level, &desc)) || desc.Format != D3DFMT_DXT1)
             {
                 return false;

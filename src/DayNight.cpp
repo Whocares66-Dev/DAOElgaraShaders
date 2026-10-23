@@ -381,6 +381,16 @@ std::pair<Vec3, float> SunPathThrough(const Vec3 &level, float latitude)
     return {Vec3{(c * level[0]) - (s * level[1]), (s * level[0]) + (c * level[1]), level[2]}, after};
 }
 
+// A colour times `by`.
+std::array<float, 3> Scaled(std::array<float, 3> colour, float by)
+{
+    for (float &channel : colour)
+    {
+        channel *= by;
+    }
+    return colour;
+}
+
 Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float night, float fill)
 {
     const dao::core::Sky daySky = SkyOf(own, pair.day);
@@ -413,11 +423,7 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
     // light, kept to `fill` of the night level's (the user, 2026-10-21: "fade
     // out the baked lighting and just strengthen the moonlight so it lights
     // things properly from its position").
-    light.nightSky = Paler(pair.night.skyLight, kNightColour);
-    for (float &channel : light.nightSky)
-    {
-        channel *= fill;
-    }
+    light.nightSky = Scaled(Paler(pair.night.skyLight, kNightColour), fill);
 
     // The light through the air: the day's or the night's at its highest, less
     // what the longer way takes out, by the air of the sky of the hour.
@@ -433,12 +439,7 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
     // level's light is about half the day's (its lightmaps', 2026-10-21), a
     // night lit for play, and the user found it "too bright at midnight".
     const auto ofNight = [night](const std::array<float, 3> &colour) {
-        std::array<float, 3> paler = Paler(colour, kNightColour);
-        for (float &channel : paler)
-        {
-            channel *= night;
-        }
-        return paler;
+        return Scaled(Paler(colour, kNightColour), night);
     };
     const std::array<float, 3> moon =
         ofNight({pair.night.sun.color[0], pair.night.sun.color[1], pair.night.sun.color[2]});

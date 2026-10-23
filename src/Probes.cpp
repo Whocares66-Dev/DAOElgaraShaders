@@ -322,11 +322,12 @@ void OnProbe(dao::lights::ProbeLight &probe)
     // bridge over Redcliffe's falls and dark a few steps on (the user).
     constexpr std::wstring_view kLayout = L"_ll";
     constexpr std::wstring_view kOutdoorRig = L"outside_day";
-    const bool levels =
-        (probe.model.size() >= kLayout.size() &&
-         _wcsnicmp(probe.model.data() + probe.model.size() - kLayout.size(), kLayout.data(), kLayout.size()) == 0) ||
-        (probe.model.size() == kOutdoorRig.size() &&
-         _wcsnicmp(probe.model.data(), kOutdoorRig.data(), kOutdoorRig.size()) == 0);
+    const auto same = [](std::wstring_view a, std::wstring_view b) {
+        return std::ranges::equal(a, b, [](wchar_t x, wchar_t y) { return std::towlower(x) == std::towlower(y); });
+    };
+    const bool levels = (probe.model.size() >= kLayout.size() &&
+                         same(probe.model.substr(probe.model.size() - kLayout.size()), kLayout)) ||
+                        same(probe.model, kOutdoorRig);
     const std::array<float, 3> times = levels ? daynight::Baked() : std::array<float, 3>{1, 1, 1};
     const float night = levels ? daynight::NightShare() : 0;
     const std::scoped_lock lock(g_blendsLock);

@@ -2680,8 +2680,11 @@ void Focus(const std::optional<std::array<float, 3>> &focus)
 // one half second to the next with the hour going on, none with it held (the
 // user: "shadows are flickering", "characters are flickering at night too").
 // A step of 0.2 degrees moves a ten-metre tree's shadow some 3 cm.
+namespace
+{
 constexpr float kAimStep = 0.2F * std::numbers::pi_v<float> / 180;
 std::optional<std::array<float, 3>> g_aimedAt; // the game thread's
+} // namespace
 
 void Sun(const std::array<float, 3> &going)
 {
@@ -2789,42 +2792,37 @@ void Presented()
     }
 }
 
+namespace
+{
+// Lets a Direct3D object go, if there is one, and forgets it.
+template <typename T> void Drop(T *&object)
+{
+    if (object != nullptr)
+    {
+        object->Release();
+        object = nullptr;
+    }
+}
+} // namespace
+
 void Release()
 {
     ForgetSeen();
-    if (g_saved != nullptr)
-    {
-        g_saved->Release();
-        g_saved = nullptr;
-    }
+    Drop(g_saved);
     for (Cache *cache : {g_caches.data(), g_caches.data() + 1, g_caches.data() + 2, g_caches.data() + 3,
                          g_oldCaches.data(), g_oldCaches.data() + 1, g_oldCaches.data() + 2, g_oldCaches.data() + 3})
     {
-        if (cache->texture != nullptr)
-        {
-            cache->texture->Release();
-        }
-        if (cache->depth != nullptr)
-        {
-            cache->depth->Release();
-        }
-        if (cache->colours != nullptr)
-        {
-            cache->colours->Release();
-        }
+        Drop(cache->texture);
+        Drop(cache->depth);
+        Drop(cache->colours);
         *cache = Cache{};
     }
     for (Reflecting &reflecting : g_reflecting)
     {
         for (ReflectSlot &slot : reflecting.slots)
         {
-            for (IDirect3DSurface9 *surface : {slot.target, slot.colourTarget})
-            {
-                if (surface != nullptr)
-                {
-                    surface->Release();
-                }
-            }
+            Drop(slot.target);
+            Drop(slot.colourTarget);
             slot = ReflectSlot{};
         }
     }
@@ -2832,20 +2830,12 @@ void Release()
     {
         for (IDirect3DSurface9 *&target : slot.targets)
         {
-            if (target != nullptr)
-            {
-                target->Release();
-                target = nullptr;
-            }
+            Drop(target);
         }
         slot.keys.clear();
         slot.batch = 0;
     }
-    if (g_map != nullptr)
-    {
-        g_map->Release();
-        g_map = nullptr;
-    }
+    Drop(g_map);
     g_mapDrawn = false;
     for (FigureDraw &draw : g_figureDraws)
     {
@@ -2853,21 +2843,9 @@ void Release()
     }
     g_figureDraws.clear();
     g_figureKeys.clear();
-    if (g_atlas != nullptr)
-    {
-        g_atlas->Release();
-        g_atlas = nullptr;
-    }
-    if (g_atlasDepth != nullptr)
-    {
-        g_atlasDepth->Release();
-        g_atlasDepth = nullptr;
-    }
-    if (g_oldAtlas != nullptr)
-    {
-        g_oldAtlas->Release();
-        g_oldAtlas = nullptr;
-    }
+    Drop(g_atlas);
+    Drop(g_atlasDepth);
+    Drop(g_oldAtlas);
     g_oldCascades = {};
     g_fittedAxes.reset();
     g_fading.store(false);

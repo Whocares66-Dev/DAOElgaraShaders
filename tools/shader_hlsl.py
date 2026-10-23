@@ -532,7 +532,10 @@ class Shader:
         # and a tree's leaves were lost: 2026-10-22).
         for register, count in self._tables.items():
             first = int(register[1:])
-            rows = [f"float4({', '.join(self.definitions[f'c{first + i}'])})" for i in range(count)]
+            rows = [
+                f"float4({', '.join(self.definitions[f'c{first + i}'])})"
+                for i in range(count)
+            ]
             chosen = rows[-1]
             for i in range(count - 2, -1, -1):
                 chosen = f"(i == {i} ? {rows[i]} : {chosen})"

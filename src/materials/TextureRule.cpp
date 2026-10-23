@@ -164,8 +164,7 @@ bool IsMetal(const float *own, const float *mirror, float gloss, Ask ask)
     // gloss of 0.18) that the sheen's test left matte beside their metal
     // gauntlets (issue 32).
     const bool tintAllowed = ask == Ask::Shaded;
-    const bool ownColour =
-        coloured ? (sameHue || gilt) : (tintAllowed || !(ask == Ask::Surely ? cool : sheen));
+    const bool ownColour = coloured ? (sameHue || gilt) : (tintAllowed || !(ask == Ask::Surely ? cool : sheen));
     float least = 1.0F;
     if (ask == Ask::Surely)
     {

@@ -140,7 +140,8 @@ float DaoMetal(float2 uv, float said)
     float metal = 0;
     [branch] if (DAO_MATERIALS > 0)
     {
-        metal = saturate(mml_fDaoMetal * tex2Dgrad(smpDaoMetal, uv, dx, dy).g) * saturate(said) * saturate(DAO_MATERIALS);
+        metal =
+            saturate(mml_fDaoMetal * tex2Dgrad(smpDaoMetal, uv, dx, dy).g) * saturate(said) * saturate(DAO_MATERIALS);
     }
     return metal;
 }
@@ -339,18 +340,18 @@ float3 DaoMirror(float3 lights, float3 env, float3 mirror, float3 own, float met
     float3 sentAll = theirs;
     [branch] if (DAO_MATERIALS > 0)
     {
-    const float3 both = own + mirror;
-    const float3 asMetal = both / max(1.0, max(both.r, max(both.g, both.b)));
-    const float mirrors = saturate(metal);
-    const float whole = saturate(mirrors / max(saturate(said), 1e-3));
-    const float3 unmetal = lerp(kDaoMirrorOfMask * mirror, mml_vDaoClear.x, step(1e-6, mml_vDaoClear.x));
-    const float3 faceOn = lerp(unmetal, asMetal, mirrors);
-    const float3 faceOnEnv = (1 - mirrors) * unmetal + whole * asMetal;
-    const float edgeOn = saturate(50 * faceOn.g);
-    const float2 share = DaoSurround(sqrt(sqrt(2 / (power + 2))), saturate(facing));
-    const float3 sent = env * (faceOnEnv * share.x + edgeOn * (1 - mirrors + whole) * share.y);
-    gDaoEnvSent = lerp(env * mirror, sent, saturate(DAO_MATERIALS));
-    sentAll = lerp(theirs, lights * (faceOn + (edgeOn - faceOn) * saturate(edge)) + sent, saturate(DAO_MATERIALS));
+        const float3 both = own + mirror;
+        const float3 asMetal = both / max(1.0, max(both.r, max(both.g, both.b)));
+        const float mirrors = saturate(metal);
+        const float whole = saturate(mirrors / max(saturate(said), 1e-3));
+        const float3 unmetal = lerp(kDaoMirrorOfMask * mirror, mml_vDaoClear.x, step(1e-6, mml_vDaoClear.x));
+        const float3 faceOn = lerp(unmetal, asMetal, mirrors);
+        const float3 faceOnEnv = (1 - mirrors) * unmetal + whole * asMetal;
+        const float edgeOn = saturate(50 * faceOn.g);
+        const float2 share = DaoSurround(sqrt(sqrt(2 / (power + 2))), saturate(facing));
+        const float3 sent = env * (faceOnEnv * share.x + edgeOn * (1 - mirrors + whole) * share.y);
+        gDaoEnvSent = lerp(env * mirror, sent, saturate(DAO_MATERIALS));
+        sentAll = lerp(theirs, lights * (faceOn + (edgeOn - faceOn) * saturate(edge)) + sent, saturate(DAO_MATERIALS));
     }
     return sentAll;
 }
