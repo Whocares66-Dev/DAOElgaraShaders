@@ -93,6 +93,12 @@ void SetHour(float hour);
 // The clock's hour. Call on the game's thread.
 float Hour();
 
+// Whether a point light is a layout's lamp named as a fire: a room's
+// (<level>_<x>_<y>_<d>_ll) whose name starts as data/areas/defaults.ini's
+// `fires` say (torch, fire). Those keep their light by night, and the plugin
+// lights by them itself (EffectLights.cpp). Any thread, once Install has run.
+bool FireLamp(std::wstring_view model, std::wstring_view name);
+
 // The night level a day level of the cycle takes its night from, or empty
 // where the clock does not run in it. Any thread.
 std::wstring NightLevel(std::wstring_view day);

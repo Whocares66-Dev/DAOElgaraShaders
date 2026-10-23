@@ -7,6 +7,7 @@
 #include "dao/ClientExoApp.h"
 #include "dao/GameModes.h"
 #include "dao/Hook.h"
+#include "dao/Lights.h"
 #include "dao/Module.h"
 #include "dao/Objects.h"
 #include "dao/Vfx.h"
@@ -17,6 +18,7 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -273,6 +275,45 @@ Light LightOf(const void *node)
     return light;
 }
 
+// The level's lamps named as fires (daynight::FireLamp), as they were last
+// seen lighting an object: lit by the plugin, each pixel, as an effect's
+// light is, in place of the engine's. The engine gives a level's lamps to the
+// objects it chooses them for and reckons them by the vertex, inside the sum
+// the sun's shadow is laid on: Lothering's bonfire (fire_big_001_RT, 12 m)
+// lit the ground in a pool cut off where a hill's shadow from the moon lay
+// and at the meshes it was not chosen for (the user, 2026-10-23: "fire light
+// seems to stop on some textures?", "the fire should be overriding the
+// shadows"). Kept by value: a lamp's node is read only while the engine hands
+// it, and what was not seen lately, or was of another scene, is let go.
+struct Lamp
+{
+    Light light;
+    std::chrono::steady_clock::time_point seen;
+};
+std::atomic<bool> g_lampsWanted{false};
+std::mutex g_lampLock;
+std::unordered_map<std::uintptr_t, Lamp> g_lamps; // by node, under g_lampLock
+void *g_lampScene = nullptr;                      // the scene they were seen in, the game thread's
+constexpr std::chrono::milliseconds kLampKept{2000};
+
+// The lamps seen lately in `scene` added to `lights`; those of another
+// scene, or not seen lately, let go.
+void AddLamps(void *scene, std::vector<Light> &lights)
+{
+    const std::scoped_lock lock(g_lampLock);
+    if (scene != g_lampScene || !g_lampsWanted.load(std::memory_order_relaxed))
+    {
+        g_lamps.clear();
+        g_lampScene = scene;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    std::erase_if(g_lamps, [&](const auto &lamp) { return now - lamp.second.seen > kLampKept; });
+    for (const auto &[node, lamp] : g_lamps)
+    {
+        lights.push_back(lamp.light);
+    }
+}
+
 // The scene the player's area is drawn as, and where the camera is.
 void *AreasScene()
 {
@@ -311,6 +352,30 @@ bool Install()
     g_fires = ReadTable(dao::Module::OwnFolder() / "effects.ini", g_lit);
     spdlog::info("effects' lights: {} lightless fires given a light and {} effects lit by the sky, by effects.ini",
                  g_fires.size(), g_lit.size());
+    dao::lights::OnPointLight([](dao::lights::PointLight &light) {
+        if (!g_wanted.load(std::memory_order_relaxed) || !g_lampsWanted.load(std::memory_order_relaxed) ||
+            !daynight::FireLamp(light.model, light.name))
+        {
+            return;
+        }
+        const Light lamp = LightOf(reinterpret_cast<const void *>(light.node));
+        light.color = {0, 0, 0, light.color[3]};
+        // Handed before its place is: at the world's origin with no reach, as the area comes in.
+        if (lamp.place[3] <= 0)
+        {
+            return;
+        }
+        {
+            const std::scoped_lock lock(g_lampLock);
+            if (!g_lamps.contains(light.node))
+            {
+                spdlog::info("effects' lights: the lamp {} lit as an effect's light, at {:.1f} {:.1f} {:.1f}, {:.1f} m",
+                             std::filesystem::path(light.name).string(), lamp.place[0], lamp.place[1], lamp.place[2],
+                             lamp.place[3]);
+            }
+            g_lamps[light.node] = {lamp, std::chrono::steady_clock::now()};
+        }
+    });
     dao::vfx::OnEmitterColor([](dao::vfx::EmitterColor &emitter) {
         if (!emitter.modelHasLight && g_lit.contains(Lower(emitter.model)))
         {
@@ -323,6 +388,11 @@ bool Install()
         }
     });
     return true;
+}
+
+void WantLamps(bool on)
+{
+    g_lampsWanted.store(on, std::memory_order_relaxed);
 }
 
 void Want(bool on)
@@ -351,6 +421,7 @@ void Read()
                 lights.push_back(light);
             }
         }
+        AddLamps(scene, lights);
         for (const dao::vfx::RunningEffect &effect :
              g_fires.empty() ? std::vector<dao::vfx::RunningEffect>{} : dao::vfx::RunningEffects())
         {

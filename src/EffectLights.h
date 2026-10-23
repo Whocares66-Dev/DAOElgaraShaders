@@ -37,6 +37,10 @@ bool Install();
 // manager next takes lights in, and the shaders are handed none.
 void Want(bool on);
 
+// Whether the level's lamps named as fires are lit by the plugin in place of
+// the engine (daynight::FireLamp): the game thread's word, with Want's.
+void WantLamps(bool on);
+
 // Reads the lights of the area's effects as the engine would hand them to a
 // shader. For dao::OnFrame.
 void Read();

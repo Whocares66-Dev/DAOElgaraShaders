@@ -1500,6 +1500,9 @@ void KeepLookRegisters()
     outdoors::Want(lighting);
     // Effects light everything they reach, indoors and out.
     effectlights::Want(lighting);
+    // The level's lamps named as fires lit by the plugin (EffectLights.cpp);
+    // outdoors.tune's FireLamps = 0, a developer's, leaves them the engine's.
+    effectlights::WantLamps(lighting && outdoors::Tune("FireLamps", 1) > 0);
     // outdoors.tune's EffectShadows = 0, a developer's: their cost without them
     // (issue 30).
     levelshadows::WantEffectShadows(lighting && outdoors::Tune("EffectShadows", 1) > 0);

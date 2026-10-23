@@ -702,6 +702,17 @@ Table ReadTable(const std::filesystem::path &folder)
 
 } // namespace
 
+bool FireLamp(std::wstring_view model, std::wstring_view name)
+{
+    const auto lower = [](wchar_t c) { return std::towlower(c); };
+    const bool layout = model.size() >= 3 &&
+                        std::ranges::equal(model.substr(model.size() - 3), std::wstring_view(L"_ll"), {}, lower, lower);
+    const auto named = [&](std::wstring_view start) {
+        return name.size() >= start.size() && std::ranges::equal(name.substr(0, start.size()), start, {}, lower, lower);
+    };
+    return layout && std::ranges::any_of(g_fireLights, named);
+}
+
 Scattered Scattering(const dao::core::Sky &sky)
 {
     constexpr std::array<double, 3> kRayleigh{6.95e-6, 1.18e-5, 2.44e-5};                 // per metre
@@ -941,12 +952,7 @@ void Install()
             return model.size() >= end.size() &&
                    _wcsnicmp(model.data() + model.size() - end.size(), end.data(), end.size()) == 0;
         };
-        const auto lower = [](wchar_t c) { return std::towlower(c); };
-        const auto named = [&](std::wstring_view start) {
-            return light.name.size() >= start.size() &&
-                   std::ranges::equal(light.name.substr(0, start.size()), start, {}, lower, lower);
-        };
-        if (endsWith(L"_ll") && !std::ranges::any_of(g_fireLights, named))
+        if (endsWith(L"_ll") && !FireLamp(model, light.name))
         {
             for (std::size_t i = 0; i < 3; ++i)
             {
