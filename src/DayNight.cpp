@@ -346,12 +346,6 @@ struct Cycled
     float declination = 0;
     float noon = 0;
 };
-// The start of the names of a layout's lights that are fires, which keep
-// their light by night (Install): the castle's layouts light its torches
-// (torch_baked, torch_animated) beside the makers' sunlight (Sunhighlight) and
-// a bounce of the day's sky (amb_bounce_RT), which go with the sun as the
-// village's Hotspots do (ghilana, 2026-10-22).
-constexpr std::array<std::wstring_view, 1> kFireLights{L"torch"};
 // The sun's and the moon's radius as seen, radians: a body is gone when its
 // disc is.
 constexpr float kDiscRadius = 0.267F * kDegree;
@@ -541,6 +535,9 @@ bool Same(const dao::core::Sunlight &a, const dao::core::Sunlight &b)
 // tag, and the levels looked at, under g_lock.
 std::mutex g_lock;
 std::vector<Cycled> g_cycled;
+// The starts of the names of layouts' lights that are fires (daynight.ini's
+// `fires`), set once in Install before any light is seen.
+std::vector<std::wstring> g_fireLights;
 std::map<std::wstring, std::shared_ptr<const Pair>> g_pairs;
 std::set<std::wstring> g_asked;
 // What the hour's light hands the render thread: the sky light's multiplier,
@@ -599,9 +596,16 @@ std::optional<float> Number(const std::string &text)
     return in >> value && (in >> std::ws).eof() ? std::optional<float>(value) : std::nullopt;
 }
 
-// The areas of daynight.ini (its head says what each key is): every section
-// but [defaults] an area, with [defaults]'s values where it says none.
-std::vector<Cycled> ReadAreas(const std::filesystem::path &file)
+// What daynight.ini says (its head says what each key is): every section but
+// [defaults] an area, with [defaults]'s values where it says none, and
+// [defaults]'s fires.
+struct Table
+{
+    std::vector<Cycled> areas;
+    std::vector<std::wstring> fires;
+};
+
+Table ReadTable(const std::filesystem::path &file)
 {
     using Keys = std::map<std::string, std::string>;
     std::vector<std::pair<std::string, Keys>> sections;
@@ -626,7 +630,15 @@ std::vector<Cycled> ReadAreas(const std::filesystem::path &file)
         defaults = found->second;
     }
     const auto wide = [](const std::string &text) { return Lower(std::wstring(text.begin(), text.end())); };
-    std::vector<Cycled> areas;
+    Table table;
+    if (const auto fires = defaults.find("fires"); fires != defaults.end())
+    {
+        std::istringstream names(fires->second);
+        for (std::string name; names >> name;)
+        {
+            table.fires.push_back(wide(name));
+        }
+    }
     for (const auto &[tag, keys] : sections)
     {
         const auto said = [&](const std::string &key) -> std::optional<std::string> {
@@ -665,9 +677,9 @@ std::vector<Cycled> ReadAreas(const std::filesystem::path &file)
         {
             area.latitudeOf = wide(latitude);
         }
-        areas.push_back(std::move(area));
+        table.areas.push_back(std::move(area));
     }
-    return areas;
+    return table;
 }
 
 } // namespace
@@ -862,10 +874,12 @@ std::optional<std::array<float, 3>> Disc()
 void Install()
 {
     {
-        std::vector<Cycled> areas = ReadAreas(dao::Module::OwnFolder() / "daynight.ini");
-        spdlog::info("day and night: {} areas by daynight.ini", areas.size());
+        Table table = ReadTable(dao::Module::OwnFolder() / "daynight.ini");
+        spdlog::info("day and night: {} areas and {} names of fires by daynight.ini", table.areas.size(),
+                     table.fires.size());
+        g_fireLights = std::move(table.fires);
         const std::scoped_lock lock(g_lock);
-        g_cycled = std::move(areas);
+        g_cycled = std::move(table.areas);
     }
     // The ambient colour the engine adds to a level's surfaces and props: the
     // level's sky light, which goes with the hour as its bake does.
@@ -894,7 +908,7 @@ void Install()
         // with the sun, as the moon alone lights the level at night. Read from
         // the level's archive alone, only 20 of Redcliffe's were dimmed, and
         // the rooms' own lit the houses warm at midnight (the user,
-        // 2026-10-21). Not those named as fires (kFireLights): the castle's
+        // 2026-10-21). Not those named as fires (daynight.ini's `fires`): the castle's
         // layouts have its torches' lights among them, which went out with
         // the sun and left its torches' alcoves black at night (issue 35). The figures' (<...>_lc) light figures alone,
         // a fill: they go with the sky's light, as the bake and the probes do, or a figure in the moon's shadow was
@@ -913,7 +927,7 @@ void Install()
             return light.name.size() >= start.size() &&
                    std::ranges::equal(light.name.substr(0, start.size()), start, {}, lower, lower);
         };
-        if (endsWith(L"_ll") && !std::ranges::any_of(kFireLights, named))
+        if (endsWith(L"_ll") && !std::ranges::any_of(g_fireLights, named))
         {
             for (std::size_t i = 0; i < 3; ++i)
             {

@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <cwctype>
 #include <filesystem>
@@ -82,10 +83,7 @@ std::wstring Lower(std::wstring_view text)
     return lower;
 }
 
-// A level's probe cube of a name; with no name, its first (a night level
-// another's day borrows, whose probes are not the day's: Redcliffe's castle,
-// lak200d_probe_9xy, takes the village's night's lak100n_probe_8uz, each
-// level's one cube; ghilana, 2026-10-22).
+// A level's probe cube of a name; with no name, its first.
 std::optional<std::array<dds::Image, 6>> ReadCube(const std::wstring &level, const std::wstring &name)
 {
     const std::filesystem::path rim = GameFolder() / "packages" / "core" / "env" / level / (level + L".gpu.rim");
@@ -120,20 +118,70 @@ std::optional<std::array<dds::Image, 6>> ReadCube(const std::wstring &level, con
     return faces;
 }
 
+// A borrowed night's cube: the day's own place, as the night lights it. The
+// level's bake goes by night to the night sky's even light (night_sky.hlsl),
+// so what the cube sees is that light on what it sees: each channel of the
+// day's cube taken to the night sky's light over the cube's mean. Another
+// level's night cube is another place: Redcliffe's village's in the castle's
+// puddles, and in Denerim's or Lothering's (issue 37).
+std::array<dds::Image, 6> AtNight(std::array<dds::Image, 6> faces, const std::array<float, 3> &nightSky)
+{
+    std::array<double, 3> sum{};
+    std::size_t texels = 0;
+    for (const dds::Image &face : faces)
+    {
+        for (std::size_t i = 0; i + 3 < face.rgba.size(); i += 4)
+        {
+            for (std::size_t c = 0; c < 3; ++c)
+            {
+                sum.at(c) += face.rgba.at(i + c);
+            }
+        }
+        texels += face.rgba.size() / 4;
+    }
+    std::array<float, 3> by{};
+    for (std::size_t c = 0; c < 3; ++c)
+    {
+        const double mean = texels > 0 ? sum.at(c) / static_cast<double>(texels) / 255 : 0;
+        by.at(c) = mean > 0 ? static_cast<float>(nightSky.at(c) / mean) : 0;
+    }
+    for (dds::Image &face : faces)
+    {
+        for (std::size_t i = 0; i + 3 < face.rgba.size(); i += 4)
+        {
+            for (std::size_t c = 0; c < 3; ++c)
+            {
+                face.rgba.at(i + c) = static_cast<std::uint8_t>(
+                    std::clamp(std::lround(static_cast<float>(face.rgba.at(i + c)) * by.at(c)), 0L, 255L));
+            }
+        }
+    }
+    return faces;
+}
+
 // The two cubes, read where they have not been; then the night's `share` of
-// the night's, each face encoded as the engine's is.
-Made Make(std::shared_ptr<const Cubes> cubes, const std::wstring &level, const std::wstring &name, float share)
+// the night's, each face encoded as the engine's is. `nightSky` is the night
+// sky's light (daynight::NightSky), for a borrowed night's cube.
+Made Make(std::shared_ptr<const Cubes> cubes, const std::wstring &level, const std::wstring &name, float share,
+          std::array<float, 3> nightSky)
 {
     Made made;
     if (!cubes)
     {
         // The night level's cube of the same probe where it is the day's own
-        // night (lak100d's and lak100n's), else its first.
+        // night (lak100d's and lak100n's), else the day's own at night.
         const std::wstring night = daynight::NightLevel(level);
         const bool own = night == level.substr(0, level.size() - 1) + L"n";
         std::optional<std::array<dds::Image, 6>> day = ReadCube(level, name);
-        std::optional<std::array<dds::Image, 6>> nightCube =
-            night.empty() ? std::nullopt : ReadCube(night, own ? night + name.substr(level.size()) : std::wstring());
+        std::optional<std::array<dds::Image, 6>> nightCube;
+        if (own)
+        {
+            nightCube = ReadCube(night, night + name.substr(level.size()));
+        }
+        else if (!night.empty() && day)
+        {
+            nightCube = AtNight(*day, nightSky);
+        }
         if (!day || !nightCube)
         {
             return made;
@@ -270,7 +318,8 @@ void Presented()
             continue;
         }
         kept->making = share;
-        kept->made = std::async(std::launch::async, Make, kept->cubes, kept->level, kept->name, share);
+        kept->made =
+            std::async(std::launch::async, Make, kept->cubes, kept->level, kept->name, share, daynight::NightSky());
     }
 }
 
