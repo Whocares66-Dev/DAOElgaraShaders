@@ -1051,6 +1051,7 @@ HRESULT __stdcall SetRenderTarget(IDirect3DDevice9 *device, DWORD index, IDirect
             g_drawsPicture = picture;
             HandShareAsked(device);
             HandFills(device);
+            effectlights::Hand(device, picture);
             if (g_setRenderState.IsAttached())
             {
                 g_setRenderState.Original()(device, D3DRS_SEPARATEALPHABLENDENABLE,
@@ -1312,7 +1313,7 @@ HRESULT __stdcall BeginScene(IDirect3DDevice9 *device)
     }
     device->SetPixelShaderConstantF(kHazeRegister, haze.data(), kHazeRegisters);
     HandFills(device);
-    effectlights::Hand(device);
+    effectlights::Hand(device, g_drawsPicture);
     return g_beginScene.Original()(device);
 }
 

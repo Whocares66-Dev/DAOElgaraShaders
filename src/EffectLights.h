@@ -56,8 +56,13 @@ void LevelOpened(const std::filesystem::path &levelRim);
 void Read();
 
 // Hands the shaders the lights last read (effect_lights.hlsl's registers),
-// as the scene starts.
-void Hand(IDirect3DDevice9 *device);
+// as the scene starts and as the first target changes; none where the target
+// is not the frame's own picture. A portrait and the record's and the
+// inventory's figures are drawn into targets of their own, in a scene of
+// their own: given the area's lights, Redcliffe castle's room fires (DAOLib's
+// RunningEffects since ca02aa6) lit them pale, Morrigan's black hair
+// lavender (issue 51).
+void Hand(IDirect3DDevice9 *device, bool picture);
 
 // The lights handed for this scene, in their order, each its place and reach:
 // what their shadows are drawn from (LevelShadows.cpp). The render thread's.

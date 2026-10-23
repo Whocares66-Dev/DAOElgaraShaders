@@ -678,9 +678,10 @@ void Read()
     g_registers = registers;
 }
 
-void Hand(IDirect3DDevice9 *device)
+void Hand(IDirect3DDevice9 *device, bool picture)
 {
     std::array<float, kRegisterFloats> registers{};
+    if (picture)
     {
         const std::scoped_lock lock(g_readLock);
         registers = g_registers;
