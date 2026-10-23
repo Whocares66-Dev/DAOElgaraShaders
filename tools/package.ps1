@@ -46,7 +46,7 @@ $builtPlugin = Join-Path $built 'elgarashaders.dll'
 if (-not (Test-Path $builtPlugin)) { throw "No $builtPlugin; run .\tools\build.ps1 -Preset $Preset first" }
 $builtPdb = Join-Path $built 'elgarashaders.pdb'
 if (-not (Test-Path $builtPdb)) { throw "No $builtPdb; a crash log names none of the mod's frames without it" }
-$tables = 'materials.answers', 'materials.names', 'effects.ini', 'daynight.ini'
+$tables = 'materials.answers', 'materials.names', 'effects.ini'
 foreach ($table in $tables) {
     if (-not (Test-Path (Join-Path $built $table))) { throw "No $table in $built; run .\tools\build.ps1 -Preset $Preset again" }
 }
@@ -88,6 +88,11 @@ New-Item -ItemType Directory -Force (Join-Path $plugin 'override') | Out-Null
 # leaves the linker's .ilk there.
 Copy-Item -Force $builtPlugin, $builtPdb $plugin
 foreach ($table in $tables) { Copy-Item -Force (Join-Path $built $table) $plugin }
+# The areas the day and night runs in, a file each (data/areas).
+$areas = Join-Path $built 'areas'
+if (-not (Test-Path (Join-Path $areas 'defaults.ini'))) { throw "No areas\defaults.ini in $built; run .	oolsuild.ps1 -Preset $Preset again" }
+New-Item -ItemType Directory -Force (Join-Path $plugin 'areas') | Out-Null
+Copy-Item -Force (Join-Path $areas '*.ini') (Join-Path $plugin 'areas')
 foreach ($file in $overrideFiles) { Copy-Item -Force $file.FullName (Join-Path $plugin 'override') }
 Copy-Item -Force (Join-Path $repo 'README.md') $plugin
 Copy-Item -Force (Join-Path $repo 'LICENSE') (Join-Path $plugin 'LICENSE.txt')

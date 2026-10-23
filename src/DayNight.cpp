@@ -90,12 +90,12 @@ struct Pair
 {
     LevelLight day;
     LevelLight night;
-    std::wstring area;     // the area the clock runs in (daynight.ini)
-    Vec3 midnight{};       // the way to the moon at midnight (daynight.ini)
-    float latitude = 0;    // radians (daynight.ini)
-    float declination = 0; // the sun's, radians (daynight.ini)
-    float noon = 0;        // the hour the sun is highest (daynight.ini)
-    float nightFill = 0;   // the share of the night sky's light kept by night (daynight.ini)
+    std::wstring area;     // the area the clock runs in (its area's file)
+    Vec3 midnight{};       // the way to the moon at midnight (its area's file)
+    float latitude = 0;    // radians (its area's file)
+    float declination = 0; // the sun's, radians (its area's file)
+    float noon = 0;        // the hour the sun is highest (its area's file)
+    float nightFill = 0;   // the share of the night sky's light kept by night (its area's file)
 };
 
 std::wstring Lower(std::wstring text)
@@ -333,7 +333,7 @@ constexpr float kDayFrom = 6 * kDegree;
 // The sun's height under the horizon at which the moon is the engine's sun at
 // its whole: the end of civil twilight.
 constexpr float kMoonFrom = -6 * kDegree;
-// An area the clock runs in, as data/daynight.ini says it (its comments say
+// An area the clock runs in, as its file in data/areas says it (its comments say
 // why each is as it is). Angles in degrees.
 struct Cycled
 {
@@ -533,12 +533,12 @@ bool Same(const dao::core::Sunlight &a, const dao::core::Sunlight &b)
     return true;
 }
 
-// The areas of daynight.ini (Install), every area of a level opened, by its
+// The areas of data/areas (Install), every area of a level opened, by its
 // tag, and the levels looked at, under g_lock.
 std::mutex g_lock;
 std::vector<Cycled> g_cycled;
-// The starts of the names of layouts' lights that are fires (daynight.ini's
-// `fires`), set once in Install before any light is seen.
+// The starts of the names of layouts' lights that are fires (data/areas'
+// defaults.ini's `fires`), set once in Install before any light is seen.
 std::vector<std::wstring> g_fireLights;
 std::map<std::wstring, std::shared_ptr<const Pair>> g_pairs;
 std::set<std::wstring> g_asked;
@@ -598,31 +598,43 @@ std::optional<float> Number(const std::string &text)
     return in >> value && (in >> std::ws).eof() ? std::optional<float>(value) : std::nullopt;
 }
 
-// What daynight.ini says (its head says what each key is): every section but
-// [defaults] an area, with [defaults]'s values where it says none, and
-// [defaults]'s fires.
+// What the areas' files say (data/areas/README.md says what each key is):
+// every file but defaults.ini an area, named by its tag, with defaults.ini's
+// values where it says none, and defaults.ini's fires.
 struct Table
 {
     std::vector<Cycled> areas;
     std::vector<std::wstring> fires;
 };
 
-Table ReadTable(const std::filesystem::path &file)
+using Keys = std::map<std::string, std::string>;
+
+// A file's `key = value` lines.
+Keys ReadKeys(const std::filesystem::path &file)
 {
-    using Keys = std::map<std::string, std::string>;
-    std::vector<std::pair<std::string, Keys>> sections;
+    Keys keys;
     std::ifstream in(file);
     std::string line;
     while (std::getline(in, line))
     {
         line = Trimmed(line);
-        if (line.size() > 2 && line.front() == '[' && line.back() == ']')
+        if (const std::size_t equals = line.find('='); equals != std::string::npos)
         {
-            sections.emplace_back(line.substr(1, line.size() - 2), Keys{});
+            keys[Trimmed(line.substr(0, equals))] = Trimmed(line.substr(equals + 1));
         }
-        else if (const std::size_t equals = line.find('='); equals != std::string::npos && !sections.empty())
+    }
+    return keys;
+}
+
+Table ReadTable(const std::filesystem::path &folder)
+{
+    std::vector<std::pair<std::string, Keys>> sections;
+    std::error_code error;
+    for (const std::filesystem::directory_entry &entry : std::filesystem::directory_iterator(folder, error))
+    {
+        if (entry.path().extension() == ".ini")
         {
-            sections.back().second[Trimmed(line.substr(0, equals))] = Trimmed(line.substr(equals + 1));
+            sections.emplace_back(entry.path().stem().string(), ReadKeys(entry.path()));
         }
     }
     Keys defaults;
@@ -667,8 +679,8 @@ Table ReadTable(const std::filesystem::path &file)
         const std::optional<float> nightFill = Number(said("night_fill").value_or(""));
         if (area.day.empty() || area.night.empty() || !declination || !noon || !nightFill)
         {
-            spdlog::warn("day and night: daynight.ini's [{}] lacks its level, its night, the declination, noon or "
-                         "the night's fill",
+            spdlog::warn("day and night: areas/{}.ini lacks its level, its night, the declination, noon or the "
+                         "night's fill",
                          tag);
             continue;
         }
@@ -720,7 +732,7 @@ void Opened(const std::filesystem::path &levelRim)
     }
     // A level with a day and a night is two, named alike but for the last
     // letter: d for the day's, n for the night's (lak100d and lak100n). The
-    // clock runs in the areas daynight.ini names alone: a night level is the
+    // clock runs in the areas data/areas names alone: a night level is the
     // story's night, and the other places are left until the story's times
     // are known.
     std::vector<Cycled> areas;
@@ -881,8 +893,8 @@ std::optional<std::array<float, 3>> Disc()
 void Install()
 {
     {
-        Table table = ReadTable(dao::Module::OwnFolder() / "daynight.ini");
-        spdlog::info("day and night: {} areas and {} names of fires by daynight.ini", table.areas.size(),
+        Table table = ReadTable(dao::Module::OwnFolder() / "areas");
+        spdlog::info("day and night: {} areas and {} names of fires by the areas' files", table.areas.size(),
                      table.fires.size());
         g_fireLights = std::move(table.fires);
         const std::scoped_lock lock(g_lock);
@@ -915,7 +927,7 @@ void Install()
         // with the sun, as the moon alone lights the level at night. Read from
         // the level's archive alone, only 20 of Redcliffe's were dimmed, and
         // the rooms' own lit the houses warm at midnight (the user,
-        // 2026-10-21). Not those named as fires (daynight.ini's `fires`): the castle's
+        // 2026-10-21). Not those named as fires (data/areas/defaults.ini's `fires`): the castle's
         // layouts have its torches' lights among them, which went out with
         // the sun and left its torches' alcoves black at night (issue 35). The figures' (<...>_lc) light figures alone,
         // a fill: they go with the sky's light, as the bake and the probes do, or a figure in the moon's shadow was

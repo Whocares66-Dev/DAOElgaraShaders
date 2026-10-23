@@ -7,7 +7,7 @@
 // (lak100d and lak100n), Denerim's market (den200d, den200n) and hrt201. Each
 // has its own sun or moon and its own sky and fog (its .arl), and its own
 // sky's light (its layout's ambient light, which its lightmaps were baked
-// with). The clock runs in the areas data/daynight.ini names, each on its
+// with). The clock runs in the areas data/areas names, each on its
 // day level, and takes of a night level its moon, its sky and its sky's
 // light; Redcliffe's castle (lak200d) has no night level and takes the
 // village's. The table says, by area, how its sun and moon go:
@@ -68,7 +68,7 @@ struct Light
     float lit = 1;                      // the light on what is lit about, over the level's own (Lit)
 };
 
-// Reads data/daynight.ini (the areas the clock runs in, from the plugin's
+// Reads data/areas (a file for each area the clock runs in, from the plugin's
 // folder), and has the level's ambient colour, its lights and the figures'
 // share of the sun follow the hour (dao::lights). Call once, as the plugin
 // loads.
@@ -103,7 +103,7 @@ std::wstring NightLevel(std::wstring_view day);
 // which what the files do not hold is kept. The clock goes on by a day in `dayMinutes` of
 // play while it runs there. `night` is how bright the moon is, a share of the
 // night level's sun's; `fill`, where given, how much of the night level's sky
-// light the night keeps beside it, in place of the area's (daynight.ini's
+// light the night keeps beside it, in place of the area's (its file's
 // `night_fill`). Call on the game's thread.
 std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownSun, const dao::core::Sky &ownSky,
                          bool running, float dayMinutes, float night, std::optional<float> fill);

@@ -1,0 +1,21 @@
+# The areas the day and night cycle runs in
+
+One file an area, named by its tag (`lot100ar_lothering.ini`), read as the plugin starts (`DayNight.cpp`); `defaults.ini` gives what an area's file does not say. An area with no file keeps its own light. Lines are `key = value`; `;` starts a comment, which says why a value is what it is.
+
+| key | what |
+|---|---|
+| `level` | the area's level (its day level), as its `.are` names it |
+| `night` | the level its night is taken from: its moon, its sky and its sky's light |
+| `latitude` | degrees, or a level: the latitude at which that level's sun is an equinox's noon (90 less its height) |
+| `moon_height` | degrees up at midnight; default the night level's own moon's |
+| `moon_turn` | degrees about the upright from the night level's own moon; default 0 |
+| `declination` | the sun's, in degrees: how far north of the sky's equator it is, the season |
+| `noon` | the hour the sun is highest |
+| `night_fill` | how much of the night level's sky light the night keeps beside the moon, what lights the moon's shadows: set so that shadows are about as dark in every area as in Redcliffe's |
+| `fires` | (`defaults.ini` only) the starts of the names of layouts' lights that are fires, which keep their light by night; every other layout light goes with the sun |
+
+The sun and the moon go round one pole on the latitude's path, the moon highest at midnight. The day level's sun stands where the level has it at the afternoon hour it is that high, and the level's own light, its bake's, is that hour's (the user, 2026-10-22: "perhaps the default isn't noon, but something more like 10:AM or 3:PM"). Where the night is another level's, the night's reflections are the area's own day cube taken to the night sky's light (`NightCubes.cpp`).
+
+A level is the ground of several areas, and the story has its own times in the others: `lak100d` is the village and the climax's and the epilogue's Redcliffe (`cli100ar`, `epi200ar`), `lak200d` the castle's courtyard and the climax's (`cli150ar`) (ghilana, 2026-10-22; the user, 2026-10-22: "certain areas / times should not change for story reasons"). Areas whose day or night is the story's have no file: Castle Cousland, Ostagar, the party camp, the sieges and the climax (issue 37 has the accounting).
+
+Flames that the level gives no light are given one by type, not by area, in `data/effects.ini`: the same kind of torch or fire has the same light everywhere.

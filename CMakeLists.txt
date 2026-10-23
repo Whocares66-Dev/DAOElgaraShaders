@@ -135,25 +135,29 @@ target_link_libraries(elgarashaders PRIVATE elgara_materials)
 dao_apply_warnings(elgarashaders)
 # The plugin's tables, read as it starts: data/effects.ini (tools/effect_list.py),
 # the lights it gives fires that have none and the effects it dims at night;
-# data/daynight.ini, the areas the day and night runs in and how their sun and
-# moon go. A step with the tables for its input: copied after the DLL's link,
-# a change to a table alone never reached the build (2026-10-23).
-set(ELGARA_TABLES effects.ini daynight.ini)
+# data/areas, a file for each area the day and night runs in, how its sun and
+# moon go. Steps with the tables for their input: copied after the DLL's
+# link, a change to a table alone never reached the build (2026-10-23).
+file(
+    GLOB ELGARA_AREAS
+    CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/areas/*.ini"
+)
+set(ELGARA_TABLES
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/effects.ini"
+    ${ELGARA_AREAS}
+)
 set(ELGARA_TABLES_OUT)
 foreach(table IN LISTS ELGARA_TABLES)
+    file(RELATIVE_PATH relative "${CMAKE_CURRENT_SOURCE_DIR}/data" "${table}")
+    set(out "${CMAKE_BINARY_DIR}/daolib/plugins/elgarashaders/${relative}")
     add_custom_command(
-        OUTPUT "${CMAKE_BINARY_DIR}/daolib/plugins/elgarashaders/${table}"
-        COMMAND
-            "${CMAKE_COMMAND}" -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/data/${table}"
-            "${CMAKE_BINARY_DIR}/daolib/plugins/elgarashaders/${table}"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/data/${table}"
+        OUTPUT "${out}"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${table}" "${out}"
+        DEPENDS "${table}"
         VERBATIM
     )
-    list(
-        APPEND ELGARA_TABLES_OUT
-        "${CMAKE_BINARY_DIR}/daolib/plugins/elgarashaders/${table}"
-    )
+    list(APPEND ELGARA_TABLES_OUT "${out}")
 endforeach()
 add_custom_target(elgarashaders_effects ALL DEPENDS ${ELGARA_TABLES_OUT})
 

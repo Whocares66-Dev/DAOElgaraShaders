@@ -131,7 +131,7 @@ std::atomic<int> g_exposureStop{kExposureByDefault};
 constexpr bool kDayNightByDefault = false; // a test for now, where a level has a day and a night
 std::atomic<bool> g_dayNight{kDayNightByDefault};
 constexpr int kTimeStops = 48;               // 0:00, 0:30, ... 23:30
-constexpr int kTimeByDefault = 24;           // noon, the sun near its highest (daynight.ini's noon)
+constexpr int kTimeByDefault = 24;           // noon, the sun near its highest (data/areas' noon)
 std::atomic<int> g_timeStop{kTimeByDefault}; // the hour last set, kept for the next session
 
 // One of the sun's shadow maps as the engine is asked for it.
