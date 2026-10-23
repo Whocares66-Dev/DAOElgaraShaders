@@ -102,10 +102,11 @@ std::wstring NightLevel(std::wstring_view day);
 // whose sun is `ownSun`, the area's own; `ownSky` is the area's own sky, of
 // which what the files do not hold is kept. The clock goes on by a day in `dayMinutes` of
 // play while it runs there. `night` is how bright the moon is, a share of the
-// night level's sun's; `fill` how much of the night level's sky light the
-// night keeps beside it. Call on the game's thread.
+// night level's sun's; `fill`, where given, how much of the night level's sky
+// light the night keeps beside it, in place of the area's (daynight.ini's
+// `night_fill`). Call on the game's thread.
 std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownSun, const dao::core::Sky &ownSky,
-                         bool running, float dayMinutes, float night, float fill);
+                         bool running, float dayMinutes, float night, std::optional<float> fill);
 
 // The sky light's multiplier as of the last Now, 1 where there is none. Any
 // thread.

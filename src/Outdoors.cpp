@@ -642,14 +642,6 @@ constexpr float kDayMinutes = 60;
 // How bright the moon is, as a share of the night level's sun's (DayNight.h's
 // Now): the night level's own.
 constexpr float kNight = 1;
-// How much of the night level's sky light the night keeps beside the moon
-// (DayNight.h's Now): the moon lights the night, and the night sky, a dim
-// light of its own, keeps what the moon does not reach from black. With none
-// the shadows were pitch black, figures lost in them and the game's
-// highlight of what can be used (Tab), which brightens a thing's own light,
-// gone with it; at 0.15 the shadows were still "maybe too dark" (the user,
-// 2026-10-22).
-constexpr float kNightFill = 0.4F;
 
 // The player's area's tag, asked of the scripts.
 std::wstring AreaTag()
@@ -670,7 +662,7 @@ void KeepHour()
     const bool running = sun && sky && g_wanted && g_outdoors && g_clockOn;
     const bool had = g_hourLight.has_value();
     g_hourLight = sun && sky ? daynight::Now(AreaTag(), *sun, *sky, running, Tuned("DayMinutes").value_or(kDayMinutes),
-                                             Tuned("Night").value_or(kNight), Tuned("NightFill").value_or(kNightFill))
+                                             Tuned("Night").value_or(kNight), Tuned("NightFill"))
                              : std::nullopt;
     if (had != g_hourLight.has_value())
     {

@@ -95,6 +95,7 @@ struct Pair
     float latitude = 0;    // radians (daynight.ini)
     float declination = 0; // the sun's, radians (daynight.ini)
     float noon = 0;        // the hour the sun is highest (daynight.ini)
+    float nightFill = 0;   // the share of the night sky's light kept by night (daynight.ini)
 };
 
 std::wstring Lower(std::wstring text)
@@ -345,6 +346,7 @@ struct Cycled
     std::wstring latitudeOf;       // empty for the day level
     float declination = 0;
     float noon = 0;
+    float nightFill = 0;
 };
 // The sun's and the moon's radius as seen, radians: a body is gone when its
 // disc is.
@@ -662,11 +664,15 @@ Table ReadTable(const std::filesystem::path &file)
         area.night = wide(said("night").value_or(""));
         const std::optional<float> declination = Number(said("declination").value_or(""));
         const std::optional<float> noon = Number(said("noon").value_or(""));
-        if (area.day.empty() || area.night.empty() || !declination || !noon)
+        const std::optional<float> nightFill = Number(said("night_fill").value_or(""));
+        if (area.day.empty() || area.night.empty() || !declination || !noon || !nightFill)
         {
-            spdlog::warn("day and night: daynight.ini's [{}] lacks its level, its night, the declination or noon", tag);
+            spdlog::warn("day and night: daynight.ini's [{}] lacks its level, its night, the declination, noon or "
+                         "the night's fill",
+                         tag);
             continue;
         }
+        area.nightFill = *nightFill;
         area.declination = *declination;
         area.noon = *noon;
         area.moonHeight = Number(said("moon_height").value_or(""));
@@ -743,6 +749,7 @@ void Opened(const std::filesystem::path &levelRim)
         pair->area = cycled.area;
         pair->declination = cycled.declination * kDegree;
         pair->noon = cycled.noon;
+        pair->nightFill = cycled.nightFill;
         {
             const Vec3 own{-pair->night.sun.direction[0], -pair->night.sun.direction[1], -pair->night.sun.direction[2]};
             const float round = std::atan2(own[1], own[0]) + (cycled.moonTurn * kDegree);
@@ -803,7 +810,7 @@ std::wstring NightLevel(std::wstring_view day)
 }
 
 std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownSun, const dao::core::Sky &ownSky,
-                         bool running, float dayMinutes, float night, float fill)
+                         bool running, float dayMinutes, float night, std::optional<float> fill)
 {
     std::shared_ptr<const Pair> pair;
     {
@@ -829,7 +836,7 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
         Stopped();
         return std::nullopt;
     }
-    const Light light = LightAt(*pair, ownSky, g_hour, night, fill);
+    const Light light = LightAt(*pair, ownSky, g_hour, night, fill.value_or(pair->nightFill));
     for (std::size_t i = 0; i < 3; ++i)
     {
         g_baked.at(i).store(light.baked.at(i), std::memory_order_relaxed);
