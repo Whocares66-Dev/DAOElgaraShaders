@@ -1502,8 +1502,10 @@ static void NoteLevel(IDirect3DDevice9 *device, IDirect3DVertexShader9 *shader, 
     }
 }
 
-static void PictureDrawing(IDirect3DDevice9 *device, IDirect3DVertexShader9 *shader, D3DPRIMITIVETYPE type, INT base,
-                           UINT least, UINT vertices, UINT first, UINT count)
+// A receiver about to be drawn into the picture is lent the atlas, and the
+// old aim's while the shadows fade; the atlas drawn first at the frame's
+// first.
+static void Receiving(IDirect3DDevice9 *device)
 {
     IDirect3DPixelShader9 *pixel = nullptr;
     device->GetPixelShader(&pixel);
@@ -1530,6 +1532,12 @@ static void PictureDrawing(IDirect3DDevice9 *device, IDirect3DVertexShader9 *sha
             }
         }
     }
+}
+
+static void PictureDrawing(IDirect3DDevice9 *device, IDirect3DVertexShader9 *shader, D3DPRIMITIVETYPE type, INT base,
+                           UINT least, UINT vertices, UINT first, UINT count)
+{
+    Receiving(device);
     NoteLevel(device, shader, type, base, least, vertices, first, count);
 }
 
@@ -1559,6 +1567,14 @@ void Drawing(IDirect3DDevice9 *device, bool picture, D3DPRIMITIVETYPE type, INT 
         EffectsDrawing(device);
     }
     shader->Release();
+}
+
+void DrawingPlain(IDirect3DDevice9 *device, bool picture)
+{
+    if (picture && g_wanted.load(std::memory_order_relaxed))
+    {
+        Receiving(device);
+    }
 }
 
 void UseSamplerState(SetSamplerStateFn set)

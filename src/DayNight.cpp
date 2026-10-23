@@ -25,6 +25,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -86,6 +87,9 @@ struct Pair
 {
     LevelLight day;
     LevelLight night;
+    std::wstring_view area; // the area the clock runs in (kCycled)
+    Vec3 midnight{};        // the way to the moon at midnight (kCycled)
+    float latitude = 0;     // radians (kCycled)
 };
 
 std::wstring Lower(std::wstring text)
@@ -336,8 +340,58 @@ constexpr float kSunDeclination = 18 * kDegree;
 // morning was light already (the user, 2026-10-22: "sun rises too early");
 // at 13:00 it rises about 05:20 and sets about 20:40.
 constexpr float kSolarNoon = 13;
-// The day levels the clock runs in (Opened).
-constexpr std::array<std::wstring_view, 1> kCycled{L"lak100d"};
+// The day levels the clock runs in (Opened), the night level each takes its
+// moon, sky and sky's light from, and the one area of the level it runs in.
+// A level is the ground of several areas, and the story has its own times in
+// the others: lak100d is the village (arl100ar) and the climax's and the
+// epilogue's Redcliffe (cli100ar, epi200ar), lak200d the castle's courtyard
+// (arl200ar) and the climax's (cli150ar) (ghilana, 2026-10-22; the user,
+// 2026-10-22: "certain areas / times should not change for story reasons").
+// The castle has no night level: it takes the village's, the same valley a
+// walk away (issue 35). The courtyard is reached only after the village's
+// night battle.
+//
+// The moon at midnight is the night level's unless a level says where it is
+// (degrees up, and degrees about the upright from the night level's). The
+// village's moon, 28 degrees up, stands behind the castle's keep, and the
+// courtyard was all in its shadow, 2 of 255 at midnight; at 65 degrees from
+// the other side the keep's front, the yard and the gate's lane are lit,
+// 31 (tried at 28, 50 and 70 degrees, turned 0, 90 and 180, 2026-10-22). The
+// two are areas apart, a load between them, and each keeps its own (the
+// user, 2026-10-22: "make them separate").
+//
+// The latitude is the one at which the day level's sun would be an
+// equinox's noon, or another level's where one is named: the castle's sun,
+// 45 degrees up, gave it 45 degrees and the village's, 38 up, 52, and at one
+// hour the sun stood apart in the two, the castle's setting about 20:15 and
+// the village's about 20:40. The castle takes the village's (the user,
+// 2026-10-22: "match up the time based on the elevation of the Sun"): the sun
+// is as high in both at every hour, and each level's own sun at the hour it
+// is that high.
+struct Cycled
+{
+    std::wstring_view day;
+    std::wstring_view night;
+    std::wstring_view area;
+    float moonHeight = 0;         // degrees; 0 for the night level's own
+    float moonTurn = 0;           // degrees
+    std::wstring_view latitudeOf; // the level whose sun gives the latitude; empty for the day level
+};
+constexpr std::array<Cycled, 2> kCycled{{
+    {.day = L"lak100d", .night = L"lak100n", .area = L"arl100ar_redcliffe_village", .latitudeOf = {}},
+    {.day = L"lak200d",
+     .night = L"lak100n",
+     .area = L"arl200ar_redcliffe_castle",
+     .moonHeight = 65,
+     .moonTurn = 180,
+     .latitudeOf = L"lak100d"},
+}};
+// The start of the names of a layout's lights that are fires, which keep
+// their light by night (Install): the castle's layouts light its torches
+// (torch_baked, torch_animated) beside the makers' sunlight (Sunhighlight) and
+// a bounce of the day's sky (amb_bounce_RT), which go with the sun as the
+// village's Hotspots do (ghilana, 2026-10-22).
+constexpr std::array<std::wstring_view, 1> kFireLights{L"torch"};
 // The sun's and the moon's radius as seen, radians: a body is gone when its
 // disc is.
 constexpr float kDiscRadius = 0.267F * kDegree;
@@ -404,12 +458,12 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
     nightSky.fogGreen = fog[1];
     nightSky.fogBlue = fog[2];
     const Vec3 levelSun{-pair.day.sun.direction[0], -pair.day.sun.direction[1], -pair.day.sun.direction[2]};
-    const Vec3 midnight{-pair.night.sun.direction[0], -pair.night.sun.direction[1], -pair.night.sun.direction[2]};
-    const float noonHeight = Height(levelSun); // the level's sun's, as an equinox's noon
-    const float latitude = (std::numbers::pi_v<float> / 2) - noonHeight;
+    const Vec3 &midnight = pair.midnight;
+    const float noonHeight = Height(levelSun); // the level's sun's, as its colour was made for
+    const float latitude = pair.latitude;
     const float turn = (hour - kSolarNoon) * 15 * kDegree;
     const Vec3 toSun = OnPath(SunPathThrough(levelSun, latitude).first, latitude, kSunDeclination, turn);
-    const float moonTilt = Height(midnight) - noonHeight;
+    const float moonTilt = Height(midnight) - ((std::numbers::pi_v<float> / 2) - latitude);
     const Vec3 toMoon = OnPath(midnight, latitude, moonTilt, turn + std::numbers::pi_v<float>);
     const float sunHeight = Height(toSun);
     const float moonHeight = Height(toMoon);
@@ -595,20 +649,20 @@ void Opened(const std::filesystem::path &levelRim)
     }
     // A level with a day and a night is two, named alike but for the last
     // letter: d for the day's, n for the night's (lak100d and lak100n). The
-    // clock runs in the day level of those named in kCycled alone: the night
-    // level is the story's night, and the other places are left until the
-    // story's times are known (the user, 2026-10-22: "certain areas / times
-    // should not change for story reasons").
+    // clock runs in the day levels named in kCycled alone: the night level is
+    // the story's night, and the other places are left until the story's
+    // times are known.
     {
         const std::scoped_lock lock(g_lock);
         g_asked.insert(level);
     }
-    if (std::ranges::find(kCycled, level) == kCycled.end())
+    const auto cycled = std::ranges::find(kCycled, level, &Cycled::day);
+    if (cycled == kCycled.end())
     {
         return;
     }
     const std::filesystem::path env = levelRim.parent_path().parent_path();
-    const std::wstring other = level.substr(0, level.size() - 1) + L"n";
+    const std::wstring other(cycled->night);
     // Some small files (the two .arl and the layouts), read as the level is
     // opened.
     std::optional<LevelLight> day = ReadLevel(env, level);
@@ -622,12 +676,24 @@ void Opened(const std::filesystem::path &levelRim)
     auto pair = std::make_shared<Pair>();
     pair->day = std::move(*day);
     pair->night = std::move(*night);
+    pair->area = cycled->area;
     {
+        const Vec3 own{-pair->night.sun.direction[0], -pair->night.sun.direction[1], -pair->night.sun.direction[2]};
+        const float round = std::atan2(own[1], own[0]) + (cycled->moonTurn * kDegree);
+        const float up = cycled->moonHeight > 0 ? cycled->moonHeight * kDegree : Height(own);
+        pair->midnight = {std::cos(up) * std::cos(round), std::cos(up) * std::sin(round), std::sin(up)};
+    }
+    {
+        LevelLight of;
+        const std::wstring latitudeOf = cycled->latitudeOf.empty() ? level : std::wstring(cycled->latitudeOf);
+        const dao::core::Sunlight &by =
+            latitudeOf == level || !ReadArl(env / (latitudeOf + L".arl"), of) ? pair->day.sun : of.sun;
+        pair->latitude =
+            (std::numbers::pi_v<float> / 2) - Height({-by.direction[0], -by.direction[1], -by.direction[2]});
         const Vec3 levelSun{-pair->day.sun.direction[0], -pair->day.sun.direction[1], -pair->day.sun.direction[2]};
-        const float latitude = (std::numbers::pi_v<float> / 2) - Height(levelSun);
-        const float at = kSolarNoon + (SunPathThrough(levelSun, latitude).second / (15 * kDegree));
-        spdlog::info("day and night: the day level's sun is the summer's at {:02d}:{:02d}", static_cast<int>(at),
-                     static_cast<int>((at - std::floor(at)) * 60));
+        const float at = kSolarNoon + (SunPathThrough(levelSun, pair->latitude).second / (15 * kDegree));
+        spdlog::info("day and night: the day level's sun is the summer's at {:02d}:{:02d}, at {:.1f} degrees' latitude",
+                     static_cast<int>(at), static_cast<int>((at - std::floor(at)) * 60), pair->latitude / kDegree);
     }
     spdlog::info("day and night: {} and {}, their skies' light {:.3f} {:.3f} {:.3f} and {:.3f} {:.3f} {:.3f}",
                  std::filesystem::path(level).string(), std::filesystem::path(other).string(), pair->day.skyLight[0],
@@ -658,15 +724,21 @@ float Hour()
     return g_hour;
 }
 
-std::optional<Light> Now(const dao::core::Sunlight &ownSun, const dao::core::Sky &ownSky, bool running,
-                         float dayMinutes, float night, float fill)
+std::wstring NightLevel(std::wstring_view day)
+{
+    const auto cycled = std::ranges::find(kCycled, day, &Cycled::day);
+    return cycled != kCycled.end() ? std::wstring(cycled->night) : std::wstring();
+}
+
+std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownSun, const dao::core::Sky &ownSky,
+                         bool running, float dayMinutes, float night, float fill)
 {
     std::shared_ptr<const Pair> pair;
     {
         const std::scoped_lock lock(g_lock);
         for (const auto &[level, each] : g_pairs)
         {
-            if (Same(each->day.sun, ownSun))
+            if (each->area == Lower(std::wstring(area)) && Same(each->day.sun, ownSun))
             {
                 pair = each;
                 break;
@@ -756,10 +828,11 @@ void Install()
         // with the sun, as the moon alone lights the level at night. Read from
         // the level's archive alone, only 20 of Redcliffe's were dimmed, and
         // the rooms' own lit the houses warm at midnight (the user,
-        // 2026-10-21). The figures' (<...>_lc) light figures alone, a fill:
-        // they go with the sky's light, as the bake and the probes do, or a
-        // figure in the moon's shadow was dark against the fill-lit ground
-        // (the user, 2026-10-22). An effect's light, a fire's, is its own.
+        // 2026-10-21). Not those named as fires (kFireLights): the castle's
+        // layouts have its torches' lights among them, which went out with
+        // the sun and left its torches' alcoves black at night (issue 35). The figures' (<...>_lc) light figures alone,
+        // a fill: they go with the sky's light, as the bake and the probes do, or a figure in the moon's shadow was
+        // dark against the fill-lit ground (the user, 2026-10-22). An effect's light, a fire's, is its own.
         if (!g_running.load(std::memory_order_relaxed))
         {
             return;
@@ -769,7 +842,12 @@ void Install()
             return model.size() >= end.size() &&
                    _wcsnicmp(model.data() + model.size() - end.size(), end.data(), end.size()) == 0;
         };
-        if (endsWith(L"_ll"))
+        const auto lower = [](wchar_t c) { return std::towlower(c); };
+        const auto named = [&](std::wstring_view start) {
+            return light.name.size() >= start.size() &&
+                   std::ranges::equal(light.name.substr(0, start.size()), start, {}, lower, lower);
+        };
+        if (endsWith(L"_ll") && !std::ranges::any_of(kFireLights, named))
         {
             for (std::size_t i = 0; i < 3; ++i)
             {

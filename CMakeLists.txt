@@ -135,15 +135,22 @@ target_link_libraries(elgarashaders PRIVATE elgara_materials)
 dao_apply_warnings(elgarashaders)
 # The effects' table (data/effects.ini, tools/effect_list.py), read as the
 # plugin starts: the lights it gives fires that have none, and the effects
-# it dims at night.
+# it dims at night. A step with the table for its input: copied after the
+# DLL's link, a change to the table alone never reached the build
+# (2026-10-23).
 add_custom_command(
-    TARGET elgarashaders
-    POST_BUILD
+    OUTPUT "${CMAKE_BINARY_DIR}/daolib/plugins/elgarashaders/effects.ini"
     COMMAND
         "${CMAKE_COMMAND}" -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/data/effects.ini"
-        "$<TARGET_FILE_DIR:elgarashaders>/effects.ini"
+        "${CMAKE_BINARY_DIR}/daolib/plugins/elgarashaders/effects.ini"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/data/effects.ini"
     VERBATIM
+)
+add_custom_target(
+    elgarashaders_effects
+    ALL
+    DEPENDS "${CMAKE_BINARY_DIR}/daolib/plugins/elgarashaders/effects.ini"
 )
 
 # The plugin's baker of light probes as a command of its own: a level baked

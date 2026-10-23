@@ -11,8 +11,10 @@
 #include "dao/Framebuffer.h"
 #include "dao/GameModes.h"
 #include "dao/Module.h"
+#include "dao/Objects.h"
 #include "dao/World.h"
 #include "dao/core/Sky.h"
+#include "dao/generated/ScriptApi.h"
 
 #include <spdlog/spdlog.h>
 
@@ -649,16 +651,25 @@ constexpr float kNight = 1;
 // 2026-10-22).
 constexpr float kNightFill = 0.4F;
 
-// The light of the hour, each frame, where the area's level has a day and a
-// night and the options screen's Day / night cycle runs it (DayNight.h): out
-// of doors with Improved lighting on.
+// The player's area's tag, asked of the scripts.
+std::wstring AreaTag()
+{
+    dao::CClientExoApp *app = dao::CClientExoApp::Get();
+    dao::CCModule *module = app != nullptr ? app->GetModule() : nullptr;
+    dao::CCArea *area = module != nullptr ? module->CurrentArea() : nullptr;
+    return area != nullptr ? dao::script::api::GetTag(area->Id()) : std::wstring();
+}
+
+// The light of the hour, each frame, where the clock runs in the area
+// (DayNight.h) and the options screen's Day / night cycle runs it: out of
+// doors with Improved lighting on.
 void KeepHour()
 {
     const std::optional<dao::atmosphere::Sunlight> sun = dao::atmosphere::AreaOwnSunlight();
     const std::optional<dao::atmosphere::Sky> sky = dao::atmosphere::AreaOwnSky();
     const bool running = sun && sky && g_wanted && g_outdoors && g_clockOn;
     const bool had = g_hourLight.has_value();
-    g_hourLight = sun && sky ? daynight::Now(*sun, *sky, running, Tuned("DayMinutes").value_or(kDayMinutes),
+    g_hourLight = sun && sky ? daynight::Now(AreaTag(), *sun, *sky, running, Tuned("DayMinutes").value_or(kDayMinutes),
                                              Tuned("Night").value_or(kNight), Tuned("NightFill").value_or(kNightFill))
                              : std::nullopt;
     if (had != g_hourLight.has_value())

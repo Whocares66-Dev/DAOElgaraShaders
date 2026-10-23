@@ -82,12 +82,27 @@ std::wstring Lower(std::wstring_view text)
     return lower;
 }
 
+// A level's probe cube of a name; with no name, its first (a night level
+// another's day borrows, whose probes are not the day's: Redcliffe's castle,
+// lak200d_probe_9xy, takes the village's night's lak100n_probe_8uz, each
+// level's one cube; ghilana, 2026-10-22).
 std::optional<std::array<dds::Image, 6>> ReadCube(const std::wstring &level, const std::wstring &name)
 {
     const std::filesystem::path rim = GameFolder() / "packages" / "core" / "env" / level / (level + L".gpu.rim");
     const std::optional<dao::core::erf::Archive> archive = dao::core::erf::Archive::Open(rim);
-    const std::optional<std::vector<std::byte>> bytes =
-        archive && archive->Readable() ? archive->Read(name) : std::nullopt;
+    if (!archive || !archive->Readable())
+    {
+        return std::nullopt;
+    }
+    const auto first = std::ranges::find_if(archive->Entries(), [&](const dao::core::erf::Entry &entry) {
+        return entry.name.starts_with(level + std::wstring(kProbe)) && entry.name.ends_with(L".dds");
+    });
+    const dao::core::erf::Entry *entry = first != archive->Entries().end() ? &*first : nullptr;
+    if (!name.empty())
+    {
+        entry = archive->Find(name);
+    }
+    const std::optional<std::vector<std::byte>> bytes = entry != nullptr ? archive->Read(*entry) : std::nullopt;
     const std::optional<dds::Cube> cube = bytes ? dds::DecodeCube(*bytes) : std::nullopt;
     if (!cube)
     {
@@ -112,9 +127,13 @@ Made Make(std::shared_ptr<const Cubes> cubes, const std::wstring &level, const s
     Made made;
     if (!cubes)
     {
-        const std::wstring night = level.substr(0, level.size() - 1) + L"n";
+        // The night level's cube of the same probe where it is the day's own
+        // night (lak100d's and lak100n's), else its first.
+        const std::wstring night = daynight::NightLevel(level);
+        const bool own = night == level.substr(0, level.size() - 1) + L"n";
         std::optional<std::array<dds::Image, 6>> day = ReadCube(level, name);
-        std::optional<std::array<dds::Image, 6>> nightCube = ReadCube(night, night + name.substr(level.size()));
+        std::optional<std::array<dds::Image, 6>> nightCube =
+            night.empty() ? std::nullopt : ReadCube(night, own ? night + name.substr(level.size()) : std::wstring());
         if (!day || !nightCube)
         {
             return made;

@@ -1084,6 +1084,7 @@ HRESULT __stdcall Draw(IDirect3DDevice9 *device, D3DPRIMITIVETYPE type, UINT fir
     {
         LogDraw(device, count);
     }
+    levelshadows::DrawingPlain(device, g_drawsPicture);
     levelshadows::Air(device);
     const HRESULT result = g_draw.Original()(device, type, first, count);
     levelshadows::Drawn(device);

@@ -60,6 +60,13 @@ void CreatedPixel(const DWORD *code, IDirect3DPixelShader9 *shader);
 void Drawing(IDirect3DDevice9 *device, bool picture, D3DPRIMITIVETYPE type, INT base, UINT least, UINT vertices,
              UINT first, UINT count);
 
+// A draw not indexed about to be made: a receiver is lent the maps as an
+// indexed one is. One a frame in Redcliffe castle's courtyard (2026-10-23),
+// whose taps of the old aim's maps read what the draw before had left on the
+// sampler, and its tree went light for a second each time the moon's maps
+// were aimed anew (the user: "trees pulsate b/t light / dark").
+void DrawingPlain(IDirect3DDevice9 *device, bool picture);
+
 // A draw not of the scene about to be made (the colour grade's chain): a pass
 // that reads the maps for the air (haze_pass.hlsl) is lent them and their
 // registers, as they were for the frame's picture.

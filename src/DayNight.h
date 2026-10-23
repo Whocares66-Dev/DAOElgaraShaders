@@ -1,6 +1,6 @@
 // A day and a night in one area: the sun going over and down, the moon after
 // it, the sky, the fog and the level's baked light going from the one to the
-// other by the hour (Improved lighting, Redcliffe's village alone so far).
+// other by the hour (Improved lighting, Redcliffe's village and castle so far).
 //
 // The game has no time of day. A few places are two levels, one made for the
 // day and one for the night, of the same ground: Redcliffe's village
@@ -8,7 +8,8 @@
 // has its own sun or moon and its own sky and fog (its .arl), and its own
 // sky's light (its layout's ambient light, which its lightmaps were baked
 // with). The clock runs in the day level, and takes of the night level its
-// moon, its sky and its sky's light:
+// moon, its sky and its sky's light; Redcliffe's castle (lak200d) has no night
+// level and takes the village's (DayNight.cpp's kCycled):
 //
 // - The day level's sun is a summer afternoon's, at 15:22 by a clock an hour
 //   on from the sun's (kSolarNoon): the latitude is 90 degrees less its
@@ -42,6 +43,8 @@
 #include <array>
 #include <filesystem>
 #include <optional>
+#include <string>
+#include <string_view>
 
 namespace daynight
 {
@@ -86,15 +89,19 @@ void SetHour(float hour);
 // The clock's hour. Call on the game's thread.
 float Hour();
 
-// The light of the hour for the area as it is, or none where its level has no
-// day and night or `running` is false. The level is the one whose sun is
-// `ownSun`, the area's own; `ownSky` is the area's own sky, of which what the
-// files do not hold is kept. The clock goes on by a day in `dayMinutes` of
+// The night level a day level of the cycle takes its night from, or empty
+// where the clock does not run in it. Any thread.
+std::wstring NightLevel(std::wstring_view day);
+
+// The light of the hour for the area as it is, or none where the clock does
+// not run in `area` (its tag) or `running` is false. The level is the one
+// whose sun is `ownSun`, the area's own; `ownSky` is the area's own sky, of
+// which what the files do not hold is kept. The clock goes on by a day in `dayMinutes` of
 // play while it runs there. `night` is how bright the moon is, a share of the
 // night level's sun's; `fill` how much of the night level's sky light the
 // night keeps beside it. Call on the game's thread.
-std::optional<Light> Now(const dao::core::Sunlight &ownSun, const dao::core::Sky &ownSky, bool running,
-                         float dayMinutes, float night, float fill);
+std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownSun, const dao::core::Sky &ownSky,
+                         bool running, float dayMinutes, float night, float fill);
 
 // The sky light's multiplier as of the last Now, 1 where there is none. Any
 // thread.
