@@ -169,8 +169,9 @@ bool MaterialObject::Solid() const
 bool MaterialObject::Plate() const
 {
     const std::string lower = Lower(project);
+    // And the templars' armor, plate built on a robe's body (ROB_TMP; issue 32).
     return lower.find("arm_mas") != std::string::npos || lower.find("arm_hvy") != std::string::npos ||
-           lower.find("arm_dwp") != std::string::npos;
+           lower.find("arm_dwp") != std::string::npos || lower.find("rob_tmp") != std::string::npos;
 }
 
 std::optional<MaterialObject> ReadMaterialObject(std::string_view name, std::string_view text)

@@ -158,7 +158,14 @@ bool IsMetal(const float *own, const float *mirror, float gloss, Ask ask)
     const bool sheen = cool && (shine.saturation >= kSheen || gloss < kGlossSteel || shine.top < kMirrorSteel);
     const bool twice = shine.top >= kSure * kMirrorMin && gloss >= kSure * kGlossMin;
     const bool gilt = surface.hue >= kWarmFrom && surface.hue <= kWarmTo && shine.saturation < kTinted && twice;
-    const bool ownColour = coloured ? (sameHue || gilt) : !(ask == Ask::Surely ? cool : sheen);
+    // In plate's second look (Shaded) a gray surface's cool tint is not a
+    // leather's sheen: what is asked there joins plate already found, and the
+    // templars' plate is painted with a violet mirror (0.15 of saturation, a
+    // gloss of 0.18) that the sheen's test left matte beside their metal
+    // gauntlets (issue 32).
+    const bool tintAllowed = ask == Ask::Shaded;
+    const bool ownColour =
+        coloured ? (sameHue || gilt) : (tintAllowed || !(ask == Ask::Surely ? cool : sheen));
     float least = 1.0F;
     if (ask == Ask::Surely)
     {

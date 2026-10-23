@@ -69,7 +69,7 @@ struct MaterialObject
     }
     // Of the six solid, lit definitions the table classes.
     [[nodiscard]] bool Solid() const;
-    // A suit of plate's: its project is ARM_MAS, ARM_HVY or ARM_DWP.
+    // A suit of plate's: its project is ARM_MAS, ARM_HVY or ARM_DWP, or the templars' ROB_TMP.
     [[nodiscard]] bool Plate() const;
 };
 

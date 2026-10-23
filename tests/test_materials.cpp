@@ -83,6 +83,9 @@ TEST_CASE("the worn are classed by the code in their name", "[names]")
 {
     CHECK(Verdict("pn_arm_masa", "character.mat", "pn_arm_masa_0d.dds", "ARM_MAS.matproj") == kPaint);
     CHECK(Verdict("pm_arm_lgtd_l2", "character.mat", "pm_arm_lgtd_0dl2.dds", "ARM_LGT.matproj") == kPaint);
+    // the templars' plate on a robe: painted, where a robe is cloth (issue 32)
+    CHECK(Verdict("pn_rob_tmpa", "character.mat", "pn_rob_tmpa_0d.dds", "ROB_TMP.matproj") == kPaint);
+    CHECK(Verdict("pn_rob_enca", "character.mat", "pn_rob_enca_0d.dds", "ROB_ENC.matproj") == "cloth");
     CHECK(Verdict("hm_arm_nuda", "character.mat", "hm_arm_nuda_0d.dds", "ARM_NUD.matproj") == "skin");
     CHECK(Verdict("pf_rob_appa", "character.mat", "pf_rob_appa_0d.dds", "ROB_APP.matproj") == "cloth");
     CHECK(Verdict("pm_cth_coma", "character.mat", "pm_cth_coma_0d.dds", "CTH_COM.matproj") == "cloth");
@@ -171,6 +174,13 @@ TEST_CASE("a material object's file says what it is", "[names]")
     CHECK(object.Solid());
     CHECK(object.Plate());
     CHECK_FALSE(materials::ReadMaterialObject("x", "no object"));
+    // The templars' armor is plate on a robe's body (issue 32).
+    const auto templar = materials::ReadMaterialObject(
+        "PN_ROB_TMPa", "<!-- dc:source=file:///c:/ArtContent/Art/Characters/MATERIAL_PROJECTS/ROB_TMP.matproj -->"
+                       "<MaterialObject Name=\"PN_ROB_TMPa\">\n\t<Material Name=\"Character.mat\"></Material>\n"
+                       "</MaterialObject>");
+    REQUIRE(templar.has_value());
+    CHECK(templar->Plate());
 }
 
 TEST_CASE("settle: the share of metal says the class of a material its names say is painted", "[names]")

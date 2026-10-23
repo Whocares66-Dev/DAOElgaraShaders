@@ -26,6 +26,10 @@ table	worn	paint	other	(?<![a-z])arm_bda
 ; leather: studs and buckles, if it has them
 table	worn	paint	leather	(?<![a-z])(arm|boo|glv)_lgt
 table	worn	skin	-	(?<![a-z])arm_nud
+; the templars' armor: plate built on a robe's body (ROB_TMP), so the textures say where it
+; is metal and the rest is the robe's cloth; under the robes' row it was all cloth, its
+; breastplate matte beside its metal gauntlets (issue 32)
+table	worn	paint	cloth	(?<![a-z])rob_tmp
 ; clothes, robes, the children
 table	worn	cloth	-	(?<![a-z])(cth|rob|chd)_
 ; the mages' cowls (the project is ROB_ENC)
