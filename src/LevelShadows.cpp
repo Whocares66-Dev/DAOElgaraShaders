@@ -2443,6 +2443,8 @@ static bool MakeEffectAtlas(IDirect3DDevice9 *device)
         return false;
     }
     g_effectLevelRows = {};
+    spdlog::info("effects' shadows: their atlas and its cache made, {} by {}", kEffectTile * 6,
+                 kEffectTile * kEffectLightsMost);
     return true;
 }
 

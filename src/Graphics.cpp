@@ -70,6 +70,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -543,15 +544,27 @@ HRESULT __stdcall GetRenderTarget(IDirect3DDevice9 *device, DWORD index, IDirect
     return result;
 }
 
+// The device made again (a change of the game's anti-aliasing, of the
+// resolution or the window): what of ours is let go and made again is timed
+// apart from the engine's own, for the freeze the user saw on changing the
+// anti-aliasing (2026-10-23, issue 52).
 HRESULT __stdcall Reset(IDirect3DDevice9 *device, D3DPRESENT_PARAMETERS *parameters)
 {
+    const auto start = std::chrono::steady_clock::now();
     levelshadows::Release();
     DropScene();
+    const auto released = std::chrono::steady_clock::now();
     const HRESULT result = g_reset.Original()(device, parameters);
+    const auto reset = std::chrono::steady_clock::now();
     if (SUCCEEDED(result))
     {
         MakeScene(device);
     }
+    const auto made = std::chrono::steady_clock::now();
+    const auto ms = [](auto from, auto to) { return std::chrono::duration<double, std::milli>(to - from).count(); };
+    spdlog::info("device reset ({} samples): ours let go in {:.1f} ms, the engine's {:.1f} ms, ours made in {:.1f} ms",
+                 parameters != nullptr ? static_cast<int>(parameters->MultiSampleType) : -1, ms(start, released),
+                 ms(released, reset), ms(reset, made));
     return result;
 }
 
