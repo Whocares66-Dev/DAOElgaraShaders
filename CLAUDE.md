@@ -23,6 +23,7 @@ src/ResourceDump.*   the add-ins' files read through the game, for tools/dump_ad
 shaders/             what the game's shaders are given: *.hlsl, SMAA, and build_shaders.py, which rebuilds the game's shaders with them
 data/materials.ini   what each material is made of (lines `; by hand` are kept by every run of the tool)
 data/material_names.txt  the tables a material is classed by its names with, edited by hand
+data/glowing.ini     the terrain palettes' layers that glow (lava), read by src/Glowing.cpp
 tests/               Catch2 over src/materials; its [game] cases read the install
 tools/               build.ps1, deploy.ps1, package.ps1 and release.ps1 (the zip and a release, dev/RELEASING.md), dump_addins.py, shader_hlsl.py (the game's compiled shaders back to HLSL) and its test
 extern/DAOLib        the library, a submodule

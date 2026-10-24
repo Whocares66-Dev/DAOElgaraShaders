@@ -117,6 +117,7 @@ add_daolib_plugin(
     elgarashaders
     SOURCES
         src/Graphics.cpp
+        src/Glowing.cpp
         src/MaterialPatch.cpp
         src/MaterialLearn.cpp
         src/ResourceDump.cpp
@@ -136,6 +137,7 @@ target_link_libraries(elgarashaders PRIVATE elgara_materials)
 dao_apply_warnings(elgarashaders)
 # The plugin's tables, read as it starts: data/effects.ini (tools/effect_list.py),
 # the lights it gives fires that have none and the effects it dims at night;
+# data/glowing.ini, the terrain palettes' layers that glow (lava);
 # data/areas, a file for each area the day and night runs in, how its sun and
 # moon go. Steps with the tables for their input: copied after the DLL's
 # link, a change to a table alone never reached the build (2026-10-23).
@@ -146,6 +148,7 @@ file(
 )
 set(ELGARA_TABLES
     "${CMAKE_CURRENT_SOURCE_DIR}/data/effects.ini"
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/glowing.ini"
     ${ELGARA_AREAS}
 )
 set(ELGARA_TABLES_OUT)

@@ -9,6 +9,7 @@
 // the game reads anything, and not changed after.
 #include "MaterialPatch.h"
 
+#include "Glowing.h"
 #include "MaterialLearn.h"
 
 #include "materials/Answers.h"
@@ -59,7 +60,7 @@ std::string Narrow(std::wstring_view name)
     return out;
 }
 
-std::optional<std::vector<std::byte>> Patch(std::wstring_view name, std::span<const std::byte> bytes)
+std::optional<std::vector<std::byte>> Answered(std::wstring_view name, std::span<const std::byte> bytes)
 {
     auto patched = g_answers.Patched(bytes);
     if (!patched)
@@ -86,10 +87,23 @@ std::optional<std::vector<std::byte>> Patch(std::wstring_view name, std::span<co
     return std::nullopt;
 }
 
+// The answer's, and a terrain's palette's glow (Glowing.h) on top.
+std::optional<std::vector<std::byte>> Patch(std::wstring_view name, std::span<const std::byte> bytes)
+{
+    std::optional<std::vector<std::byte>> patched = Answered(name, bytes);
+    if (std::optional<std::vector<std::byte>> glowing =
+            glowing::Patched(patched ? std::span<const std::byte>(*patched) : bytes))
+    {
+        return glowing;
+    }
+    return patched;
+}
+
 } // namespace
 
 void Start(const std::filesystem::path &folder)
 {
+    glowing::Read(folder);
     std::ifstream file(folder / kAnswersFile, std::ios::binary);
     if (!file)
     {

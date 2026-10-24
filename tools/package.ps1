@@ -46,7 +46,7 @@ $builtPlugin = Join-Path $built 'elgarashaders.dll'
 if (-not (Test-Path $builtPlugin)) { throw "No $builtPlugin; run .\tools\build.ps1 -Preset $Preset first" }
 $builtPdb = Join-Path $built 'elgarashaders.pdb'
 if (-not (Test-Path $builtPdb)) { throw "No $builtPdb; a crash log names none of the mod's frames without it" }
-$tables = 'materials.answers', 'materials.names', 'effects.ini'
+$tables = 'materials.answers', 'materials.names', 'effects.ini', 'glowing.ini'
 foreach ($table in $tables) {
     if (-not (Test-Path (Join-Path $built $table))) { throw "No $table in $built; run .\tools\build.ps1 -Preset $Preset again" }
 }

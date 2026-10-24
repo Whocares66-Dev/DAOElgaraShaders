@@ -1,6 +1,7 @@
 #include "EffectLights.h"
 
 #include "DayNight.h"
+#include "Glowing.h"
 #include "LevelFiles.h"
 #include "LevelShadows.h"
 
@@ -363,6 +364,7 @@ struct LevelFires
     // The layouts' lamps that are a fire's light though not named as one,
     // "<layout>/<name>", lower case: the engine's own copies are put out.
     std::vector<std::wstring> atFires;
+    std::size_t glowing = 0; // of `lights`, the glowing ground's (Glowing.h)
 };
 
 // The lamps of every layout of a level that are fires' (named as fires, or
@@ -425,6 +427,13 @@ LevelFires ReadLamps(const std::filesystem::path &levelRim)
         }
         lamps.insert(lamps.end(), fires.begin(), fires.end());
     }
+    // And the light of the ground that glows, lava's (Glowing.h).
+    for (const glowing::Light &glow : glowing::LightsOf(level))
+    {
+        lamps.push_back(
+            {{glow.at[0], glow.at[1], glow.at[2], glow.reach}, {glow.colour[0], glow.colour[1], glow.colour[2], 1}});
+        ++read.glowing;
+    }
     return read;
 }
 
@@ -432,8 +441,9 @@ LevelFires ReadLamps(const std::filesystem::path &levelRim)
 void KeepLamps(const std::filesystem::path &levelRim, const std::wstring &level)
 {
     auto lamps = std::make_shared<const LevelFires>(ReadLamps(levelRim));
-    spdlog::info("effects' lights: {} fires in {}'s layouts and rooms, {} of the layouts' lamps at a fire",
-                 lamps->lights.size(), std::filesystem::path(level).string(), lamps->atFires.size());
+    spdlog::info("effects' lights: {} fires in {}'s layouts and rooms, {} of the layouts' lamps at a fire, "
+                 "{} of glowing ground",
+                 lamps->lights.size(), std::filesystem::path(level).string(), lamps->atFires.size(), lamps->glowing);
     const std::scoped_lock lock(g_lampLock);
     g_levelLamps[level] = std::move(lamps);
 }

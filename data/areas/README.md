@@ -22,3 +22,5 @@ The sun and the moon go round one pole on the latitude's path, the moon highest 
 A level is the ground of several areas, and the story has its own times in the others: `lak100d` is the village and the climax's and the epilogue's Redcliffe (`cli100ar`, `epi200ar`), `lak200d` the castle's courtyard and the climax's (`cli150ar`) (ghilana, 2026-10-22; the user, 2026-10-22: "certain areas / times should not change for story reasons"). Areas whose day or night is the story's have no file: Castle Cousland, Ostagar, the party camp, the sieges and the climax (issue 37 has the accounting).
 
 Flames that the level gives no light are given one by type, not by area, in `data/effects.ini`: the same kind of torch or fire has the same light everywhere.
+
+Ground that glows, lava, glows by its terrain palette's layer, not by area, in `data/glowing.ini`: drawn at its own color whatever the hour, and lighting the ground about it by lights the plugin places over it from the level's masks as the level opens.

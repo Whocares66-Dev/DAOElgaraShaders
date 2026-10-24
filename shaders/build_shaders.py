@@ -2536,6 +2536,76 @@ def with_mean_haze_fog(shader):
     shader.insert(-1, ["const float4 daoMeanFog = DaoMeanFog(mml_vFogParams[0]);"])
 
 
+def glows(listing):
+    """Whether a pixel shader blends a terrain palette's layers by the masks
+    a glow is weighed by (terrain1, terrain3: read 2026-10-23)."""
+    return (
+        all(name in listing for name in ("smpMaskA", "smpMaskA2", "mml_vFogParams"))
+        and "ps_3_0" in listing
+    )
+
+
+# How each palette layer glows, a terrain material's parameter (glow.hlsl), 0
+# but where the plugin gives it one (data/glowing.ini, MaterialPatch.cpp).
+GLOW_PARAMETER = (
+    '<Parameter Type = "Vector4fArray" Size = "2" Name = "mml_vDaoGlow"'
+    ' Default = "0 0 0 0  0 0 0 0"/>'
+)
+# The terrain's passes that blend a palette's layers (terrain.mat.xml's).
+GLOW_SHADERS = r"^terrain[13]\.psh$"
+
+
+def with_glow_parameters(material):
+    """A material definition as text, GLOW_PARAMETER added to every pass a
+    shader of GLOW_SHADERS draws."""
+
+    def added(found):
+        drawn_by = re.search(r'PixelShader\s*=\s*"([^"]+)"', found.group(0))
+        if drawn_by and re.match(GLOW_SHADERS, drawn_by.group(1), re.IGNORECASE):
+            return found.group(0) + GLOW_PARAMETER
+        return found.group(0)
+
+    return re.sub(r"<Pass\b[^>]*>", added, material)
+
+
+def with_glow(shader):
+    """A terrain's palette layers' own glow added to its colour before it is
+    fogged: each layer's colour times its glow (glow.hlsl), lit by nothing.
+    The colour the fog is laid on is the light times the blend of the layers'
+    colours (`mad <colour>, <light>, <colours>, ...`), the fog's colour then
+    taken from it in that statement (terrain3) or the next (terrain1); the
+    glow is the same blend times how much of it glows, laid on after."""
+    fog = shader.parameters["mml_vFogParams"]
+    fogged = shader.find(rf"^mad(_pp)? oC0\.xyz, r\d+\.[xyzw], (r\d+), c{fog.base}$")
+    colour = re.match(
+        r"mad\w* oC0\.xyz, r\d+\.[xyzw], (r\d+),", shader.statements[fogged].asm
+    )[1]
+    lit = next(
+        i
+        for i in range(fogged - 1, -1, -1)
+        if re.match(
+            rf"^mad\w* {colour}\.xyz, r\d+, r\d+, -?[rc]\d+$", shader.statements[i].asm
+        )
+    )
+    colours = re.match(r"^mad\w* r\d+\.xyz, r\d+, (r\d+),", shader.statements[lit].asm)[
+        1
+    ]
+    masks = []
+    for name in ("smpMaskA", "smpMaskA2"):
+        sampler = shader.parameters[name]
+        read = shader.find(rf"^texld\w* r\d+, (v\d+), s{sampler.base}$")
+        place = re.match(r"^texld\w* r\d+, (v\d+),", shader.statements[read].asm)[1]
+        masks.append(f"tex2D({name}, {place}.xy)")
+    # From the last place back, so the first is still where it was.
+    shader.insert(lit, [f"{colour}.xyz += daoGlow;"])
+    shader.insert(
+        lit - 1,
+        [
+            f"const float3 daoGlow = {colours}.xyz * DaoGlowShare({masks[0]}, {masks[1]});"
+        ],
+    )
+
+
 def with_fog_kept(shader):
     """How much of its own light a surface keeps through the fog written in
     the alpha of the distance beside it (oC1, which every such shader writes
@@ -2921,6 +2991,11 @@ def changes_for(stem, listing, show):
     # (alpha_as), and nothing where none is said.
     if with_materials in changes:
         changes += [with_scattered_share, with_ambient_share]
+    # A palette layer's own glow, lava's (glow.hlsl): before the fog is kept,
+    # which inserts after the statement this finds its way back from.
+    if glows(listing):
+        changes.append(with_glow)
+        preamble += ours("glow.hlsl")
     # The fog kept for the air's light's pass, after all else: it is found by
     # the game's own last statement, which no other change rewrites.
     if keeps_fog(stem, listing):
@@ -3049,7 +3124,9 @@ def main(argv):
                 materials[name].decode("utf-8-sig"), (theirs, ours_)
             )
             text = with_pass_variants(
-                with_material_parameters(with_shadow_parameters(text)),
+                with_glow_parameters(
+                    with_material_parameters(with_shadow_parameters(text))
+                ),
                 states,
                 solid_states,
             )
@@ -3070,7 +3147,9 @@ def main(argv):
         ):
             theirs = materials[name].decode("utf-8-sig")
             ours_ = with_pass_variants(
-                with_material_parameters(with_shadow_parameters(theirs)),
+                with_glow_parameters(
+                    with_material_parameters(with_shadow_parameters(theirs))
+                ),
                 states,
                 solid_states,
             )
