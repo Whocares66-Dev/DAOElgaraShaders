@@ -7,26 +7,23 @@
 // The game fogs every surface and its sky towards one colour the area gives,
 // whichever way one looks: in Redcliffe a dark grey-green, which is much of
 // what makes its day dim and flat (measured 2026-10-16). Haze in daylight is
-// brighter towards the sun. So where the engine fogged a surface towards the
-// area's colour, the air's light seen that way is put in its place here, by
-// the same amount of fog: what is added is the difference of the two, and a
-// pixel whose fog is not known right is as the game drew it, wrong by no
-// more than that difference. The sky and the clouds fog towards the same
-// light in their own shaders (haze.hlsl's DaoSkyFog), and so do what writes
-// no distance (DaoMeanFog).
+// brighter towards the sun. Every surface fogs itself towards the air's light
+// seen the way it is looked at, in its own shader (haze.hlsl's
+// DaoSurfaceHaze), the sky and the clouds in theirs (DaoSkyFog) and what
+// writes no distance in theirs (DaoRayFog), with the game's anti-aliasing on
+// as off; this pass takes away only what the sun's shadows in the air take
+// from it, which is to be reckoned along the view (DaoSunInAir).
 //
-// How much fog is the engine's own for each pixel: every surface's shader
-// keeps how much of its light the fog left in the alpha of the distance it
-// writes beside the picture (build_shaders.py's with_fog_kept). Reckoned
-// again from the distance, exp(-w d^2) as terrain1.vsh has it, it was 20
-// levels of 255 off on Redcliffe's hill: the engine reckons it per vertex
-// and lays it across each triangle.
+// How much fog a surface's view holds, for that: reckoned from its distance,
+// 1 - exp(-(intensity d)^2) as terrain1.vsh has it, no more than the sky's
+// own fog along the same way. With the game's anti-aliasing on the distance
+// is the game's depth pass's, which leaves, reeds, water and da* meshes do
+// not draw (issue 57): there the shafts are those of what is behind them.
 
 #include "haze.hlsl"
 
 sampler2D smpScene : register(s0);
 sampler2D smpMetres : register(s1);
-sampler2D smpDepth : register(s2); // the game's distance target, its alpha the fog kept
 float fFocalPlane;
 float fDaoLensX;
 float fDaoLensY;
@@ -196,27 +193,15 @@ float4 main(float2 uv : TEXCOORD0, float2 pixel : VPOS) : COLOR0
     const float3 ray = normalize(float3(at, 1));
     const float depth = tex2Dlod(smpMetres, float4(uv, 0, 0)).r;
     const bool sky = DaoIsSky(depth);
-    // A surface's fog is the engine's for its pixel; the sky's, its own rule's,
-    // which it has drawn with already, so that only its shade is to be taken.
-    // A surface's fog is no more than the sky's along the same way: the air
-    // out to it is a part of all the air the sky is fogged by, which thins as
-    // the way rises. The engine fogs a surface by its distance alone, so a
-    // mountain high over the eye was fogged as the horizon is, and Haven's,
-    // lit by the haze towards the sun, came out brighter than the sky about
-    // its peaks (the user, 2026-10-23, issue 53). What the engine fogged
-    // more is left in its fog colour, vanilla's: taken back to the surface's
-    // own colour (the scene less the fog, over what the fog kept), a
-    // mountain's came out many times brighter than it was lit, white at its
-    // ridges and orange in the trees before it with the game's anti-aliasing
-    // on (2026-10-23), the scene being more than the engine's fog of it once
-    // the plugin's light is in it. A sky that fogs none of itself
-    // (DaoSkyFogOf) bounds nothing.
-    const float kept = saturate(tex2Dlod(smpDepth, float4(uv, 0, 0)).a);
+    // A surface's fog: by its distance, as the engine's rule has it, no more
+    // than the sky's along the same way (haze.hlsl's DaoSurfaceHaze says why).
     const float skyFog = DaoSkyFogOf(ray);
-    const float fog = sky ? skyFog : radians(fDaoFogZenith) <= 0.0015708 ? 1 - kept : min(1 - kept, skyFog);
+    const float metresAlong = depth * length(float3(at, 1));
+    const float byDistance = 1 - exp(-pow(fDaoFogIntensity * metresAlong, 2));
+    const float fog = sky ? skyFog : radians(fDaoFogZenith) <= 0.0015708 ? byDistance : min(byDistance, skyFog);
     if (fDaoHazeShow > 0 && fDaoHazeShow < 2)
     {
-        return sky ? scene : float4(scene.rgb + fog * (1 - float3(fDaoFogR, fDaoFogG, fDaoFogB)), scene.a);
+        return sky ? scene : float4(scene.rgb + fog, scene.a);
     }
     // The haze's part is the sun's light scattered on to the eye, so it is
     // there only as much as the sun reaches the air it is scattered in; the
@@ -228,19 +213,15 @@ float4 main(float2 uv : TEXCOORD0, float2 pixel : VPOS) : COLOR0
         // Interleaved gradient noise (Jimenez 2014), as shadow.hlsl's: where
         // along its first share of the fog a pixel starts.
         const float start = frac(52.9829189 * frac(dot(pixel, float2(0.06711056, 0.00583715))));
-        const float metres = sky ? 1e9 : depth * length(float3(at, 1));
+        const float metres = sky ? 1e9 : metresAlong;
         sunLit = DaoSunInAir(ray, metres, sky ? fDaoFogCap : fog, start);
     }
     if (fDaoHazeShow > 1)
     {
         return float4(sunLit, fog, 0, scene.a);
     }
-    if (sky)
-    {
-        return float4(max(scene.rgb - fog * DaoShadedHaze(ray, 1 - sunLit), 0), scene.a);
-    }
-    const float3 light = DaoHazeLight(dot(ray, float3(fDaoSunX, fDaoSunY, fDaoSunZ)),
-                                      float3(fDaoAirR, fDaoAirG, fDaoAirB), 0, fDaoHazeG) +
-                         DaoShadedHaze(ray, sunLit);
-    return float4(max(scene.rgb + fog * (light - float3(fDaoFogR, fDaoFogG, fDaoFogB)), 0), scene.a);
+    // The sun's part of the haze is there only as much as the sun reaches the
+    // air: what the shadows in it take away, from the sky's own fog and the
+    // surfaces' alike.
+    return float4(max(scene.rgb - fog * DaoShadedHaze(ray, 1 - sunLit), 0), scene.a);
 }

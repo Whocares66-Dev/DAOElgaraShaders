@@ -40,6 +40,15 @@ struct SkyHaze
 // The air's light as it is now. Call on the game's thread.
 SkyHaze Haze();
 
+// What a surface's own shader reckons the haze it is seen through by
+// (haze.hlsl's daoHazeView), five registers: the camera's axes in the world,
+// right and down the picture and ahead, each with one over the picture's
+// width, one over its height and the lens's width over its focal length;
+// the way to the sun in the world and the lens's height over its focal
+// length; the sky's fog's cap and its zenith in radians. All 0 where the
+// haze is not ours. Call on the game's thread.
+std::array<float, 20> HazeView();
+
 // How strong the area's fills are on figures and props (shaders/fills.hlsl),
 // 1 for vanilla's. Call on the game's thread.
 float Fills();

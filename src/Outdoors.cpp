@@ -171,6 +171,7 @@ std::optional<dao::atmosphere::Sky> BaseSky()
 }
 
 SkyHaze g_haze;
+std::array<float, 20> g_hazeView{}; // HazeView's, set by KeepHaze
 float g_fills = 1;
 
 // The one sun on figures (Improved lighting): out of doors under a sun or a moon, a figure is lit as the
@@ -517,6 +518,7 @@ void KeepHaze()
 {
     const bool hazed = g_haze.on;
     Set(L"DaoHaze", hazed ? 1.0F : 0.0F);
+    g_hazeView = {};
     if (!hazed)
     {
         return;
@@ -568,6 +570,22 @@ void KeepHaze()
     Set(L"DaoAheadX", (*turn)[2][0]);
     Set(L"DaoAheadY", (*turn)[2][1]);
     Set(L"DaoAheadZ", (*turn)[2][2]);
+    const std::optional<float> lensY = dao::framebuffer::Value(kChain, L"DaoLensY");
+    std::array<float, 20> view{};
+    for (std::size_t axis = 0; axis < 3; ++axis)
+    {
+        for (std::size_t c = 0; c < 3; ++c)
+        {
+            view.at((4 * axis) + c) = (*turn).at(axis).at(c);
+        }
+    }
+    view[3] = 1 / width;
+    view[7] = 1 / height;
+    view[11] = *lens;
+    view[12] = -sun->direction[0];
+    view[13] = -sun->direction[1];
+    view[14] = -sun->direction[2];
+    view[15] = lensY.value_or(*lens * height / width);
     const SkyHaze haze = g_haze;
     // The colour the engine fogs surfaces towards, which the pass takes away
     // again where it gives the air's light, and how fast it thickens.
@@ -579,6 +597,9 @@ void KeepHaze()
         Set(L"DaoFogIntensity", now->fogIntensity);
         Set(L"DaoFogCap", now->fogCap);
         Set(L"DaoFogZenith", now->fogZenith);
+        view[16] = now->fogCap;
+        view[17] = now->fogZenith * std::numbers::pi_v<float> / 180;
+        view[18] = now->fogIntensity;
     }
     Set(L"DaoAirR", haze.air[0]);
     Set(L"DaoAirG", haze.air[1]);
@@ -588,6 +609,8 @@ void KeepHaze()
     Set(L"DaoSunB", haze.sun[2]);
     Set(L"DaoHazeG", haze.g);
     Set(L"DaoHazeShow", Tuned("HazeShow").value_or(0));
+    view[19] = 1;
+    g_hazeView = view;
 }
 
 } // namespace
@@ -600,6 +623,11 @@ float Tune(std::string_view key, float otherwise)
 SkyHaze Haze()
 {
     return g_haze;
+}
+
+std::array<float, 20> HazeView()
+{
+    return g_hazeView;
 }
 
 float Fills()

@@ -2523,17 +2523,20 @@ def fogs_unseen(stem, listing):
     )
 
 
-def with_mean_haze_fog(shader):
-    """The fog colour made haze.hlsl's DaoMeanFog: the air's light on the
-    mean over all ways, for what writes no distance. With the area's fog
+def with_ray_haze_fog(shader):
+    """The fog colour made haze.hlsl's DaoRayFog: the air's light seen the
+    way the pixel looks, for what writes no distance. With the area's fog
     colour black, a mist's cards over Redcliffe's hill and windmill faded to
     black where the game had them fade to its fog (seen 2026-10-16)."""
     fogged = [s for s in shader.statements if "mml_vFogParams[0]" in s.hlsl]
     if not fogged:
         raise shader_hlsl.ShaderError("no fog colour read")
     for statement in fogged:
-        statement.hlsl = statement.hlsl.replace("mml_vFogParams[0]", "daoMeanFog")
-    shader.insert(-1, ["const float4 daoMeanFog = DaoMeanFog(mml_vFogParams[0]);"])
+        statement.hlsl = statement.hlsl.replace("mml_vFogParams[0]", "daoRayFog")
+    shader.add_input("pixel", "float2", "VPOS")
+    shader.insert(
+        -1, ["const float4 daoRayFog = DaoRayFog(input.pixel, mml_vFogParams[0]);"]
+    )
 
 
 def glows(listing):
@@ -2606,25 +2609,28 @@ def with_glow(shader):
     )
 
 
-def with_fog_kept(shader):
-    """How much of its own light a surface keeps through the fog written in
-    the alpha of the distance beside it (oC1, which every such shader writes
-    as 1), for the air's light's pass (haze_pass.hlsl): 1 less it is how much
-    the fog took, as the engine reckoned it for that pixel. Every one of
-    them fogs in one statement, `mad oC0.xyz, <kept>, <colour>, <fog
-    colour>` (read 2026-10-16), the kept part reckoned per vertex and laid
-    across each triangle, which a pass reckoning it again from the distance
-    alone cannot match: on Redcliffe's hill it had a fog 20 levels of 255
-    lighter than the engine's (measured the same day)."""
+def with_surface_haze(shader):
+    """The surface fogged in its own shader towards the air's light seen the
+    way the pixel looks (haze.hlsl's DaoSurfaceHaze), by the fog the engine
+    gave it. Every one of them fogs in one statement, `mad oC0.xyz, <kept>,
+    <colour>, <fog colour>` (read 2026-10-16), the kept part reckoned per
+    vertex and laid across each triangle: a pass reckoning it again from the
+    distance alone had a fog 20 levels of 255 lighter than the engine's on
+    Redcliffe's hill (measured the same day), and a pass reading it from the
+    distance beside the picture had, with the game's anti-aliasing on, only
+    what the game's depth pass draws (issue 57)."""
     fog = shader.parameters["mml_vFogParams"]
     index = shader.find(rf"^mad(_pp)? oC0\.xyz, r\d+\.[xyzw], r\d+, c{fog.base}$")
     kept = re.match(r"mad\w* oC0\.xyz, (r\d+\.[xyzw]),", shader.statements[index].asm)[
         1
     ]
-    # From the end back, so each place found is still where it was.
-    shader.insert(len(shader.statements) - 1, ["oC1.w = daoFogKept;"])
-    shader.insert(index, [f"daoFogKept = {kept};"])
-    shader.insert(-1, ["float daoFogKept = 1;"])
+    shader.add_input("pixel", "float2", "VPOS")
+    shader.insert(
+        index,
+        [
+            f"oC0.xyz += DaoSurfaceHaze(input.pixel, {kept}, mml_vFogParams[0].xyz);"
+        ],
+    )
 
 
 # The distance the sky writes beside the picture (sky.psh's oC1), as the
@@ -2998,13 +3004,12 @@ def changes_for(stem, listing, show):
         preamble += ours("glow.hlsl")
     # The fog kept for the air's light's pass, after all else: it is found by
     # the game's own last statement, which no other change rewrites.
-    if keeps_fog(stem, listing):
-        changes.append(with_fog_kept)
-    if fogs_unseen(stem, listing):
-        changes.append(with_mean_haze_fog)
+    if keeps_fog(stem, listing) or fogs_unseen(stem, listing):
+        changes.append(with_surface_haze if keeps_fog(stem, listing) else with_ray_haze_fog)
         if "DAO_LOOK_HLSL" not in preamble:
             preamble += ours("look.hlsl")
-        preamble += ours("haze.hlsl")
+        if "DAO_HAZE_HLSL" not in preamble:
+            preamble += ours("haze.hlsl")
     # How strong the area's fills are on figures and props.
     if "g_vLightParams" in listing and "ps_3_0" in listing:
         changes.append(with_fill_strength)

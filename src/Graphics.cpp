@@ -197,6 +197,12 @@ constexpr UINT kWaterLightRegister = 159;
 constexpr UINT kHazeRegister = 218;
 constexpr std::size_t kHazeRegisters = 2;
 std::array<std::atomic<float>, kHazeRegisters * 4> g_hazeLook{};
+// The view each surface's shader reckons its haze by (outdoors::HazeView,
+// haze.hlsl's daoHazeView), under water's light: no shader of the game's
+// reaches past c60.
+constexpr UINT kHazeViewRegister = 150;
+constexpr std::size_t kHazeViewRegisters = 5;
+std::array<std::atomic<float>, kHazeViewRegisters * 4> g_hazeView{};
 // How strong the area's fills are on figures (outdoors::Fills), in a
 // register below those (shaders/fills.hlsl's daoFill). Never other than 1
 // in a portrait or the inventory's figure, which are lit by lights of their
@@ -943,25 +949,6 @@ HRESULT __stdcall StretchRect(IDirect3DDevice9 *device, IDirect3DSurface9 *from,
 // colour does, which is the game's way.
 DWORD g_separateAlphaAsked = FALSE;
 
-// What the distance target beside the picture (the second target, the
-// game's packed depth) keeps in its alpha: how much of its light each
-// surface kept through the fog (build_shaders.py's with_fog_kept), for the
-// air's light's pass. The engine writes all four channels there (seen
-// 2026-10-16: COLORWRITEENABLE1 0xF), and after the solid surfaces it draws
-// effects and see-through things with the target still bound, some by
-// shaders that write it nothing and all of them blended: over Redcliffe's
-// hill and its windmill what they left said no fog at all. So while the game
-// blends, that alpha is not written, and what is behind keeps its own. The
-// game reads none of it: its depth is the other three.
-DWORD g_writeOneAsked =
-    D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA;
-DWORD g_blendAsked = FALSE;
-
-DWORD WriteOne()
-{
-    return g_blendAsked != FALSE ? (g_writeOneAsked & ~static_cast<DWORD>(D3DCOLORWRITEENABLE_ALPHA)) : g_writeOneAsked;
-}
-
 HRESULT __stdcall SetRenderState(IDirect3DDevice9 *device, D3DRENDERSTATETYPE state, DWORD value)
 {
     if (state == D3DRS_SEPARATEALPHABLENDENABLE)
@@ -969,18 +956,7 @@ HRESULT __stdcall SetRenderState(IDirect3DDevice9 *device, D3DRENDERSTATETYPE st
         g_separateAlphaAsked = value;
         value = ShareAsked() ? value : FALSE;
     }
-    if (state == D3DRS_COLORWRITEENABLE1)
-    {
-        g_writeOneAsked = value;
-        value = WriteOne();
-    }
-    const HRESULT result = g_setRenderState.Original()(device, state, value);
-    if (state == D3DRS_ALPHABLENDENABLE)
-    {
-        g_blendAsked = value;
-        g_setRenderState.Original()(device, D3DRS_COLORWRITEENABLE1, WriteOne());
-    }
-    return result;
+    return g_setRenderState.Original()(device, state, value);
 }
 
 // Whether a surface is the frame's own picture: our target, or the back
@@ -1325,6 +1301,12 @@ HRESULT __stdcall BeginScene(IDirect3DDevice9 *device)
         haze.at(i) = g_hazeLook.at(i).load(std::memory_order_relaxed);
     }
     device->SetPixelShaderConstantF(kHazeRegister, haze.data(), kHazeRegisters);
+    std::array<float, kHazeViewRegisters * 4> view{};
+    for (std::size_t i = 0; i < view.size(); ++i)
+    {
+        view.at(i) = g_hazeView.at(i).load(std::memory_order_relaxed);
+    }
+    device->SetPixelShaderConstantF(kHazeViewRegister, view.data(), kHazeViewRegisters);
     HandFills(device);
     // By the target the scene starts on, not the last one the game set: a
     // scene begun on the frame's picture after a portrait's left the area
@@ -1548,6 +1530,11 @@ void KeepLookRegisters()
     }
     g_hazeLook.at(3).store(haze.on ? 1.0F : 0.0F, std::memory_order_relaxed);
     g_hazeLook.at(7).store(haze.g, std::memory_order_relaxed);
+    const std::array<float, kHazeViewRegisters * 4> view = outdoors::HazeView();
+    for (std::size_t i = 0; i < view.size(); ++i)
+    {
+        g_hazeView.at(i).store(view.at(i), std::memory_order_relaxed);
+    }
     g_fills.store(outdoors::Fills(), std::memory_order_relaxed);
     g_shareWanted.store(g_occlusionStop.load(std::memory_order_relaxed) > 0, std::memory_order_relaxed);
     g_anisotropy.store(kAnisotropyStops.at(static_cast<std::size_t>(g_anisotropyStop.load(std::memory_order_relaxed))),
