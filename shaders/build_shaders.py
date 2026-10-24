@@ -2627,9 +2627,7 @@ def with_surface_haze(shader):
     shader.add_input("pixel", "float2", "VPOS")
     shader.insert(
         index,
-        [
-            f"oC0.xyz += DaoSurfaceHaze(input.pixel, {kept}, mml_vFogParams[0].xyz);"
-        ],
+        [f"oC0.xyz += DaoSurfaceHaze(input.pixel, {kept}, mml_vFogParams[0].xyz);"],
     )
 
 
@@ -3005,7 +3003,9 @@ def changes_for(stem, listing, show):
     # The fog kept for the air's light's pass, after all else: it is found by
     # the game's own last statement, which no other change rewrites.
     if keeps_fog(stem, listing) or fogs_unseen(stem, listing):
-        changes.append(with_surface_haze if keeps_fog(stem, listing) else with_ray_haze_fog)
+        changes.append(
+            with_surface_haze if keeps_fog(stem, listing) else with_ray_haze_fog
+        )
         if "DAO_LOOK_HLSL" not in preamble:
             preamble += ours("look.hlsl")
         if "DAO_HAZE_HLSL" not in preamble:

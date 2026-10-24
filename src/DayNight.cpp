@@ -769,8 +769,7 @@ Table ReadTable(const std::filesystem::path &folder)
         const std::optional<float> nightFill = Number(said("night_fill").value_or(""));
         const std::optional<float> nightHaze = Number(said("night_haze").value_or(""));
         const std::optional<float> sprayMoon = Number(said("spray_moon").value_or(""));
-        if (area.day.empty() || area.night.empty() || !declination || !noon || !nightFill || !nightHaze ||
-            !sprayMoon)
+        if (area.day.empty() || area.night.empty() || !declination || !noon || !nightFill || !nightHaze || !sprayMoon)
         {
             spdlog::warn("day and night: areas/{}.ini lacks its level, its night, the declination, noon, the "
                          "night's fill or its haze",
