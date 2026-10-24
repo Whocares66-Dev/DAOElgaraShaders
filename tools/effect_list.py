@@ -396,6 +396,9 @@ HEADER = """\
 ;
 ; A lightless fire may be given the light of a lit twin, by hand, as
 ; `= glow <red> <green> <blue> <reach> <height above its place>`.
+; A model a flame stands in may give the flame its own light, by hand, as
+; `= holds <red> <green> <blue> <reach> <height above its place>`: a flame the
+; level places within half a metre of one is lit so, at it.
 """
 
 

@@ -129,6 +129,11 @@ std::unordered_map<std::wstring, FireLight> g_fires; // by model name, lower cas
 // waterfalls shone white at midnight (the user, 2026-10-22: "Water is still
 // too bright"). By model name, lower case; read once, at Install.
 std::unordered_set<std::wstring> g_lit;
+// What a flame stands in, by model name, lower case, and the light the flame
+// then has (effects.ini's `holds`): a fire pit's flame is the small flame of
+// a torch, and lit as one a camp's fire was a torch's (the user, 2026-10-24:
+// "don't see much light from the camp fire"). Read once, at Install.
+std::unordered_map<std::wstring, FireLight> g_holders;
 
 std::wstring Lower(std::wstring_view text)
 {
@@ -142,7 +147,8 @@ std::wstring Lower(std::wstring_view text)
 
 // The table's fires with a light and its LIT effects.
 std::unordered_map<std::wstring, FireLight> ReadTable(const std::filesystem::path &file,
-                                                      std::unordered_set<std::wstring> &lit)
+                                                      std::unordered_set<std::wstring> &lit,
+                                                      std::unordered_map<std::wstring, FireLight> &holders)
 {
     std::unordered_map<std::wstring, FireLight> fires;
     std::ifstream in(file);
@@ -165,11 +171,11 @@ std::unordered_map<std::wstring, FireLight> ReadTable(const std::filesystem::pat
         {
             lit.insert(model);
         }
-        else if (kind == "glow" &&
+        else if ((kind == "glow" || kind == "holds") &&
                  value >> fire.colour[0] >> fire.colour[1] >> fire.colour[2] >> fire.reach >> fire.height &&
                  fire.reach > 0)
         {
-            fires[model] = fire;
+            (kind == "glow" ? fires : holders)[model] = fire;
         }
     }
     return fires;
@@ -328,6 +334,19 @@ bool Near(const std::array<float, 3> &a, const std::array<float, 3> &b, float wi
 // fire's light, metres: Haven's mountain top's light_619, warm, 5 m, is its
 // temple gate's torch's.
 constexpr float kAtFire = 2.0F;
+// How near across a flame must stand to what holds it, metres: the Dalish
+// camp's flames stand 0.1 and 0.2 m from their fire pits' (brc000d).
+constexpr float kHeld = 0.5F;
+
+// Whether two places are within `within` of each other across, and a fire's
+// height of each other up: a flame lit as what holds it is lit at the
+// holder's height (the medium fire's 0.86 m against the torch's 0.31).
+bool Beside(const std::array<float, 3> &a, const std::array<float, 3> &b, float within)
+{
+    const float x = a[0] - b[0];
+    const float y = a[1] - b[1];
+    return (x * x) + (y * y) < within * within && std::abs(a[2] - b[2]) < kAtFire;
+}
 
 // The fires a room places that effects.ini gives a light, each where its
 // light is, above its place.
@@ -339,6 +358,15 @@ std::vector<Light> PlacedFires(levelfiles::Level &level, const std::wstring &id)
     {
         return fires;
     }
+    std::vector<std::pair<std::array<float, 3>, const FireLight *>> holders;
+    for (const levelfiles::level::Placed &placed : room->models)
+    {
+        if (const auto holder = g_holders.find(Lower(placed.file)); holder != g_holders.end())
+        {
+            const levelfiles::core::Point at = levelfiles::level::InLevel(*room, placed, {0, 0, 0});
+            holders.emplace_back(std::array<float, 3>{at[0], at[1], at[2]}, &holder->second);
+        }
+    }
     for (const levelfiles::level::Placed &placed : room->models)
     {
         const auto fire = g_fires.find(Lower(placed.file));
@@ -346,9 +374,19 @@ std::vector<Light> PlacedFires(levelfiles::Level &level, const std::wstring &id)
         {
             continue;
         }
-        const FireLight &f = fire->second;
         const levelfiles::core::Point at = levelfiles::level::InLevel(*room, placed, {0, 0, 0});
-        fires.push_back({{at[0], at[1], at[2] + f.height, f.reach}, {f.colour[0], f.colour[1], f.colour[2], 1}});
+        std::array<float, 3> place{at[0], at[1], at[2]};
+        const FireLight *f = &fire->second;
+        // In what holds it, the holder's light, at the holder: an empty pit is not lit.
+        if (const auto holder =
+                std::ranges::find_if(holders, [&](const auto &held) { return Beside(held.first, place, kHeld); });
+            holder != holders.end())
+        {
+            place = holder->first;
+            f = holder->second;
+        }
+        fires.push_back(
+            {{place[0], place[1], place[2] + f->height, f->reach}, {f->colour[0], f->colour[1], f->colour[2], 1}});
     }
     return fires;
 }
@@ -523,7 +561,7 @@ void AddFires(std::vector<Light> &lights, std::size_t engines)
         // (AddPlacedFires): one light, not two.
         const std::array<float, 3> lit{at[0], at[1], at[2] + f.height};
         if (std::ranges::any_of(levelLit, [&](const Light &light) {
-                return Near({light.place[0], light.place[1], light.place[2]}, lit, kLampMatch);
+                return Beside({light.place[0], light.place[1], light.place[2]}, lit, kLampMatch);
             }))
         {
             continue;
@@ -639,7 +677,7 @@ bool Install()
         spdlog::warn("effects' lights: a detour could not be placed; the engine chooses them as it does");
         return false;
     }
-    g_fires = ReadTable(dao::Module::OwnFolder() / "effects.ini", g_lit);
+    g_fires = ReadTable(dao::Module::OwnFolder() / "effects.ini", g_lit, g_holders);
     spdlog::info("effects' lights: {} lightless fires given a light and {} effects lit by the sky, by effects.ini",
                  g_fires.size(), g_lit.size());
     dao::lights::OnPointLight([](dao::lights::PointLight &light) {
