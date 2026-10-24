@@ -42,6 +42,33 @@ void Start(const std::filesystem::path &override, const std::filesystem::path &g
 using SetSamplerStateFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, DWORD, D3DSAMPLERSTATETYPE, DWORD);
 void UseSamplerState(SetSamplerStateFn set);
 
+// The device's vertex streams as they are bound, each buffer held. A state
+// block's Apply puts a stream's buffer back at offset 0, not where it was
+// bound: the engine binds a buffer it holds many meshes in at each mesh's
+// offset (stream 0 at 1392 bytes, read 2026-10-24), and, filtering what it
+// set already, does not bind it again. The effects' lights' maps, drawn
+// mid-scene within such a block, left the next draws reading their
+// vertices from the buffer's start: whole meshes drawn after them in black,
+// as the camera turned and the draw the maps were drawn at changed (the
+// Caverns' statues and walls, the Ruined Temple's snow; the user,
+// 2026-10-24: "the wall in the room turns black at certain camera angles").
+struct BoundStreams
+{
+    struct Bound
+    {
+        IDirect3DVertexBuffer9 *buffer = nullptr;
+        UINT offset = 0;
+        UINT stride = 0;
+        bool read = false;
+    };
+    std::array<Bound, 16> streams{};
+};
+BoundStreams StreamsOf(IDirect3DDevice9 *device);
+
+// The streams bound again as they were, after a state block of the
+// plugin's own is applied, and the buffers let go.
+void PutStreams(IDirect3DDevice9 *device, BoundStreams &bound);
+
 // Whether the level is drawn into the shadow maps. The game thread's word.
 void Want(bool on);
 

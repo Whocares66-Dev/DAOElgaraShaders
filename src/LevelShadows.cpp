@@ -1610,6 +1610,34 @@ void UseSamplerState(SetSamplerStateFn set)
     g_setSampler = set;
 }
 
+BoundStreams StreamsOf(IDirect3DDevice9 *device)
+{
+    BoundStreams bound;
+    for (UINT stream = 0; stream < bound.streams.size(); ++stream)
+    {
+        BoundStreams::Bound &each = bound.streams.at(stream);
+        each.read = SUCCEEDED(device->GetStreamSource(stream, &each.buffer, &each.offset, &each.stride));
+    }
+    return bound;
+}
+
+void PutStreams(IDirect3DDevice9 *device, BoundStreams &bound)
+{
+    for (UINT stream = 0; stream < bound.streams.size(); ++stream)
+    {
+        BoundStreams::Bound &each = bound.streams.at(stream);
+        if (each.read)
+        {
+            device->SetStreamSource(stream, each.buffer, each.offset, each.stride);
+        }
+        if (each.buffer != nullptr)
+        {
+            each.buffer->Release();
+            each.buffer = nullptr;
+        }
+    }
+}
+
 void Air(IDirect3DDevice9 *device)
 {
     IDirect3DPixelShader9 *pixel = nullptr;
@@ -2367,6 +2395,7 @@ static bool DrawAtlas(IDirect3DDevice9 *device)
         return false;
     }
     g_saved->Capture();
+    BoundStreams streams = StreamsOf(device);
     KeepCaches(device);
     std::array<IDirect3DSurface9 *, 2> targets{};
     IDirect3DSurface9 *depth = nullptr;
@@ -2403,6 +2432,7 @@ static bool DrawAtlas(IDirect3DDevice9 *device)
         }
     }
     g_saved->Apply();
+    PutStreams(device, streams);
     return true;
 }
 
@@ -2686,6 +2716,7 @@ static bool DrawEffectShadows(IDirect3DDevice9 *device)
         return false;
     }
     g_saved->Capture();
+    BoundStreams streams = StreamsOf(device);
     if (!g_measuredThisFrame)
     {
         Measure(device);
@@ -2745,6 +2776,7 @@ static bool DrawEffectShadows(IDirect3DDevice9 *device)
         }
     }
     g_saved->Apply();
+    PutStreams(device, streams);
     return true;
 }
 

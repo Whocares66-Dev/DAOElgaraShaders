@@ -471,6 +471,7 @@ void ShowScene(IDirect3DDevice9 *device)
     IDirect3DSurface9 *was = nullptr;
     g_getRenderTarget.Original()(device, 0, &was);
     g_scene.states->Capture();
+    levelshadows::BoundStreams streams = levelshadows::StreamsOf(device);
     g_setRenderTarget.Original()(device, 0, g_scene.back);
     device->SetVertexShader(nullptr);
     device->SetPixelShader(nullptr);
@@ -526,6 +527,7 @@ void ShowScene(IDirect3DDevice9 *device)
         device->EndScene();
     }
     g_scene.states->Apply();
+    levelshadows::PutStreams(device, streams);
     g_setRenderTarget.Original()(device, 0, was);
     Released(was);
 }
