@@ -7,7 +7,7 @@ One file an area, named by its tag (`lot100ar_lothering.ini`), read as the plugi
 | `level` | the area's level (its day level), as its `.are` names it |
 | `night` | the level its night is taken from: its moon, its sky and its sky's light |
 | `latitude` | degrees, or a level: the latitude at which that level's sun is an equinox's noon (90 less its height) |
-| `moon_height` | degrees up at midnight; default the night level's own moon's |
+| `moon_height` | degrees up at midnight, or `own` for the night level's own moon's; defaults.ini's 60 |
 | `moon_turn` | degrees about the upright from the night level's own moon; default 0 |
 | `declination` | the sun's, in degrees: how far north of the sky's equator it is, the season |
 | `noon` | the hour the sun is highest |

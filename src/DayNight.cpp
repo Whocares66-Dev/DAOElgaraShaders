@@ -782,7 +782,9 @@ Table ReadTable(const std::filesystem::path &folder)
         area.lampMoves = LampMovesOf(keys);
         area.declination = *declination;
         area.noon = *noon;
-        area.moonHeight = Number(said("moon_height").value_or(""));
+        // `own`: the night level's own moon's height, where defaults.ini gives another.
+        const std::string moonHeight = said("moon_height").value_or("own");
+        area.moonHeight = moonHeight == "own" ? std::nullopt : Number(moonHeight);
         area.moonTurn = Number(said("moon_turn").value_or("")).value_or(0);
         const std::string latitude = said("latitude").value_or("");
         area.latitude = Number(latitude);
