@@ -100,6 +100,11 @@ float Hour();
 // lights by them itself (EffectLights.cpp). Any thread, once Install has run.
 bool FireLamp(std::wstring_view model, std::wstring_view name);
 
+// How bright the plugin lights fires, a share of what the level or
+// effects.ini says (data/areas/defaults.ini's `fire_strength`). Any thread,
+// once Install has run.
+float FireStrength();
+
 // A lamp of the area's level its file moves (its `move_lamp` keys): from where
 // the level puts it to where its light is to be, metres in the world.
 struct LampMove

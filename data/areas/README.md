@@ -13,6 +13,7 @@ One file an area, named by its tag (`lot100ar_lothering.ini`), read as the plugi
 | `noon` | the hour the sun is highest |
 | `night_fill` | how much of the night level's sky light the night keeps beside the moon, what lights the moon's shadows: set so that shadows are about as dark in every area as in Redcliffe's |
 | `move_lamp` | `x y z > x y z`: a lamp named as a fire that the level puts at the first place (to a tenth of a metre) lit at the second, where its lantern or fire is; a flame there is then lit by the lamp alone. Several keys may start `move_lamp` |
+| `fire_strength` | (`defaults.ini` only) how bright the plugin lights fires and lamps, a share of their own light |
 | `fires` | (`defaults.ini` only) the starts of the names of layouts' lights that are fires, which keep their light by night; every other layout light goes with the sun |
 
 The sun and the moon go round one pole on the latitude's path, the moon highest at midnight. The day level's sun stands where the level has it at the afternoon hour it is that high, and the level's own light, its bake's, is that hour's (the user, 2026-10-22: "perhaps the default isn't noon, but something more like 10:AM or 3:PM"). Where the night is another level's, the night's reflections are the area's own day cube taken to the night sky's light (`NightCubes.cpp`).

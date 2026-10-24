@@ -47,6 +47,10 @@ void WantLamps(bool on);
 // developer's: outdoors.tune's LightCull = 0 keeps them). The game thread's.
 void WantCulled(bool on);
 
+// How bright fires and lamps are lit, a share of their own light: the game
+// thread's word (daynight::FireStrength, or outdoors.tune's FireStrength).
+void FireStrength(float share);
+
 // Says a level was opened (`levelRim` its archive of rooms): its lamps named
 // as fires are read from its layouts, off the calling thread. Any thread.
 void LevelOpened(const std::filesystem::path &levelRim);

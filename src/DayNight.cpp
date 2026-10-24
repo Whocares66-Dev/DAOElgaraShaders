@@ -542,6 +542,7 @@ std::vector<Cycled> g_cycled;
 // The starts of the names of layouts' lights that are fires (data/areas'
 // defaults.ini's `fires`), set once in Install before any light is seen.
 std::vector<std::wstring> g_fireLights;
+float g_fireStrength = 1; // defaults.ini's `fire_strength`, set once in Install
 std::map<std::wstring, std::shared_ptr<const Pair>> g_pairs;
 std::set<std::wstring> g_asked;
 // What the hour's light hands the render thread: the sky light's multiplier,
@@ -609,6 +610,7 @@ struct Table
 {
     std::vector<Cycled> areas;
     std::vector<std::wstring> fires;
+    float fireStrength = 1;
 };
 
 using Keys = std::map<std::string, std::string>;
@@ -668,6 +670,10 @@ Table ReadTable(const std::filesystem::path &folder)
     }
     const auto wide = [](const std::string &text) { return Lower(std::wstring(text.begin(), text.end())); };
     Table table;
+    if (const auto strength = defaults.find("fire_strength"); strength != defaults.end())
+    {
+        table.fireStrength = Number(strength->second).value_or(1);
+    }
     if (const auto fires = defaults.find("fires"); fires != defaults.end())
     {
         std::istringstream names(fires->second);
@@ -725,6 +731,11 @@ Table ReadTable(const std::filesystem::path &folder)
 }
 
 } // namespace
+
+float FireStrength()
+{
+    return g_fireStrength;
+}
 
 std::vector<LampMove> LampMoves()
 {
@@ -940,6 +951,7 @@ void Install()
         spdlog::info("day and night: {} areas and {} names of fires by the areas' files", table.areas.size(),
                      table.fires.size());
         g_fireLights = std::move(table.fires);
+        g_fireStrength = table.fireStrength;
         const std::scoped_lock lock(g_lock);
         g_cycled = std::move(table.areas);
     }

@@ -1511,6 +1511,9 @@ void KeepLookRegisters()
     // outdoors.tune's FireLamps = 0, a developer's, leaves them the engine's.
     effectlights::WantLamps(lighting && outdoors::Tune("FireLamps", 1) > 0);
     effectlights::WantCulled(outdoors::Tune("LightCull", 1) > 0);
+    // How bright the plugin lights fires (data/areas/defaults.ini's
+    // fire_strength); outdoors.tune's FireStrength, a developer's, to try one.
+    effectlights::FireStrength(outdoors::Tune("FireStrength", daynight::FireStrength()));
     // outdoors.tune's EffectShadows = 0, a developer's: their cost without them
     // (issue 30).
     levelshadows::WantEffectShadows(lighting && outdoors::Tune("EffectShadows", 1) > 0);

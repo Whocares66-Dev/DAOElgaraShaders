@@ -293,6 +293,8 @@ Light LightOf(const void *node)
 // handing a lamp for the objects about the camera alone ("torches don't
 // emit light from a distance ... but they do when closer").
 std::atomic<bool> g_lampsWanted{false};
+// How bright fires and lamps are lit, a share of their own light (FireStrength).
+std::atomic<float> g_fireShare{1};
 std::atomic<bool> g_culled{true};
 std::mutex g_lampLock;
 // Each level's, by its name, and the level whose layout lights the engine
@@ -406,6 +408,10 @@ void AddLamps(std::vector<Light> &lights)
                 lamp.place = {move.to[0], move.to[1], move.to[2], lamp.place[3]};
             }
         }
+        for (std::size_t c = 0; c < 3; ++c)
+        {
+            lamp.colour.at(c) *= g_fireShare.load(std::memory_order_relaxed);
+        }
         lights.push_back(lamp);
     }
 }
@@ -435,7 +441,9 @@ void AddFires(std::vector<Light> &lights)
         if (fire != g_fires.end())
         {
             const FireLight &f = fire->second;
-            lights.push_back({{at[0], at[1], at[2] + f.height, f.reach}, {f.colour[0], f.colour[1], f.colour[2], 1}});
+            const float share = g_fireShare.load(std::memory_order_relaxed);
+            lights.push_back({{at[0], at[1], at[2] + f.height, f.reach},
+                              {f.colour[0] * share, f.colour[1] * share, f.colour[2] * share, 1}});
         }
     }
 }
@@ -601,6 +609,11 @@ void LevelOpened(const std::filesystem::path &levelRim)
         });
         g_lampReads.push_back(std::async(std::launch::async, KeepLamps, levelRim, level));
     }
+}
+
+void FireStrength(float share)
+{
+    g_fireShare.store(share, std::memory_order_relaxed);
 }
 
 void WantCulled(bool on)
