@@ -303,7 +303,8 @@ std::atomic<bool> g_culled{true};
 std::mutex g_lampLock;
 // Each level's, by its name, and the level whose layout lights the engine
 // last handed: the one the player is in. Under g_lampLock.
-std::map<std::wstring, std::shared_ptr<const std::vector<Light>>> g_levelLamps;
+struct LevelFires;
+std::map<std::wstring, std::shared_ptr<const LevelFires>> g_levelLamps;
 std::wstring g_lampLevel;
 std::vector<std::future<void>> g_lampReads; // the loading thread's
 
@@ -322,14 +323,59 @@ bool Near(const std::array<float, 3> &a, const std::array<float, 3> &b, float wi
     return (x * x) + (y * y) + (z * z) < within * within;
 }
 
-// The lamps named as fires in every layout of a level, in the world.
-std::vector<Light> ReadLamps(const std::filesystem::path &levelRim)
+// How near a layout's lamp must be to a fire its room places to be the
+// fire's light, metres: Haven's mountain top's light_619, warm, 5 m, is its
+// temple gate's torch's.
+constexpr float kAtFire = 2.0F;
+
+// The fires a room places that effects.ini gives a light, each where its
+// light is, above its place.
+std::vector<Light> PlacedFires(levelfiles::Level &level, const std::wstring &id)
 {
-    std::vector<Light> lamps;
+    std::vector<Light> fires;
+    const levelfiles::level::Room *room = level.RoomOf(id);
+    if (room == nullptr)
+    {
+        return fires;
+    }
+    for (const levelfiles::level::Placed &placed : room->models)
+    {
+        const auto fire = g_fires.find(Lower(placed.file));
+        if (fire == g_fires.end())
+        {
+            continue;
+        }
+        const FireLight &f = fire->second;
+        const levelfiles::core::Point at = levelfiles::level::InLevel(*room, placed, {0, 0, 0});
+        fires.push_back({{at[0], at[1], at[2] + f.height, f.reach}, {f.colour[0], f.colour[1], f.colour[2], 1}});
+    }
+    return fires;
+}
+
+// A level's fires, lit by the plugin from the moment the level opens: the
+// engine runs a room's effects only near the camera, and Haven's mountain
+// top's torches at the temple's gate went dark at night from across the
+// plateau (the user, 2026-10-23: "at 21:00 we cannot [see them] until we
+// move closer").
+struct LevelFires
+{
+    std::vector<Light> lights;
+    // The layouts' lamps that are a fire's light though not named as one,
+    // "<layout>/<name>", lower case: the engine's own copies are put out.
+    std::vector<std::wstring> atFires;
+};
+
+// The lamps of every layout of a level that are fires' (named as fires, or
+// at a fire the room places), each fire with none lit as effects.ini says,
+// in the world.
+LevelFires ReadLamps(const std::filesystem::path &levelRim)
+{
+    LevelFires read;
+    std::vector<Light> &lamps = read.lights;
     std::optional<levelfiles::Archive> rooms = levelfiles::Archive::Open(levelRim);
     if (!rooms)
     {
-        return lamps;
+        return read;
     }
     const std::wstring name = Lower(levelRim.stem().wstring());
     levelfiles::Level level(levelRim.parent_path(), name, std::move(*rooms), nullptr, nullptr);
@@ -339,19 +385,32 @@ std::vector<Light> ReadLamps(const std::filesystem::path &levelRim)
         layout += L"_";
         layout += room;
         layout += L"_ll";
+        std::vector<Light> fires = PlacedFires(level, room);
         for (const levelfiles::Lamp &lamp : level.LampsOf(room))
         {
-            if (lamp.reach <= 0 || !daynight::FireLamp(layout, lamp.name))
+            const std::array<float, 3> at{lamp.at[0], lamp.at[1], lamp.at[2]};
+            const auto fire = std::ranges::find_if(fires, [&](const Light &light) {
+                return Near({light.place[0], light.place[1], light.place[2]}, at, kAtFire);
+            });
+            if (lamp.reach <= 0 || (!daynight::FireLamp(layout, lamp.name) && fire == fires.end()))
             {
                 continue;
+            }
+            // The makers' own light for the fire, not effects.ini's.
+            if (fire != fires.end())
+            {
+                fires.erase(fire);
+                if (!daynight::FireLamp(layout, lamp.name))
+                {
+                    read.atFires.push_back(layout + L"/" + Lower(lamp.name));
+                }
             }
             // Two lamps at one place are one light: Redcliffe castle's torches
             // are each a torch_baked_ and a torch_animated_ (lak200d), and as
             // two they took two of the shaders' sixteen, the farther torches
             // left out.
             const auto same = std::ranges::find_if(lamps, [&](const Light &light) {
-                return Near({light.place[0], light.place[1], light.place[2]}, {lamp.at[0], lamp.at[1], lamp.at[2]},
-                            kLampMatch);
+                return Near({light.place[0], light.place[1], light.place[2]}, at, kLampMatch);
             });
             if (same != lamps.end())
             {
@@ -362,19 +421,19 @@ std::vector<Light> ReadLamps(const std::filesystem::path &levelRim)
                 same->place[3] = std::max(same->place[3], lamp.reach);
                 continue;
             }
-            lamps.push_back({{lamp.at[0], lamp.at[1], lamp.at[2], lamp.reach},
-                             {lamp.colour[0], lamp.colour[1], lamp.colour[2], 1}});
+            lamps.push_back({{at[0], at[1], at[2], lamp.reach}, {lamp.colour[0], lamp.colour[1], lamp.colour[2], 1}});
         }
+        lamps.insert(lamps.end(), fires.begin(), fires.end());
     }
-    return lamps;
+    return read;
 }
 
 // A level's lamps read and kept, off the loading thread.
 void KeepLamps(const std::filesystem::path &levelRim, const std::wstring &level)
 {
-    auto lamps = std::make_shared<const std::vector<Light>>(ReadLamps(levelRim));
-    spdlog::info("effects' lights: {} lamps named as fires in {}'s layouts", lamps->size(),
-                 std::filesystem::path(level).string());
+    auto lamps = std::make_shared<const LevelFires>(ReadLamps(levelRim));
+    spdlog::info("effects' lights: {} fires in {}'s layouts and rooms, {} of the layouts' lamps at a fire",
+                 lamps->lights.size(), std::filesystem::path(level).string(), lamps->atFires.size());
     const std::scoped_lock lock(g_lampLock);
     g_levelLamps[level] = std::move(lamps);
 }
@@ -387,7 +446,7 @@ void AddLamps(std::vector<Light> &lights)
     {
         return;
     }
-    std::shared_ptr<const std::vector<Light>> lamps;
+    std::shared_ptr<const LevelFires> lamps;
     {
         const std::scoped_lock lock(g_lampLock);
         if (const auto found = g_levelLamps.find(g_lampLevel); found != g_levelLamps.end())
@@ -400,7 +459,7 @@ void AddLamps(std::vector<Light> &lights)
         return;
     }
     const std::vector<daynight::LampMove> moves = daynight::LampMoves();
-    for (Light lamp : *lamps)
+    for (Light lamp : lamps->lights)
     {
         // Where the area's file moves it: Lothering's Dane's Refuge lamp is
         // put 3.2 m from its lantern, and lit each pixel its pool lay beside
@@ -420,14 +479,17 @@ void AddLamps(std::vector<Light> &lights)
     }
 }
 
-// The lightless fires effects.ini gives a light, each at its effect's place.
-void AddFires(std::vector<Light> &lights)
+// The lightless fires effects.ini gives a light, each at its effect's place;
+// `engines`: how many of `lights` are the engine's, before the level's own.
+void AddFires(std::vector<Light> &lights, std::size_t engines)
 {
     if (g_fires.empty())
     {
         return;
     }
     const std::vector<daynight::LampMove> moves = daynight::LampMoves();
+    // The level's lamps and fires (AddLamps), after the engine's lights.
+    const std::vector<Light> levelLit(lights.begin() + static_cast<std::ptrdiff_t>(engines), lights.end());
     for (const dao::vfx::RunningEffect &effect : dao::vfx::RunningEffects())
     {
         if (effect.modelHasLight || !effect.position)
@@ -442,13 +504,23 @@ void AddFires(std::vector<Light> &lights)
             continue;
         }
         const auto fire = g_fires.find(Lower(effect.model));
-        if (fire != g_fires.end())
+        if (fire == g_fires.end())
         {
-            const FireLight &f = fire->second;
-            const float share = g_fireShare.load(std::memory_order_relaxed);
-            lights.push_back({{at[0], at[1], at[2] + f.height, f.reach},
-                              {f.colour[0] * share, f.colour[1] * share, f.colour[2] * share, 1}});
+            continue;
         }
+        const FireLight &f = fire->second;
+        // A fire the level places is lit already, as the level opens
+        // (AddPlacedFires): one light, not two.
+        const std::array<float, 3> lit{at[0], at[1], at[2] + f.height};
+        if (std::ranges::any_of(levelLit, [&](const Light &light) {
+                return Near({light.place[0], light.place[1], light.place[2]}, lit, kLampMatch);
+            }))
+        {
+            continue;
+        }
+        const float share = g_fireShare.load(std::memory_order_relaxed);
+        lights.push_back(
+            {{lit[0], lit[1], lit[2], f.reach}, {f.colour[0] * share, f.colour[1] * share, f.colour[2] * share, 1}});
     }
 }
 
@@ -576,7 +648,16 @@ bool Install()
                 const auto found = g_levelLamps.find(g_lampLevel);
                 spdlog::info("effects' lights: in {}, {} of its lamps lit by the plugin",
                              std::filesystem::path(g_lampLevel).string(),
-                             found != g_levelLamps.end() ? found->second->size() : 0);
+                             found != g_levelLamps.end() ? found->second->lights.size() : 0);
+            }
+            // A lamp at a fire the level places, lit by the plugin (ReadLamps).
+            if (const auto found = g_levelLamps.find(g_lampLevel);
+                found != g_levelLamps.end() &&
+                std::ranges::find(found->second->atFires, model + L"/" + Lower(light.name)) !=
+                    found->second->atFires.end())
+            {
+                light.color = {0, 0, 0, light.color[3]};
+                return;
             }
         }
         if (daynight::FireLamp(light.model, light.name))
@@ -607,7 +688,7 @@ void LevelOpened(const std::filesystem::path &levelRim)
         {
             return;
         }
-        g_levelLamps[level] = std::make_shared<const std::vector<Light>>();
+        g_levelLamps[level] = std::make_shared<const LevelFires>();
         std::erase_if(g_lampReads, [](const std::future<void> &read) {
             return read.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
         });
@@ -656,8 +737,9 @@ void Read()
                 lights.push_back(light);
             }
         }
+        const std::size_t engines = lights.size();
         AddLamps(lights);
-        AddFires(lights);
+        AddFires(lights, engines);
     }
     // What lights nothing on the screen left out, then, of more than the
     // shaders take, the nearest the camera: by nearness alone, lights behind
