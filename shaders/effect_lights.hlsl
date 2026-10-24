@@ -55,33 +55,46 @@ float3 DaoEffectPlace(int i, float3 world)
         across = d.xy;
     }
     const float2 uv = float2(0.5 + 0.5 * across.x / z, 0.5 - 0.5 * across.y / z);
-    // Kept a texel inside the face's own tile, for the taps about it.
-    const float2 inside = clamp(uv, 1 / kDaoEffectTile, 1 - 1 / kDaoEffectTile);
+    // Kept two texels inside the face's own tile, for the taps about it.
+    const float2 inside = clamp(uv, 2 / kDaoEffectTile, 1 - 2 / kDaoEffectTile);
     return float3((face + inside.x) / 6, (i + inside.y) / kDaoEffectLightsMost, z);
 }
 
 // How much of light i reaches a point of the world, past what stands nearer
-// the light than it: four taps a texel apart, each by the distance it holds
-// against the point's own, less a bias of two centimetres and two texels'
-// width there (the maps' own steps).
+// the light than it: a three-texel square of the map about the point, each
+// texel's answer by the distance it holds against the point's own, less a
+// bias of two centimetres and three texels' width there (the maps' steps and
+// the filter's breadth), weighed by how far the point lies across its own
+// texel, so that the shadow's edge goes smoothly from texel to texel. Four
+// taps a texel apart, each a plain yes or no, cut a figure's shadow from a
+// fire into steps on its own body (the user, 2026-10-23: "shadows still very
+// pixelated on chars' bodies").
 float DaoEffectShadow(sampler2D map, int i, float3 world)
 {
     const float far = daoEffectLights[2 * i].w;
     const float a = far / (far - kDaoEffectNear);
     const float b = -kDaoEffectNear * a;
     const float3 at = DaoEffectPlace(i, world);
-    const float bias = 0.02 + 4 * at.z / kDaoEffectTile;
-    const float2 texel = float2(1.0 / (6 * kDaoEffectTile), 1.0 / (kDaoEffectLightsMost * kDaoEffectTile));
+    const float bias = 0.02 + 6 * at.z / kDaoEffectTile;
+    const float2 size = float2(6 * kDaoEffectTile, kDaoEffectLightsMost * kDaoEffectTile);
+    const float2 texels = at.xy * size - 0.5;
+    const float2 f = frac(texels);
+    const float2 corner = floor(texels);
     float lit = 0;
-    [unroll] for (int t = 0; t < 4; t++)
+    [unroll] for (int y = -1; y <= 2; y++)
     {
-        const float2 tap = at.xy + (float2(t % 2, t / 2) - 0.5) * texel;
-        const float stored = tex2Dlod(map, float4(tap, 0, 0)).x;
-        // The stored a + b / z back to z; nothing drawn there (1) is the reach.
-        const float nearest = stored < 1 ? b / (stored - a) : far;
-        lit += nearest >= at.z - bias ? 1.0 : 0.0;
+        const float wy = y == -1 ? 1 - f.y : (y == 2 ? f.y : 1);
+        [unroll] for (int x = -1; x <= 2; x++)
+        {
+            const float wx = x == -1 ? 1 - f.x : (x == 2 ? f.x : 1);
+            const float2 tap = (corner + float2(x, y) + 0.5) / size;
+            const float stored = tex2Dlod(map, float4(tap, 0, 0)).x;
+            // The stored a + b / z back to z; nothing drawn there (1) is the reach.
+            const float nearest = stored < 1 ? b / (stored - a) : far;
+            lit += (nearest >= at.z - bias ? 1.0 : 0.0) * wx * wy;
+        }
     }
-    return lit / 4;
+    return lit / 9;
 }
 
 // A light's shadow at a point, where the shader has a sampler for the atlas;
