@@ -13,6 +13,7 @@ One file an area, named by its tag (`lot100ar_lothering.ini`), read as the plugi
 | `noon` | the hour the sun is highest |
 | `night_fill` | how much of the night level's sky light the night keeps beside the moon, what lights the moon's shadows: set so that shadows are about as dark in every area as in Redcliffe's |
 | `night_haze` | how hazy the night sky is, 0 to 1: 0 the night level's clear air (Redcliffe's deep blue), 1 the area's own haze and clouds as by day, between them a mix; the sky is as dark at any value, and the moon and the night's light are the night level's (outdoors.tune's `NightHaze` tries one live) |
+| `spray_moon` | how much of the moon's light the area's spray and mist (effects.ini's `lit`) take by night, 0 to 1, beside the night sky's: 0 for spray under trees, 1 for spray in the open moon |
 | `move_lamp` | `x y z > x y z`: a lamp named as a fire that the level puts at the first place (to a tenth of a metre) lit at the second, where its lantern or fire is; a flame there is then lit by the lamp alone. Several keys may start `move_lamp` |
 | `fire_strength` | (`defaults.ini` only) how bright the plugin lights fires and lamps, a share of their own light |
 | `fires` | (`defaults.ini` only) the starts of the names of layouts' lights that are fires, which keep their light by night; every other layout light goes with the sun |

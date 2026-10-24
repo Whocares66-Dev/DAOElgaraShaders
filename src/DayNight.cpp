@@ -97,6 +97,7 @@ struct Pair
     float noon = 0;                  // the hour the sun is highest (its area's file)
     float nightFill = 0;             // the share of the night sky's light kept by night (its area's file)
     float nightHaze = 0;             // how much of the area's own haze its night's sky has (its area's file)
+    float sprayMoon = 0;             // how much of the moon's light its spray and mist take (its area's file)
     std::vector<LampMove> lampMoves; // its file's `move_lamp`s
 };
 
@@ -350,6 +351,7 @@ struct Cycled
     float noon = 0;
     float nightFill = 0;
     float nightHaze = 0;
+    float sprayMoon = 0;
     std::vector<LampMove> lampMoves;
 };
 // The sun's and the moon's radius as seen, radians: a body is gone when its
@@ -563,7 +565,13 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
         sky.at(i) = std::lerp(nightSkyLight.at(i), ownSkyLight.at(i), day);
     }
     const float ownLit = daySun + grey(ownSkyLight[0], ownSkyLight[1], ownSkyLight[2]);
-    light.lit = ownLit > 0 ? (sun + grey(sky[0], sky[1], sky[2])) / ownLit : 1;
+    // By night, as much of the moon as the area's spray stands in (its file's
+    // `spray_moon`): the plugin shadows the moon on surfaces, not on a
+    // particle, and under the West Brecilian Forest's canopy its falls took
+    // the whole moon, 0.56 of their noon brightness at midnight beside ground
+    // all but black (2026-10-24).
+    const float litBy = sunLights ? sun : sun * pair.sprayMoon;
+    light.lit = ownLit > 0 ? (litBy + grey(sky[0], sky[1], sky[2])) / ownLit : 1;
     light.water = {skySun > 0 && daySun > 0 ? (sun / daySun) * (daySkySun / skySun) : 1,
                    std::lerp(1.0F, kNightColour, light.nightShare)};
     return light;
@@ -760,7 +768,9 @@ Table ReadTable(const std::filesystem::path &folder)
         const std::optional<float> noon = Number(said("noon").value_or(""));
         const std::optional<float> nightFill = Number(said("night_fill").value_or(""));
         const std::optional<float> nightHaze = Number(said("night_haze").value_or(""));
-        if (area.day.empty() || area.night.empty() || !declination || !noon || !nightFill || !nightHaze)
+        const std::optional<float> sprayMoon = Number(said("spray_moon").value_or(""));
+        if (area.day.empty() || area.night.empty() || !declination || !noon || !nightFill || !nightHaze ||
+            !sprayMoon)
         {
             spdlog::warn("day and night: areas/{}.ini lacks its level, its night, the declination, noon, the "
                          "night's fill or its haze",
@@ -769,6 +779,7 @@ Table ReadTable(const std::filesystem::path &folder)
         }
         area.nightFill = *nightFill;
         area.nightHaze = std::clamp(*nightHaze, 0.0F, 1.0F);
+        area.sprayMoon = std::clamp(*sprayMoon, 0.0F, 1.0F);
         area.lampMoves = LampMovesOf(keys);
         area.declination = *declination;
         area.noon = *noon;
@@ -870,6 +881,7 @@ void Opened(const std::filesystem::path &levelRim)
         pair->noon = cycled.noon;
         pair->nightFill = cycled.nightFill;
         pair->nightHaze = cycled.nightHaze;
+        pair->sprayMoon = cycled.sprayMoon;
         pair->lampMoves = cycled.lampMoves;
         {
             const Vec3 own{-pair->night.sun.direction[0], -pair->night.sun.direction[1], -pair->night.sun.direction[2]};
