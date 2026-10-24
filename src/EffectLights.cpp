@@ -752,10 +752,12 @@ void Read()
         AddFires(lights, engines);
     }
     // What lights nothing on the screen left out, then, of more than the
-    // shaders take, the nearest the camera: by nearness alone, lights behind
+    // shaders take, those that light the most about the camera: each by its
+    // brightness over its distance squared. By nearness alone, lights behind
     // the camera took the place of those before it (the user, 2026-10-23: "if
     // the light is out of viewport and its light reach is beyond the
-    // viewport, we don't need it").
+    // viewport, we don't need it"), and the mountain top's dim patches of
+    // lava those of the temple gate's torches across the plateau.
     const std::size_t before = lights.size();
     if (const std::optional<std::array<float, 16>> toScreen = levelshadows::ToScreen();
         toScreen && g_culled.load(std::memory_order_relaxed))
@@ -766,14 +768,15 @@ void Read()
     if (lights.size() > kMostLights)
     {
         const std::array<float, 3> eye = Eye();
-        const auto away = [&](const Light &light) {
+        const auto lighting = [&](const Light &light) {
             const float x = light.place[0] - eye[0];
             const float y = light.place[1] - eye[1];
             const float z = light.place[2] - eye[2];
-            return (x * x) + (y * y) + (z * z);
+            const float bright = std::max({light.colour[0], light.colour[1], light.colour[2]});
+            return bright / std::max((x * x) + (y * y) + (z * z), 1.0F);
         };
         std::ranges::nth_element(lights, lights.begin() + kMostLights,
-                                 [&](const Light &a, const Light &b) { return away(a) < away(b); });
+                                 [&](const Light &a, const Light &b) { return lighting(a) > lighting(b); });
         lights.resize(kMostLights);
     }
     std::array<float, kRegisterFloats> registers{};
