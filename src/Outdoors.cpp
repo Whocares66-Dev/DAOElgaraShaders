@@ -226,10 +226,8 @@ bool g_sunlit = false; // out of doors with a sun on the ground (Sunlit)
 // Under a day and a night the sky is the hour's, and the haze's part is the
 // sun's light scattered on, so it goes with the sun's colour over the day's
 // (`sunOverDay`); the moon's is left in the sky's own fog colour.
-// The haze's part is grey, of the luminance its share of the colour has: a
-// haze's droplets scatter every wavelength alike (Mie's, of particles far
-// larger than the light's wavelength), so what colour the area's fog has is
-// the air's; its molecules' part keeps it. Haven's fog is nearly all haze
+// The haze's part is of the luminance its share of the colour has, in the
+// fog's own hue (below). Haven's fog is nearly all haze
 // (its Mie multiplier 0.046 against Rayleigh's 0.028) of a deep teal, and
 // with the lobe towards the sun its far mountains went a flat neon cyan
 // brighter than its sky (the user, 2026-10-23: "fog w/ improved lighting
@@ -253,9 +251,17 @@ SkyHaze HazeOf(const dao::atmosphere::Sunlight &sun, const dao::atmosphere::Sky 
         haze.air.at(i) = static_cast<float>((1 - mieShare) * fog.at(i));
         hazeLuminance += kLuminance.at(i) * mieShare * fog.at(i);
     }
+    // In the fog's own hue, at the luminance the haze's share of it has: the
+    // makers' colour of the air, not its brightness. In grey the Dalish camp's
+    // and the Brecilian Forest's gold went a cool grey (the user, 2026-10-24,
+    // asked the makers' colour back); Haven's neon (issue 53) was the haze's
+    // own brightness, and at this luminance its far mountains are as they were
+    // in grey (94, 118, 135 of 255 against 92, 118, 136).
+    const double fogLuminance = (kLuminance[0] * fog[0]) + (kLuminance[1] * fog[1]) + (kLuminance[2] * fog[2]);
     for (std::size_t i = 0; i < 3; ++i)
     {
-        haze.sun.at(i) = static_cast<float>(hazeLuminance) * sunOverDay.at(i);
+        const double tint = fogLuminance > 0 ? fog.at(i) / fogLuminance : 1.0;
+        haze.sun.at(i) = static_cast<float>(hazeLuminance * tint) * sunOverDay.at(i);
     }
     haze.g = std::min(std::abs(sky.hg), 0.95F);
     return haze;
