@@ -611,13 +611,17 @@ def without_alpha_test(state):
     return re.sub(r'(<MaterialState\s+Name\s*=\s*")', r"\1Dao", state, count=1)
 
 
-def with_share_kept(state):
+def with_share_kept(state, clear=False):
     """A blending render state's file under our name for it, with the
     picture's alpha blended by itself: what is drawn takes the share under it
     away by its own opacity (the alpha that is there, times one less the
     alpha drawn), in place of mixing its opacity into it. What is drawn
     blended is not in the distance the occlusion reads, so where it is solid
-    nothing of the occlusion behind it is to show on it. Nothing (None) for a
+    nothing of the occlusion behind it is to show on it. With `clear`, all of
+    the share under it is taken away: water, on whose surface the occlusion
+    is not reckoned, kept through its clear shallows the share of the bed
+    under it, and the joints of a river's stones were drawn dark on the
+    water with the game's anti-aliasing (issue 52). Nothing (None) for a
     state that does not mix by its alpha the common way, or that blends its
     alpha by itself already."""
     values = state_values(state)
@@ -627,19 +631,23 @@ def with_share_kept(state):
         or "DS_SEPARATEALPHABLENDENABLE" in values
     ):
         return None
+    destination = "BLEND_ZERO" if clear else "BLEND_INVSRCALPHA"
     state, count = re.subn(
         r'(<DeviceState\s+State\s*=\s*"DS_DESTBLEND"[^>]*>)',
         r"""\1
     <DeviceState State="DS_SEPARATEALPHABLENDENABLE" Value="TRUE" />
     <DeviceState State="DS_SRCBLENDALPHA" Value="BLEND_ZERO" />
-    <DeviceState State="DS_DESTBLENDALPHA" Value="BLEND_INVSRCALPHA" />
+    <DeviceState State="DS_DESTBLENDALPHA" Value="""
+        + f'"{destination}"'
+        + r""" />
     <DeviceState State="DS_BLENDOPALPHA" Value="BLENDOP_ADD" />""",
         state,
         count=1,
     )
     if count != 1:
         return None
-    return re.sub(r'(<MaterialState\s+Name\s*=\s*")', r"\1Dao", state, count=1)
+    prefix = "DaoClear" if clear else "Dao"
+    return re.sub(r'(<MaterialState\s+Name\s*=\s*")', r"\g<1>" + prefix, state, count=1)
 
 
 # How the game draws each shader that can say a share (MATERIAL_SHADERS), by
@@ -662,14 +670,18 @@ SHARE_SHADERS = MATERIAL_SHADERS[: -len(r")\.psh$")] + r"|face[02]|eye0)\.psh$"
 
 def passes_of(material):
     """A material definition's passes for shader model 3 that a shader which
-    can say a share draws: (the pass's text, its pixel shader, its state)."""
+    can say a share draws, or water (which takes the share under it away,
+    with_share_kept): (the pass's text, its pixel shader, its state)."""
     for found in re.finditer(r"<Pass\b[^>]*>", material):
         drawn_by = re.search(r'PixelShader\s*=\s*"([^"]+)"', found.group(0))
         state = re.search(r'State\s*=\s*"([^"]+)"', found.group(0))
         if (
             drawn_by
             and state
-            and re.match(SHARE_SHADERS, drawn_by.group(1), re.IGNORECASE)
+            and (
+                re.match(SHARE_SHADERS, drawn_by.group(1), re.IGNORECASE)
+                or drawn_by.group(1).lower().removesuffix(".psh") in WATERS
+            )
         ):
             yield found.group(0), drawn_by.group(1), state.group(1)
 
@@ -725,16 +737,18 @@ def with_pass_variants(material, states, made):
         name = drawn_by.lower() + ".fxo"
         theirs = state_text(states, state)
         kind, _ = pass_kind(theirs)
-        shader, ours_ = None, None
+        shader, ours_, prefix = None, None, "Dao"
         if kind == PLAIN and own_alpha(name) != "share":
             shader = "DaoShare" + drawn_by
         elif kind == TEST:
             shader, ours_ = "Dao" + drawn_by, without_alpha_test(theirs)
         elif kind == BLEND and theirs is not None:
-            ours_ = with_share_kept(theirs)
+            clear = drawn_by.lower().removesuffix(".psh") in WATERS
+            ours_ = with_share_kept(theirs, clear)
+            prefix = "DaoClear" if clear else "Dao"
         if ours_ is not None:
-            made["dao" + state.lower() + ".xml"] = ours_
-            text = text.replace(f'"{state}"', f'"Dao{state}"', 1)
+            made[prefix.lower() + state.lower() + ".xml"] = ours_
+            text = text.replace(f'"{state}"', f'"{prefix}{state}"', 1)
         if shader is not None:
             text = text.replace(f'"{drawn_by}"', f'"{shader}"', 1)
         return text
