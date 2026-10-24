@@ -1313,7 +1313,13 @@ HRESULT __stdcall BeginScene(IDirect3DDevice9 *device)
     }
     device->SetPixelShaderConstantF(kHazeRegister, haze.data(), kHazeRegisters);
     HandFills(device);
-    effectlights::Hand(device, g_drawsPicture);
+    // By the target the scene starts on, not the last one the game set: a
+    // scene begun on the frame's picture after a portrait's left the area
+    // with no lights at all (2026-10-23: "no fire light at all actually").
+    IDirect3DSurface9 *target = nullptr;
+    const bool picture = SUCCEEDED(device->GetRenderTarget(0, &target)) && IsPicture(device, target);
+    Released(target);
+    effectlights::Hand(device, picture);
     return g_beginScene.Original()(device);
 }
 

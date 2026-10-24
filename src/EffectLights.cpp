@@ -688,6 +688,10 @@ void Hand(IDirect3DDevice9 *device, bool picture)
     }
     static_assert(kCountRegister == kLightsRegister + (2 * kMostLights));
     device->SetPixelShaderConstantF(kLightsRegister, registers.data(), static_cast<UINT>(2 * kMostLights) + 1);
+    if (!picture)
+    {
+        return; // the lights the shadow maps are drawn for are the frame's still
+    }
     const auto count = static_cast<std::size_t>(registers.at(2 * kMostLights * 4));
     g_handed.resize(count);
     for (std::size_t i = 0; i < count; ++i)
