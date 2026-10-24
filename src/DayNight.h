@@ -131,6 +131,11 @@ std::wstring NightLevel(std::wstring_view day);
 // `night_fill`); `haze`, where given, how much of the area's own haze its
 // night's sky has, in place of its file's `night_haze`. Call on the game's
 // thread.
+// A moon to try in place of the area's file's (outdoors.tune's MoonTurn and
+// MoonHeight, a developer's): its turn and its height in degrees, none for the
+// file's. Call on the game's thread, before Now.
+void TryMoon(std::optional<float> turn, std::optional<float> height);
+
 std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownSun, const dao::core::Sky &ownSky,
                          bool running, float dayMinutes, float night, std::optional<float> fill,
                          std::optional<float> haze);

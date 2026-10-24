@@ -710,6 +710,7 @@ void KeepHour()
     const std::optional<dao::atmosphere::Sky> sky = dao::atmosphere::AreaOwnSky();
     const bool running = sun && sky && g_wanted && g_outdoors && g_clockOn;
     const bool had = g_hourLight.has_value();
+    daynight::TryMoon(Tuned("MoonTurn"), Tuned("MoonHeight"));
     g_hourLight = sun && sky ? daynight::Now(AreaTag(), *sun, *sky, running, Tuned("DayMinutes").value_or(kDayMinutes),
                                              Tuned("Night").value_or(kNight), Tuned("NightFill"), Tuned("NightHaze"))
                              : std::nullopt;

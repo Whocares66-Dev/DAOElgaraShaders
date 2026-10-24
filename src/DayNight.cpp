@@ -92,6 +92,9 @@ struct Pair
     LevelLight night;
     std::wstring area;               // the area the clock runs in (its area's file)
     Vec3 midnight{};                 // the way to the moon at midnight (its area's file)
+    Vec3 ownMoon{};                  // the way to the night level's own moon
+    std::optional<float> moonHeight; // degrees, none for the night level's own (its area's file)
+    float moonTurn = 0;              // degrees about the upright from the night level's own (its area's file)
     float latitude = 0;              // radians (its area's file)
     float declination = 0;           // the sun's, radians (its area's file)
     float noon = 0;                  // the hour the sun is highest (its area's file)
@@ -456,6 +459,20 @@ void HazeNight(dao::core::Sky &nightSky, const dao::core::Sky &daySky, const Pai
         nightSky.sunIntensity *= static_cast<float>(nightScatters / hazed);
     }
 }
+
+// The way to the moon at midnight: the night level's own turned `turn`
+// degrees about the upright, `height` degrees up where given.
+Vec3 MidnightOf(const Vec3 &own, float turn, std::optional<float> height)
+{
+    const float round = std::atan2(own[1], own[0]) + (turn * kDegree);
+    const float up = height ? *height * kDegree : Height(own);
+    return {std::cos(up) * std::cos(round), std::cos(up) * std::sin(round), std::sin(up)};
+}
+
+// outdoors.tune's MoonTurn and MoonHeight, a developer's, to try a moon live
+// in place of the area's file's (TryMoon). The game thread's.
+std::optional<float> g_tryTurn;
+std::optional<float> g_tryHeight;
 
 Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float night, float fill, float haze)
 {
@@ -884,12 +901,10 @@ void Opened(const std::filesystem::path &levelRim)
         pair->nightHaze = cycled.nightHaze;
         pair->sprayMoon = cycled.sprayMoon;
         pair->lampMoves = cycled.lampMoves;
-        {
-            const Vec3 own{-pair->night.sun.direction[0], -pair->night.sun.direction[1], -pair->night.sun.direction[2]};
-            const float round = std::atan2(own[1], own[0]) + (cycled.moonTurn * kDegree);
-            const float up = cycled.moonHeight ? *cycled.moonHeight * kDegree : Height(own);
-            pair->midnight = {std::cos(up) * std::cos(round), std::cos(up) * std::sin(round), std::sin(up)};
-        }
+        pair->ownMoon = {-pair->night.sun.direction[0], -pair->night.sun.direction[1], -pair->night.sun.direction[2]};
+        pair->moonHeight = cycled.moonHeight;
+        pair->moonTurn = cycled.moonTurn;
+        pair->midnight = MidnightOf(pair->ownMoon, cycled.moonTurn, cycled.moonHeight);
         {
             LevelLight of;
             const std::wstring &latitudeOf = cycled.latitudeOf.empty() ? level : cycled.latitudeOf;
@@ -943,6 +958,12 @@ std::wstring NightLevel(std::wstring_view day)
     return cycled != g_cycled.end() ? cycled->night : std::wstring();
 }
 
+void TryMoon(std::optional<float> turn, std::optional<float> height)
+{
+    g_tryTurn = turn;
+    g_tryHeight = height;
+}
+
 std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownSun, const dao::core::Sky &ownSky,
                          bool running, float dayMinutes, float night, std::optional<float> fill,
                          std::optional<float> haze)
@@ -971,7 +992,16 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
         Stopped();
         return std::nullopt;
     }
-    const Light light = LightAt(*pair, ownSky, g_hour, night, fill.value_or(pair->nightFill),
+    Pair tried;
+    const Pair *lit = pair.get();
+    if (g_tryTurn || g_tryHeight)
+    {
+        tried = *pair;
+        tried.midnight = MidnightOf(pair->ownMoon, g_tryTurn.value_or(pair->moonTurn),
+                                    g_tryHeight ? g_tryHeight : pair->moonHeight);
+        lit = &tried;
+    }
+    const Light light = LightAt(*lit, ownSky, g_hour, night, fill.value_or(pair->nightFill),
                                 std::clamp(haze.value_or(pair->nightHaze), 0.0F, 1.0F));
     for (std::size_t i = 0; i < 3; ++i)
     {
