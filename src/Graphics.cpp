@@ -40,6 +40,7 @@
 #include "DayNight.h"
 #include "EffectLights.h"
 #include "GameFolder.h"
+#include "KeptState.h"
 #include "LevelShadows.h"
 #include "MaterialLearn.h"
 #include "MaterialPatch.h"
@@ -468,10 +469,11 @@ void ShowScene(IDirect3DDevice9 *device)
         return;
     }
     g_stretchRect.Original()(device, g_scene.own, nullptr, g_scene.shownLevel, nullptr, D3DTEXF_NONE);
-    IDirect3DSurface9 *was = nullptr;
-    g_getRenderTarget.Original()(device, 0, &was);
-    g_scene.states->Capture();
-    levelshadows::BoundStreams streams = levelshadows::StreamsOf(device);
+    const keptstate::Kept kept(device, g_scene.states, g_getRenderTarget.Original(), g_setRenderTarget.Original());
+    if (!kept)
+    {
+        return;
+    }
     g_setRenderTarget.Original()(device, 0, g_scene.back);
     device->SetVertexShader(nullptr);
     device->SetPixelShader(nullptr);
@@ -526,10 +528,6 @@ void ShowScene(IDirect3DDevice9 *device)
         device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, corners.data(), sizeof(Corner));
         device->EndScene();
     }
-    g_scene.states->Apply();
-    levelshadows::PutStreams(device, streams);
-    g_setRenderTarget.Original()(device, 0, was);
-    Released(was);
 }
 
 // The game is never shown our target: where the device would hand it back,

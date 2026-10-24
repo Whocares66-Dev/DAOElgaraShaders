@@ -127,6 +127,7 @@ add_daolib_plugin(
         src/Probes.cpp
         src/EffectLights.cpp
         src/LevelShadows.cpp
+        src/KeptState.cpp
         src/Cascades.cpp
         src/Reflected.cpp
         src/ShaderCode.cpp

@@ -1,4 +1,5 @@
 #include "LevelShadows.h"
+#include "KeptState.h"
 
 #include "Cascades.h"
 #include "EffectLights.h"
@@ -1610,34 +1611,6 @@ void UseSamplerState(SetSamplerStateFn set)
     g_setSampler = set;
 }
 
-BoundStreams StreamsOf(IDirect3DDevice9 *device)
-{
-    BoundStreams bound;
-    for (UINT stream = 0; stream < bound.streams.size(); ++stream)
-    {
-        BoundStreams::Bound &each = bound.streams.at(stream);
-        each.read = SUCCEEDED(device->GetStreamSource(stream, &each.buffer, &each.offset, &each.stride));
-    }
-    return bound;
-}
-
-void PutStreams(IDirect3DDevice9 *device, BoundStreams &bound)
-{
-    for (UINT stream = 0; stream < bound.streams.size(); ++stream)
-    {
-        BoundStreams::Bound &each = bound.streams.at(stream);
-        if (each.read)
-        {
-            device->SetStreamSource(stream, each.buffer, each.offset, each.stride);
-        }
-        if (each.buffer != nullptr)
-        {
-            each.buffer->Release();
-            each.buffer = nullptr;
-        }
-    }
-}
-
 void Air(IDirect3DDevice9 *device)
 {
     IDirect3DPixelShader9 *pixel = nullptr;
@@ -2389,20 +2362,13 @@ static bool DrawAtlas(IDirect3DDevice9 *device)
     {
         return false;
     }
-    if (g_saved == nullptr && FAILED(device->CreateStateBlock(D3DSBT_ALL, &g_saved)))
+    const keptstate::Kept kept(device, g_saved);
+    if (!kept)
     {
-        g_saved = nullptr;
         return false;
     }
-    g_saved->Capture();
-    BoundStreams streams = StreamsOf(device);
     KeepCaches(device);
-    std::array<IDirect3DSurface9 *, 2> targets{};
-    IDirect3DSurface9 *depth = nullptr;
     IDirect3DSurface9 *atlas = nullptr;
-    device->GetRenderTarget(0, targets.data());
-    device->GetRenderTarget(1, targets.data() + 1);
-    device->GetDepthStencilSurface(&depth);
     if (SUCCEEDED(g_atlas->GetSurfaceLevel(0, &atlas)))
     {
         device->SetRenderTarget(0, atlas);
@@ -2421,18 +2387,6 @@ static bool DrawAtlas(IDirect3DDevice9 *device)
         atlas->Release();
     }
     DrawOldAtlas(device);
-    device->SetRenderTarget(0, targets[0]);
-    device->SetRenderTarget(1, targets[1]);
-    device->SetDepthStencilSurface(depth);
-    for (IDirect3DSurface9 *held : {targets[0], targets[1], depth})
-    {
-        if (held != nullptr)
-        {
-            held->Release();
-        }
-    }
-    g_saved->Apply();
-    PutStreams(device, streams);
     return true;
 }
 
@@ -2710,24 +2664,17 @@ static bool DrawEffectShadows(IDirect3DDevice9 *device)
     {
         return false;
     }
-    if (g_saved == nullptr && FAILED(device->CreateStateBlock(D3DSBT_ALL, &g_saved)))
+    const keptstate::Kept kept(device, g_saved);
+    if (!kept)
     {
-        g_saved = nullptr;
         return false;
     }
-    g_saved->Capture();
-    BoundStreams streams = StreamsOf(device);
     if (!g_measuredThisFrame)
     {
         Measure(device);
         g_measuredThisFrame = true;
     }
-    std::array<IDirect3DSurface9 *, 2> targets{};
-    IDirect3DSurface9 *depth = nullptr;
     IDirect3DSurface9 *atlas = nullptr;
-    device->GetRenderTarget(0, targets.data());
-    device->GetRenderTarget(1, targets.data() + 1);
-    device->GetDepthStencilSurface(&depth);
     if (SUCCEEDED(g_effectAtlas->GetSurfaceLevel(0, &atlas)))
     {
         device->SetRenderTarget(0, atlas);
@@ -2765,18 +2712,6 @@ static bool DrawEffectShadows(IDirect3DDevice9 *device)
         }
         atlas->Release();
     }
-    device->SetRenderTarget(0, targets[0]);
-    device->SetRenderTarget(1, targets[1]);
-    device->SetDepthStencilSurface(depth);
-    for (IDirect3DSurface9 *held : {targets[0], targets[1], depth})
-    {
-        if (held != nullptr)
-        {
-            held->Release();
-        }
-    }
-    g_saved->Apply();
-    PutStreams(device, streams);
     return true;
 }
 
