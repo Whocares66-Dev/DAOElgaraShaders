@@ -225,6 +225,15 @@ bool g_sunlit = false; // out of doors with a sun on the ground (Sunlit)
 // Under a day and a night the sky is the hour's, and the haze's part is the
 // sun's light scattered on, so it goes with the sun's colour over the day's
 // (`sunOverDay`); the moon's is left in the sky's own fog colour.
+// The haze's part is grey, of the luminance its share of the colour has: a
+// haze's droplets scatter every wavelength alike (Mie's, of particles far
+// larger than the light's wavelength), so what colour the area's fog has is
+// the air's; its molecules' part keeps it. Haven's fog is nearly all haze
+// (its Mie multiplier 0.046 against Rayleigh's 0.028) of a deep teal, and
+// with the lobe towards the sun its far mountains went a flat neon cyan
+// brighter than its sky (the user, 2026-10-23: "fog w/ improved lighting
+// makes mountains look too intense", issue 53; its daytime "is cool, not
+// warm": the haze is not given the sun's colour either).
 SkyHaze HazeOf(const dao::atmosphere::Sunlight &sun, const dao::atmosphere::Sky &sky, bool outdoors,
                const std::array<float, 3> &sunOverDay)
 {
@@ -233,13 +242,19 @@ SkyHaze HazeOf(const dao::atmosphere::Sunlight &sun, const dao::atmosphere::Sky 
     haze.on = outdoors && sunny && g_wanted && Tuned("Haze").value_or(1) > 0;
     const daynight::Scattered scattered = daynight::Scattering(sky);
     const std::array<float, 3> fog{sky.fogRed, sky.fogGreen, sky.fogBlue};
+    constexpr std::array<double, 3> kLuminance{0.2126, 0.7152, 0.0722};
+    double hazeLuminance = 0;
     for (std::size_t i = 0; i < 3; ++i)
     {
         const double rayleigh = scattered.air.at(i);
         const double mie = scattered.haze.at(i);
         const double mieShare = rayleigh + mie > 0 ? mie / (rayleigh + mie) : 0;
         haze.air.at(i) = static_cast<float>((1 - mieShare) * fog.at(i));
-        haze.sun.at(i) = static_cast<float>(mieShare * fog.at(i)) * sunOverDay.at(i);
+        hazeLuminance += kLuminance.at(i) * mieShare * fog.at(i);
+    }
+    for (std::size_t i = 0; i < 3; ++i)
+    {
+        haze.sun.at(i) = static_cast<float>(hazeLuminance) * sunOverDay.at(i);
     }
     haze.g = std::min(std::abs(sky.hg), 0.95F);
     return haze;

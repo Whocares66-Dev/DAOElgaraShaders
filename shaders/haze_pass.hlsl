@@ -198,8 +198,22 @@ float4 main(float2 uv : TEXCOORD0, float2 pixel : VPOS) : COLOR0
     const bool sky = DaoIsSky(depth);
     // A surface's fog is the engine's for its pixel; the sky's, its own rule's,
     // which it has drawn with already, so that only its shade is to be taken.
+    // A surface's fog is no more than the sky's along the same way: the air
+    // out to it is a part of all the air the sky is fogged by, which thins as
+    // the way rises. The engine fogs a surface by its distance alone, so a
+    // mountain high over the eye was fogged as the horizon is, and Haven's,
+    // lit by the haze towards the sun, came out brighter than the sky about
+    // its peaks (the user, 2026-10-23, issue 53). What the engine fogged
+    // more is left in its fog colour, vanilla's: taken back to the surface's
+    // own colour (the scene less the fog, over what the fog kept), a
+    // mountain's came out many times brighter than it was lit, white at its
+    // ridges and orange in the trees before it with the game's anti-aliasing
+    // on (2026-10-23), the scene being more than the engine's fog of it once
+    // the plugin's light is in it. A sky that fogs none of itself
+    // (DaoSkyFogOf) bounds nothing.
     const float kept = saturate(tex2Dlod(smpDepth, float4(uv, 0, 0)).a);
-    const float fog = sky ? DaoSkyFogOf(ray) : 1 - kept;
+    const float skyFog = DaoSkyFogOf(ray);
+    const float fog = sky ? skyFog : radians(fDaoFogZenith) <= 0.0015708 ? 1 - kept : min(1 - kept, skyFog);
     if (fDaoHazeShow > 0 && fDaoHazeShow < 2)
     {
         return sky ? scene : float4(scene.rgb + fog * (1 - float3(fDaoFogR, fDaoFogG, fDaoFogB)), scene.a);
