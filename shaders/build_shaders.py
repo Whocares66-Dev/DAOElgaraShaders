@@ -1329,7 +1329,18 @@ def with_effect_lights(shader):
     reckoning (a face's scattering table) is read at its first level, a loop
     as long as the lights allowing no gradient. A shader that reckons no
     point light whose sum it uses (water; the probes' projection) is left
-    as it is."""
+    as it is.
+
+    Hair and eyes reckon the engine's second light, [5] and [6], between the
+    first's place and colour (hair0, hair2, eye0: their sums are begun with
+    it), so the copy took it along and added it again for every light of the
+    loop: Morrigan's hair went white where many fires were on the screen and
+    not where few were (the user, 2026-10-23: "morrigan's hair is white w/
+    improved lighting on"; 2026-10-24: "the white hair only occurs w/ some
+    camera angles & not others"). In the copy, a light the engine reckons
+    there gives no light: its colour, every register of the engine's lights
+    the copy reads other than the light's own and a place (`add <w>, c<n>,
+    -v<p>`) or a way (`-c<n>`), is nothing."""
     lights = shader.parameters["g_vLightParams"]
     base = lights.base
     statements = shader.statements
@@ -1440,11 +1451,26 @@ def with_effect_lights(shader):
     def mask(comps):
         return "".join(c for c in "xyzw" if c in comps)
 
+    # Another light's colour the reckoning reads, given no light in the copy.
+    others = set()
+    for st in body:
+        for found in re.finditer(r"(-?)\bc(\d+)\b", st.asm):
+            index = int(found.group(2)) - base
+            if 0 <= index < lights.size and index not in (place, colour):
+                others.add(index)
+    for st in body:
+        for found in re.finditer(
+            r"(?:^add r\d+\.\w+, c(\d+), -v\d+$)|-c(\d+)\b", st.asm.strip()
+        ):
+            others.discard(int(found.group(1) or found.group(2)) - base)
+
     def local(text):
         for name in written:
             text = re.sub(rf"\b{name}\b", f"dao_{name}", text)
         text = re.sub(rf"\b{lights.name}\[{place}\]", "daoEffectLights[2 * daoI]", text)
         text = re.sub(rf"\b{lights.name}\[{colour}\]", "daoEffectColour", text)
+        for other in others:
+            text = re.sub(rf"\b{lights.name}\[{other}\]", "float4(0, 0, 0, 0)", text)
         if place == 9:
             text = re.sub(r"\bg_bShaderControlBooleans\[0\]", "true", text)
         return re.sub(r"\btex2D\(", "DaoTexFirstLevel(", text)
