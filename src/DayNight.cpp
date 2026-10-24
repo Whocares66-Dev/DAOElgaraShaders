@@ -96,6 +96,7 @@ struct Pair
     float declination = 0;           // the sun's, radians (its area's file)
     float noon = 0;                  // the hour the sun is highest (its area's file)
     float nightFill = 0;             // the share of the night sky's light kept by night (its area's file)
+    float nightHaze = 0;             // how much of the area's own haze its night's sky has (its area's file)
     std::vector<LampMove> lampMoves; // its file's `move_lamp`s
 };
 
@@ -348,6 +349,7 @@ struct Cycled
     float declination = 0;
     float noon = 0;
     float nightFill = 0;
+    float nightHaze = 0;
     std::vector<LampMove> lampMoves;
 };
 // The sun's and the moon's radius as seen, radians: a body is gone when its
@@ -403,7 +405,57 @@ std::array<float, 3> Scaled(std::array<float, 3> colour, float by)
     return colour;
 }
 
-Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float night, float fill)
+// The night's haze: `haze` of the way from the night level's air to the
+// area's own, its scattering and its clouds; the night level's moon, its
+// light and its fog either way. Redcliffe's night is a clear sky's deep
+// blue, and Haven's hazy gray day went to it (the user, 2026-10-23: "the
+// daytime is pretty cloudy & dim, the nighttime shouldn't be so blue").
+// The day's fog's reach is not taken: it fogged Haven's midnight sky
+// whole, in the night's fog's colour, at 71, 92, 105 of 255.
+void HazeNight(dao::core::Sky &nightSky, const dao::core::Sky &daySky, const Pair &pair, float night, float haze)
+{
+    if (haze <= 0)
+    {
+        return;
+    }
+    // As bright as the night level's: the scattered light goes as the
+    // sky's sun's strength times how much the air scatters, and Haven's
+    // hazy air drew its midnight sky at 71, 92, 105 of 255 against
+    // Redcliffe's air's 20, 28, 74.
+    const auto scattered = [](const dao::core::Sky &sky) {
+        const Scattered by = Scattering(sky);
+        return (0.2126 * (by.air[0] + by.haze[0])) + (0.7152 * (by.air[1] + by.haze[1])) +
+               (0.0722 * (by.air[2] + by.haze[2]));
+    };
+    const double nightScatters = scattered(nightSky);
+    for (float dao::core::Sky::*member :
+         {&dao::core::Sky::turbidity, &dao::core::Sky::mieMultiplier, &dao::core::Sky::rayleighMultiplier,
+          &dao::core::Sky::hg, &dao::core::Sky::cloudDensity, &dao::core::Sky::cloudSharpness,
+          &dao::core::Sky::cloudDepth})
+    {
+        nightSky.*member = std::lerp(nightSky.*member, daySky.*member, haze);
+    }
+    // The day's clouds lit by the moon as the land is, the day's colour
+    // as much dimmer as the moon is than the day's sun: in the day's own
+    // colour Haven's midnight clouds were a lit gray (63, 82, 94 of 255),
+    // and in the night level's, near black, the sky was (7, 7, 10).
+    const auto grey = [](const std::array<float, 4> &c) {
+        return (0.2126F * c[0]) + (0.7152F * c[1]) + (0.0722F * c[2]);
+    };
+    const std::array<float, 3> moonPaled =
+        Scaled(Paler({pair.night.sun.color[0], pair.night.sun.color[1], pair.night.sun.color[2]}, kNightColour), night);
+    const float daySun = grey(pair.day.sun.color);
+    const float cloudBy = daySun > 0 ? grey({moonPaled[0], moonPaled[1], moonPaled[2], 1}) / daySun : 0;
+    nightSky.cloudRed = std::lerp(nightSky.cloudRed, daySky.cloudRed * cloudBy, haze);
+    nightSky.cloudGreen = std::lerp(nightSky.cloudGreen, daySky.cloudGreen * cloudBy, haze);
+    nightSky.cloudBlue = std::lerp(nightSky.cloudBlue, daySky.cloudBlue * cloudBy, haze);
+    if (const double hazed = scattered(nightSky); hazed > 0)
+    {
+        nightSky.sunIntensity *= static_cast<float>(nightScatters / hazed);
+    }
+}
+
+Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float night, float fill, float haze)
 {
     const dao::core::Sky daySky = SkyOf(own, pair.day);
     dao::core::Sky nightSky = SkyOf(own, pair.night);
@@ -415,6 +467,7 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
     nightSky.fogRed = fog[0];
     nightSky.fogGreen = fog[1];
     nightSky.fogBlue = fog[2];
+    HazeNight(nightSky, daySky, pair, night, haze);
     const Vec3 levelSun{-pair.day.sun.direction[0], -pair.day.sun.direction[1], -pair.day.sun.direction[2]};
     const Vec3 &midnight = pair.midnight;
     const float noonHeight = Height(levelSun); // the level's sun's, as its colour was made for
@@ -706,14 +759,16 @@ Table ReadTable(const std::filesystem::path &folder)
         const std::optional<float> declination = Number(said("declination").value_or(""));
         const std::optional<float> noon = Number(said("noon").value_or(""));
         const std::optional<float> nightFill = Number(said("night_fill").value_or(""));
-        if (area.day.empty() || area.night.empty() || !declination || !noon || !nightFill)
+        const std::optional<float> nightHaze = Number(said("night_haze").value_or(""));
+        if (area.day.empty() || area.night.empty() || !declination || !noon || !nightFill || !nightHaze)
         {
-            spdlog::warn("day and night: areas/{}.ini lacks its level, its night, the declination, noon or the "
-                         "night's fill",
+            spdlog::warn("day and night: areas/{}.ini lacks its level, its night, the declination, noon, the "
+                         "night's fill or its haze",
                          tag);
             continue;
         }
         area.nightFill = *nightFill;
+        area.nightHaze = std::clamp(*nightHaze, 0.0F, 1.0F);
         area.lampMoves = LampMovesOf(keys);
         area.declination = *declination;
         area.noon = *noon;
@@ -814,6 +869,7 @@ void Opened(const std::filesystem::path &levelRim)
         pair->declination = cycled.declination * kDegree;
         pair->noon = cycled.noon;
         pair->nightFill = cycled.nightFill;
+        pair->nightHaze = cycled.nightHaze;
         pair->lampMoves = cycled.lampMoves;
         {
             const Vec3 own{-pair->night.sun.direction[0], -pair->night.sun.direction[1], -pair->night.sun.direction[2]};
@@ -875,7 +931,8 @@ std::wstring NightLevel(std::wstring_view day)
 }
 
 std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownSun, const dao::core::Sky &ownSky,
-                         bool running, float dayMinutes, float night, std::optional<float> fill)
+                         bool running, float dayMinutes, float night, std::optional<float> fill,
+                         std::optional<float> haze)
 {
     std::shared_ptr<const Pair> pair;
     {
@@ -901,7 +958,8 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
         Stopped();
         return std::nullopt;
     }
-    const Light light = LightAt(*pair, ownSky, g_hour, night, fill.value_or(pair->nightFill));
+    const Light light = LightAt(*pair, ownSky, g_hour, night, fill.value_or(pair->nightFill),
+                                std::clamp(haze.value_or(pair->nightHaze), 0.0F, 1.0F));
     for (std::size_t i = 0; i < 3; ++i)
     {
         g_baked.at(i).store(light.baked.at(i), std::memory_order_relaxed);
