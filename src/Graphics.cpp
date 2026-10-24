@@ -1064,7 +1064,7 @@ HRESULT __stdcall SetRenderTarget(IDirect3DDevice9 *device, DWORD index, IDirect
             g_drawsPicture = picture;
             HandShareAsked(device);
             HandFills(device);
-            effectlights::Hand(device, picture);
+            effectlights::Hand(device, picture, false);
             if (g_setRenderState.IsAttached())
             {
                 g_setRenderState.Original()(device, D3DRS_SEPARATEALPHABLENDENABLE,
@@ -1332,7 +1332,7 @@ HRESULT __stdcall BeginScene(IDirect3DDevice9 *device)
     IDirect3DSurface9 *target = nullptr;
     const bool picture = SUCCEEDED(device->GetRenderTarget(0, &target)) && IsPicture(device, target);
     Released(target);
-    effectlights::Hand(device, picture);
+    effectlights::Hand(device, picture, true);
     return g_beginScene.Original()(device);
 }
 

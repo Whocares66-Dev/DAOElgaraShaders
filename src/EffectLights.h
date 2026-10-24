@@ -65,8 +65,11 @@ void Read();
 // inventory's figures are drawn into targets of their own, in a scene of
 // their own: given the area's lights, Redcliffe castle's room fires (DAOLib's
 // RunningEffects since ca02aa6) lit them pale, Morrigan's black hair
-// lavender (issue 51).
-void Hand(IDirect3DDevice9 *device, bool picture);
+// lavender (issue 51). `sceneStarts`: a scene begins. The scene takes the
+// lights last read as it first draws into the picture, and a target changed
+// back to the picture in it hands those same lights again, the ones its
+// shadow maps were drawn for.
+void Hand(IDirect3DDevice9 *device, bool picture, bool sceneStarts);
 
 // The lights handed for this scene, in their order, each its place and reach:
 // what their shadows are drawn from (LevelShadows.cpp). The render thread's.

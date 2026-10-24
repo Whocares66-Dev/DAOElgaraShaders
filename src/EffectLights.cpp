@@ -102,6 +102,10 @@ std::map<void *, std::array<std::uint32_t, 2>> g_ownMost;
 // The lights as last read, for the render thread, and as last handed.
 std::mutex g_readLock;
 std::array<float, kRegisterFloats> g_registers{};
+// The lights the scene took as it first drew into the picture, and whether it
+// has: the render thread's alone.
+std::array<float, kRegisterFloats> g_sceneRegisters{};
+bool g_sceneTook = false;
 std::vector<std::array<float, 4>> g_handed;
 
 // The light of a fire whose model has none: Redcliffe's pyre is
@@ -691,13 +695,33 @@ void Read()
     g_registers = registers;
 }
 
-void Hand(IDirect3DDevice9 *device, bool picture)
+void Hand(IDirect3DDevice9 *device, bool picture, bool sceneStarts)
 {
+    // The scene's lights, not the last read: Read runs on the game's thread
+    // while the scene is drawn, so a target changed back to the picture
+    // could take a newer list than the one the effects' shadow maps had been
+    // drawn for (the maps are drawn once a scene, light i into row i). In
+    // the Ruined Temple (lak401d), with the game's anti-aliasing, stretches
+    // of snow and the statues beyond an arch went black as the camera turned
+    // (the user, 2026-10-23: "the statue thing depends on angle"); with the
+    // list taken once a scene they did not, in four views where they had
+    // (2026-10-24). Taken as the scene first draws into the picture, not as
+    // it begins: with the game's anti-aliasing the scene begins on another
+    // target, and taken at the start the lights were none.
+    if (sceneStarts)
+    {
+        g_sceneTook = false;
+    }
+    if (picture && !g_sceneTook)
+    {
+        const std::scoped_lock lock(g_readLock);
+        g_sceneRegisters = g_registers;
+        g_sceneTook = true;
+    }
     std::array<float, kRegisterFloats> registers{};
     if (picture)
     {
-        const std::scoped_lock lock(g_readLock);
-        registers = g_registers;
+        registers = g_sceneRegisters;
     }
     static_assert(kCountRegister == kLightsRegister + (2 * kMostLights));
     device->SetPixelShaderConstantF(kLightsRegister, registers.data(), static_cast<UINT>(2 * kMostLights) + 1);
