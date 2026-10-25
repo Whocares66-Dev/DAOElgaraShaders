@@ -209,9 +209,9 @@ Windows WindowLight();
 
 // An interior's bake's mean colour at a luminance of 1, and how far each
 // texel of its lightmaps takes that colour at its own luminance (night_sky.hlsl's
-// daoBakeHue): by day wholly, so that the daylight's colour (DayTint, by
-// Baked) lights a violet moonlit stone and an orange candle's pool alike
-// neutral; at night none. 0 where the clock is not running indoors. Any
+// daoBakeHue): at the other of day and night from its makers' wholly, so
+// that the other's colour (by Baked) lights a violet moonlit stone and an
+// orange candle's pool alike; at the makers' own none. 0 where the clock is not running indoors. Any
 // thread.
 std::array<float, 4> BakeHue();
 

@@ -92,13 +92,17 @@ struct LevelLight
 // What an interior's file says of its own light (data/areas/README.md).
 struct IndoorLight
 {
-    float fill = 1;                        // how much of its makers' unmotivated light is kept (`fill`)
-    float window = 0;                      // the windows' light a square metre, a share of the outdoor light (`window`)
-    float windowReach = 0;                 // metres (`window_reach`)
-    std::vector<std::wstring> windows;     // the materials of its windows' models (`windows`)
-    std::wstring day;                      // the level whose fill is its daylight's colour (`day`)
-    std::array<float, 3> dayTint{1, 1, 1}; // its bake's mean times this is in that colour (DayTint)
-    std::array<float, 3> bakeHue{1, 1, 1}; // its bake's mean colour at a luminance of 1 (DayTint)
+    float fill = 1;                    // how much of its makers' unmotivated light is kept (`fill`)
+    float window = 0;                  // the windows' light a square metre, a share of the outdoor light (`window`)
+    float windowReach = 0;             // metres (`window_reach`)
+    std::vector<std::wstring> windows; // the materials of its windows' models (`windows`)
+    // The level whose fill is the colour of the other of its day and night
+    // (`day` where its makers lit it as a night, `night` where as a day), and
+    // which its makers lit it as.
+    std::wstring other;
+    bool ownIsNight = true;
+    std::array<float, 3> otherTint{1, 1, 1}; // its bake's mean times this is in that colour (OtherTint)
+    std::array<float, 3> bakeHue{1, 1, 1};   // its bake's mean colour at a luminance of 1 (OtherTint)
 };
 
 struct Pair
@@ -797,15 +801,17 @@ std::optional<float> g_tryWindow;
 std::optional<float> g_tryReach;
 
 // An interior's light by the hour (its file's `outside`): its level is lit
-// by its makers as a night, and every light of theirs, its bake and ambient
+// by its makers as a night (the Broken Circle's tower floors) or as a day (the
+// mage origin's and Witch Hunt's tower, lak303d), and every light of theirs, its bake and ambient
 // colour, its probes, its layouts' lamps that are not a fitting's, its
 // figures' fills and key light and its fog, is kept to `fill` of it: what no
 // fitting or window of the room's own motivates (the user, 2026-10-25: "We can
 // try reducing fill light to different levels to see what's an appropriate
 // level of darkness. The fill light color probably also needs to change
 // between day and night"). It is as bright as the light out of doors at the
-// hour against midnight's, and by day of its daylight's colour (DayTint, its
-// file's `day`), going to it as the sky goes from night to day; the sun's
+// hour against the makers' own (midnight for a night's bake, the outside's
+// day level's hour for a day's), and of the other's colour (OtherTint, its
+// file's `day` or `night`) as the sky goes from the makers' to the other; the sun's
 // colour comes in by the windows alone (WindowLight), and the beams of light
 // its makers placed (effects.ini's `lit`) are the windows' and go by it. Taken
 // in the sun's colour, each channel by the light out of doors at noon over
@@ -817,19 +823,22 @@ Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::S
 {
     const float fill = std::max(g_tryFill.value_or(indoors.fill), 0.0F);
     const Light out = LightAt(pair, ownSky, hour, night, nightFill, haze);
-    const Light midnight = LightAt(pair, ownSky, 0, night, nightFill, haze);
+    // The makers' own hour: midnight for a night's bake, the outside's day
+    // level's own hour for a day's.
+    const Light midnight = LightAt(pair, ownSky, indoors.ownIsNight ? 0 : pair.ownHour, night, nightFill, haze);
     Light light;
     light.sun = ownSun;
     light.sky = ownSky;
     light.outdoor = out.outdoor;
     const std::array<float *, 3> fog{&light.sky.fogRed, &light.sky.fogGreen, &light.sky.fogBlue};
     const float brighter = Luminance(midnight.outdoor) > 0 ? Luminance(out.outdoor) / Luminance(midnight.outdoor) : 1;
-    const float day = 1 - out.nightShare;
+    // How far the hour is from the makers' own to the other of day and night.
+    const float day = indoors.ownIsNight ? 1 - out.nightShare : out.nightShare;
     light.bakeHue[3] = day;
     for (std::size_t i = 0; i < 3; ++i)
     {
         const float by = midnight.outdoor.at(i) > 0 ? out.outdoor.at(i) / midnight.outdoor.at(i) : 1;
-        const float kept = fill * brighter * std::lerp(1.0F, indoors.dayTint.at(i), day);
+        const float kept = fill * brighter * std::lerp(1.0F, indoors.otherTint.at(i), day);
         light.sun.characterColor.at(i) *= kept;
         light.baked.at(i) = kept;
         light.sunOverDay.at(i) = kept;
@@ -844,7 +853,7 @@ Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::S
     {
         said = light.lit;
         spdlog::info("day and night: indoors at {:.2f}, the light out of doors {:.3f} {:.3f} {:.3f}, {:.2f} {:.2f} "
-                     "{:.2f} times midnight's; its makers' light kept at {:.3f} {:.3f} {:.3f}",
+                     "{:.2f} times its makers' hour's; their light kept at {:.3f} {:.3f} {:.3f}",
                      hour, out.outdoor[0], out.outdoor[1], out.outdoor[2], light.lit[0], light.lit[1], light.lit[2],
                      light.baked[0], light.baked[1], light.baked[2]);
     }
@@ -1069,16 +1078,19 @@ std::optional<Cycled> IndoorsOf(const std::string &tag, const Keys &keys, const 
     const std::optional<float> fill = Number(Said(keys, defaults, "fill").value_or(""));
     const std::optional<float> window = Number(Said(keys, defaults, "window").value_or(""));
     const std::optional<float> reach = Number(Said(keys, defaults, "window_reach").value_or(""));
-    indoors.day = Wide(Said(keys, defaults, "day").value_or(""));
+    const std::string day = Said(keys, defaults, "day").value_or("");
+    const std::string night = Said(keys, defaults, "night").value_or("");
+    indoors.ownIsNight = night.empty();
+    indoors.other = Wide(indoors.ownIsNight ? day : night);
     std::istringstream windows(Said(keys, defaults, "windows").value_or(""));
     for (std::string material; windows >> material;)
     {
         indoors.windows.push_back(Wide(material));
     }
-    if (area.own.empty() || area.outside.empty() || !fill || !window || !reach)
+    if (area.own.empty() || area.outside.empty() || !fill || !window || !reach || (!day.empty() && !night.empty()))
     {
         spdlog::warn("day and night: areas/{}.ini, an interior, lacks its level, its outside, its fill or its windows' "
-                     "light or reach",
+                     "light or reach, or says both its day and its night",
                      tag);
         return std::nullopt;
     }
@@ -1374,32 +1386,39 @@ std::optional<std::array<float, 3>> BakeColour(const std::filesystem::path &fold
     return std::array<float, 3>{mean(0), mean(1), mean(2)};
 }
 
-// What an interior's bake is multiplied by, each colour, to be lit by day in
-// its daylight's colour (its file's `day`, a level its makers lit by day): the
-// day's fill's hue over the bake's own, at the same luminance. 1 where either
-// could not be read.
-void DayTint(IndoorLight &indoors, const std::filesystem::path &env, const std::wstring &own,
-             const std::function<std::filesystem::path(const std::wstring &)> &folderOf)
+// What an interior's bake is multiplied by, each colour, to be lit in the
+// other of its day and night's colour (its file's `day` or `night`, a level
+// its makers lit so): that level's fill's hue over the bake's own, at the
+// same luminance; and the bake's own hue. 1 where either could not be read.
+void OtherTint(IndoorLight &indoors, const std::filesystem::path &env, const std::wstring &own,
+               const std::function<std::filesystem::path(const std::wstring &)> &folderOf)
 {
-    const std::wstring &day = indoors.day;
-    const std::optional<std::array<float, 3>> daylight =
-        day.empty() ? std::nullopt : RoomsAmbient(folderOf(day) / day, day);
+    const std::wstring &day = indoors.other;
+    // A night's colour paled as the night out of doors is (NightColour): the
+    // Broken Circle's night floors fill their rooms with a deep blue, and in it
+    // Witch Hunt's round library at midnight was deep blue stone, its fill
+    // 0.095, 0.329, 0.872 of its bake's (2026-10-25).
+    std::optional<std::array<float, 3>> daylight = day.empty() ? std::nullopt : RoomsAmbient(folderOf(day) / day, day);
+    if (daylight && !indoors.ownIsNight)
+    {
+        daylight = Paler(*daylight, NightColour());
+    }
     const std::optional<std::array<float, 3>> bake = BakeColour(env / own, own);
     if (!daylight || !bake || Luminance(*daylight) <= 0 || Luminance(*bake) <= 0)
     {
         return;
     }
-    std::array<float, 3> &tint = indoors.dayTint;
+    std::array<float, 3> &tint = indoors.otherTint;
     for (std::size_t c = 0; c < 3; ++c)
     {
         indoors.bakeHue.at(c) = bake->at(c) / Luminance(*bake);
         tint.at(c) = bake->at(c) > 0 ? (daylight->at(c) / Luminance(*daylight)) / indoors.bakeHue.at(c) : 1;
     }
-    spdlog::info("day and night: {}'s bake {:.3f} {:.3f} {:.3f} lit by day as {}'s fill {:.3f} {:.3f} {:.3f}: times "
+    spdlog::info("day and night: {}'s bake {:.3f} {:.3f} {:.3f} lit by {} as {}'s fill {:.3f} {:.3f} {:.3f}: times "
                  "{:.2f} {:.2f} {:.2f}",
                  std::filesystem::path(own).string(), bake->at(0), bake->at(1), bake->at(2),
-                 std::filesystem::path(day).string(), daylight->at(0), daylight->at(1), daylight->at(2), tint[0],
-                 tint[1], tint[2]);
+                 indoors.ownIsNight ? "day" : "night", std::filesystem::path(day).string(), daylight->at(0),
+                 daylight->at(1), daylight->at(2), tint[0], tint[1], tint[2]);
 }
 
 // The areas the clock runs in on a level, each out of doors, and each
@@ -1504,7 +1523,7 @@ void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &
         pair->indoors = inside.indoors;
         if (pair->indoors)
         {
-            DayTint(*pair->indoors, env, level, folderOf);
+            OtherTint(*pair->indoors, env, level, folderOf);
         }
         spdlog::info("day and night: {} indoors, its windows on {}'s sky, its makers' light kept at {:.2f}",
                      std::filesystem::path(inside.area).string(), std::filesystem::path(outside.area).string(),
