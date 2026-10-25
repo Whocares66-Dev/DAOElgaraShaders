@@ -313,6 +313,45 @@ std::array<float, 3> Depth(const dao::core::Sky &sky)
     return depth;
 }
 
+// The haze the air holds by the hour, as its depth straight up at 550 nm: the
+// day's dust, smoke and damp, settled by a still night and raised through the
+// day, least after dawn and most by dusk; a low sun through it is pale at
+// dawn and orange to red at dusk (the user, 2026-10-24: "Sunsets are often a
+// reddish orange ... Sunrises I think are a bit different. They tend to be
+// paler"). A clear day's aerosol is some 0.05 to 0.3 deep; the levels' own
+// haze (their Mie multiplier, Depth's) is 0.004 to 0.013 deep at 570 nm, from
+// Redcliffe's to the farm's, too clear to redden a sun. It is in the sun's way
+// alone, so the ground, the disc and the air are lit by the same reddened sun
+// (the review of the haze, 2026-10-25).
+constexpr float kDawnHaze = 0.05F;
+// 0.25 at dusk until 2026-10-24, when 0.25 and 0.5 were seen at the farm and
+// in Redcliffe at 20:00 and 20:30 (the user: "0.5 is too red. Let's try 0.2").
+constexpr float kDuskHaze = 0.2F;
+// outdoors.tune's DawnHaze and DuskHaze, a developer's, to try others live
+// (TryDayHaze). The game thread's.
+std::optional<float> g_tryDawnHaze;
+std::optional<float> g_tryDuskHaze;
+
+// The day's haze's depth in each channel (650, 570 and 475 nm, as
+// Scattering's), `turn` the sun's hour angle from noon: dawn's six hours
+// before noon, dusk's six after, by Angstrom's exponent 1.3 of a continental
+// haze.
+std::array<float, 3> DayHaze(float turn)
+{
+    constexpr std::array<float, 3> kOverGreen{0.805F, 0.954F, 1.210F}; // (550 / lambda)^1.3
+    const float share = std::clamp(0.5F + (turn / std::numbers::pi_v<float>), 0.0F, 1.0F);
+    const float deep =
+        std::max(std::lerp(g_tryDawnHaze.value_or(kDawnHaze), g_tryDuskHaze.value_or(kDuskHaze), share), 0.0F);
+    return {deep * kOverGreen[0], deep * kOverGreen[1], deep * kOverGreen[2]};
+}
+
+// The air's depth in each channel with the hour's haze (DayHaze) added.
+std::array<float, 3> WithDayHaze(const std::array<float, 3> &clear, float turn)
+{
+    const std::array<float, 3> haze = DayHaze(turn);
+    return {clear[0] + haze[0], clear[1] + haze[1], clear[2] + haze[2]};
+}
+
 float SmoothStep(float from, float to, float x)
 {
     const float t = std::clamp((x - from) / (to - from), 0.0F, 1.0F);
@@ -650,8 +689,9 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
     light.nightSky = Scaled(Paler(pair.night.skyLight, NightColour()), fill);
 
     // The light through the air: the day's or the night's at its highest, less
-    // what the longer way takes out, by the air of the sky of the hour.
-    const std::array<float, 3> depth = Depth(light.sky);
+    // what the longer way takes out, by the air of the sky of the hour and the
+    // day's haze by the hour.
+    const std::array<float, 3> depth = WithDayHaze(Depth(light.sky), turn);
     const bool sunLights = sunHeight > kOver;
     const float up = sunLights
                          ? SmoothStep(-kDiscRadius, kDiscRadius, sunHeight)
@@ -1173,6 +1213,12 @@ std::optional<Borrowed> BorrowedBy(std::wstring_view level)
 void TryNightColour(std::optional<float> kept)
 {
     g_tryColour = kept;
+}
+
+void TryDayHaze(std::optional<float> dawn, std::optional<float> dusk)
+{
+    g_tryDawnHaze = dawn;
+    g_tryDuskHaze = dusk;
 }
 
 void TryMoon(std::optional<float> turn, std::optional<float> height)

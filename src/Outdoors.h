@@ -14,7 +14,9 @@
 // to 0.95, 0.3 if not said); `SunlitFigures` 0 or 1 in place
 // of the options screen's; `Fills`, how many times the area's own its fills
 // are on figures, out of doors, in place of Improved lighting's rule; `Sun` and `SunOnFigures`, how many
-// times the area's own the sun is on the ground and on figures; `sky.<a field
+// times the area's own the sun is on the ground and on figures; `DawnHaze`
+// and `DuskHaze`, the day's haze's depth at dawn and dusk (DayNight.cpp's
+// DayHaze); `sky.<a field
 // of dao/core/Sky.h's kSkyFields, its name with _ for spaces>`, that value
 // outright. Without the file nothing of the area is changed.
 #pragma once

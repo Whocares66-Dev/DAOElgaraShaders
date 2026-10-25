@@ -21,7 +21,8 @@
 //   night level's moon or where the table puts it.
 // - The sun's colour is the day's, less what the air takes out of it on the
 //   longer way through it as the sun goes low (each channel by the area's own
-//   scattering, Scattering), and none under the horizon. The engine's one sun
+//   scattering, Scattering, and the day's haze, thin after dawn and thicker by
+//   dusk), and none under the horizon. The engine's one sun
 //   is the moon once the sun is down, coming up from nothing as the sun goes
 //   to 6 degrees under.
 // - The sky and the clouds go from the day level's to the night's
@@ -179,6 +180,11 @@ void TryMoon(std::optional<float> turn, std::optional<float> height);
 // plugin's (outdoors.tune's NightColour, a developer's), none for the
 // plugin's. Call on the game's thread, before Now.
 void TryNightColour(std::optional<float> kept);
+
+// The day's haze's depth at dawn and at dusk to try in place of the
+// plugin's (outdoors.tune's DawnHaze and DuskHaze, a developer's), none for
+// the plugin's. Call on the game's thread, before Now.
+void TryDayHaze(std::optional<float> dawn, std::optional<float> dusk);
 
 // The light of the hour for the area as it is, or none where the clock does
 // not run in `area` (its tag) or `running` is false. The level is the one
