@@ -716,12 +716,11 @@ bool Install()
     dao::vfx::OnEmitterColor([](dao::vfx::EmitterColor &emitter) {
         if (!emitter.modelHasLight && g_lit.contains(Lower(emitter.model)))
         {
-            // By how bright the light on it is, not its color: the night sky's deep
-            // blue turned the falls' white spray ink blue (the user, 2026-10-22).
-            const float bright = daynight::Lit();
-            emitter.color.r *= bright;
-            emitter.color.g *= bright;
-            emitter.color.b *= bright;
+            // By the light on it, against the light it was made for (DayNight.h's Lit).
+            const std::array<float, 3> lit = daynight::Lit();
+            emitter.color.r *= lit[0];
+            emitter.color.g *= lit[1];
+            emitter.color.b *= lit[2];
         }
     });
     return true;

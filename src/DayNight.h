@@ -66,7 +66,7 @@ struct Light
     float nightShare = 0;               // how far the hour is from the day's bake to the night sky's light
     std::array<float, 3> nightSky{};    // the night sky's light, as the lightmaps keep light (night_sky.hlsl)
     std::array<float, 2> water{1, 1};   // water's light over the level's own, and its colour kept (Water)
-    float lit = 1;                      // the light on what is lit about, over the level's own (Lit)
+    std::array<float, 3> lit{1, 1, 1};  // the light on what is lit about, over the level's own (Lit)
     float evenShare = 0;                // how far the bake gives way to the even light (EvenShare)
     std::array<float, 3> even{};        // that light, as the lightmaps keep light (EvenLight)
 };
@@ -178,11 +178,11 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
 // thread.
 std::array<float, 3> Baked();
 
-// How bright the light on what is lit about is (a fall's spray, a mist,
-// smoke: effects.ini's `lit`), as of the last Now: the sun's or the moon's
-// and the sky's together, over the level's own sun's and sky's, as grey.
+// The light on what is lit about (a fall's spray, a mist, smoke:
+// effects.ini's `lit`), as of the last Now: the sun's or the moon's and the
+// sky's together, over the level's own sun's and sky's, in each colour.
 // 1 where the clock is not running. Any thread.
-float Lit();
+std::array<float, 3> Lit();
 
 // Water's light as of the last Now: how strong, over the level's own by day,
 // and how much of its colour is kept (as the night keeps of the moon's and

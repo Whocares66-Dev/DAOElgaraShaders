@@ -524,14 +524,22 @@ void WaterAndSpray(Light &light, const Pair &pair, const dao::core::Sky &daySky,
         sky.at(i) = std::lerp(light.nightSky.at(i), pair.day.skyLight.at(i), day);
     }
     const std::array<float, 3> &ownSkyLight = Own(pair).skyLight;
-    const float ownLit = daySun + grey(ownSkyLight[0], ownSkyLight[1], ownSkyLight[2]);
     // By night, as much of the moon as the area's spray stands in (its file's
     // `spray_moon`): the plugin shadows the moon on surfaces, not on a
     // particle, and under the West Brecilian Forest's canopy its falls took
     // the whole moon, 0.56 of their noon brightness at midnight beside ground
     // all but black (2026-10-24).
-    const float litBy = sunLights ? sun : sun * pair.sprayMoon;
-    light.lit = ownLit > 0 ? (litBy + grey(sky[0], sky[1], sky[2])) / ownLit : 1;
+    // In each colour, over the own level's: a mist made for a night (the
+    // Circle's docks, blue-white) is white under a borrowed day, and one made
+    // for a day takes the evening's warmth and the moon's pale blue as the
+    // ground beside it does (2026-10-24; its colour once turned the falls ink
+    // blue, 2026-10-22, before the night's colour was paled).
+    const float sprayBy = sunLights ? 1 : pair.sprayMoon;
+    for (std::size_t i = 0; i < light.lit.size(); ++i)
+    {
+        const float own = Own(pair).sun.color.at(i) + ownSkyLight.at(i);
+        light.lit.at(i) = own > 0 ? ((light.sun.color.at(i) * sprayBy) + sky.at(i)) / own : 1;
+    }
     light.water = {skySun > 0 && daySun > 0 ? (sun / daySun) * (daySkySun / skySun) : 1,
                    std::lerp(1.0F, NightColour(), light.nightShare)};
 }
@@ -666,7 +674,7 @@ std::set<std::wstring> g_asked;
 // what they are multiplied by.
 std::array<std::atomic<float>, 3> g_baked{1.0F, 1.0F, 1.0F};
 std::array<std::atomic<float>, 2> g_water{1.0F, 1.0F};
-std::atomic<float> g_lit{1};
+std::array<std::atomic<float>, 3> g_lit{1.0F, 1.0F, 1.0F};
 std::atomic<float> g_nightShare{0};
 std::array<std::atomic<float>, 3> g_nightSky{0.0F, 0.0F, 0.0F};
 std::atomic<float> g_evenShare{0};
@@ -694,7 +702,10 @@ void Stopped()
     {
         value.store(1, std::memory_order_relaxed);
     }
-    g_lit.store(1, std::memory_order_relaxed);
+    for (std::atomic<float> &value : g_lit)
+    {
+        value.store(1, std::memory_order_relaxed);
+    }
     g_nightShare.store(0, std::memory_order_relaxed);
     g_evenShare.store(0, std::memory_order_relaxed);
     g_running.store(false, std::memory_order_relaxed);
@@ -1117,7 +1128,10 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
     g_nightShare.store(light.nightShare, std::memory_order_relaxed);
     g_water[0].store(light.water[0], std::memory_order_relaxed);
     g_water[1].store(light.water[1], std::memory_order_relaxed);
-    g_lit.store(light.lit, std::memory_order_relaxed);
+    for (std::size_t i = 0; i < g_lit.size(); ++i)
+    {
+        g_lit.at(i).store(light.lit.at(i), std::memory_order_relaxed);
+    }
     for (std::size_t i = 0; i < 3; ++i)
     {
         g_nightSky.at(i).store(light.nightSky.at(i), std::memory_order_relaxed);
@@ -1143,9 +1157,10 @@ std::array<float, 2> Water()
     return {g_water[0].load(std::memory_order_relaxed), g_water[1].load(std::memory_order_relaxed)};
 }
 
-float Lit()
+std::array<float, 3> Lit()
 {
-    return g_lit.load(std::memory_order_relaxed);
+    return {g_lit[0].load(std::memory_order_relaxed), g_lit[1].load(std::memory_order_relaxed),
+            g_lit[2].load(std::memory_order_relaxed)};
 }
 
 std::optional<std::array<float, 3>> Disc()
