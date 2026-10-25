@@ -16,7 +16,9 @@
 // are on figures, out of doors, in place of Improved lighting's rule; `Sun` and `SunOnFigures`, how many
 // times the area's own the sun is on the ground and on figures; `DawnHaze`
 // and `DuskHaze`, the day's haze's depth at dawn and dusk (DayNight.cpp's
-// DayHaze); `sky.<a field
+// DayHaze); `Fill`, `Window` and `WindowReach`, an interior's share of its
+// makers' light, its windows' light and their reach (DayNight.h's
+// TryIndoors); `sky.<a field
 // of dao/core/Sky.h's kSkyFields, its name with _ for spaces>`, that value
 // outright. Without the file nothing of the area is changed.
 #pragma once

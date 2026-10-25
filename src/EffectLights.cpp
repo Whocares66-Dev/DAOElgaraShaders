@@ -1,6 +1,7 @@
 #include "EffectLights.h"
 
 #include "DayNight.h"
+#include "GameFolder.h"
 #include "Glowing.h"
 #include "LevelFiles.h"
 #include "LevelShadows.h"
@@ -33,6 +34,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <numbers>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -287,7 +289,8 @@ Light LightOf(const void *node)
         }
     }
     const float strength = FloatAt(node, kNodeStrength) * FloatAt(node, kNodeFlicker);
-    light.colour = {colour[0] * strength, colour[1] * strength, colour[2] * strength, colour[3]};
+    // The fourth number is the light's aim (AimOf): an engine's light has none.
+    light.colour = {colour[0] * strength, colour[1] * strength, colour[2] * strength, 1};
     return light;
 }
 
@@ -391,6 +394,169 @@ std::vector<Light> PlacedFires(levelfiles::Level &level, const std::wstring &id)
     return fires;
 }
 
+// An interior's window, found by its model's material (its area's file's
+// `windows`) as the level opens: the middle of its opening, the way into the
+// room it faces, and the opening's area, square metres. The Circle tower's
+// floors' windows (prp_tti_windowhigh1 and 2, materials prp_tcistwindow_03 and
+// prp_tcistwindowne_02) are each one flat panel 5 m wide and 6.7 m high, the
+// tracery cut from it by its texture (ghilana, 2026-10-25).
+struct Window
+{
+    std::array<float, 3> at{};
+    std::array<float, 3> facing{};
+    float area = 0;
+};
+
+using Vec = std::array<float, 3>;
+
+Vec Minus(const Vec &a, const Vec &b)
+{
+    return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+}
+
+Vec Crossed(const Vec &a, const Vec &b)
+{
+    return {(a[1] * b[2]) - (a[2] * b[1]), (a[2] * b[0]) - (a[0] * b[2]), (a[0] * b[1]) - (a[1] * b[0])};
+}
+
+float Dotted(const Vec &a, const Vec &b)
+{
+    return (a[0] * b[0]) + (a[1] * b[1]) + (a[2] * b[2]);
+}
+
+Vec Unit(const Vec &a)
+{
+    const float length = std::sqrt(Dotted(a, a));
+    return length > 0 ? Vec{a[0] / length, a[1] / length, a[2] / length} : Vec{0, 0, 0};
+}
+
+// A window of a placed model's triangles of window materials: its facing
+// the summed normals of its triangles, each turned to agree with the largest
+// one's (a panel's two sides are one plane), and its opening the extent of its
+// corners across and up that plane. None where it has no such triangle.
+std::optional<Window> WindowOf(const std::vector<levelfiles::Level::Drawn> &drawn,
+                               const std::vector<std::wstring> &materials)
+{
+    std::vector<const levelfiles::Level::Drawn *> panes;
+    for (const levelfiles::Level::Drawn &triangle : drawn)
+    {
+        if (std::ranges::find(materials, Lower(*triangle.material)) != materials.end())
+        {
+            panes.push_back(&triangle);
+        }
+    }
+    const auto twice = [](const levelfiles::Level::Drawn &t) {
+        return Crossed(Minus(t.corners.b, t.corners.a), Minus(t.corners.c, t.corners.a));
+    };
+    const auto largest = std::ranges::max_element(
+        panes, {}, [&](const levelfiles::Level::Drawn *t) { return Dotted(twice(*t), twice(*t)); });
+    if (largest == panes.end())
+    {
+        return std::nullopt;
+    }
+    const Vec reference = twice(**largest);
+    Vec sum{};
+    Vec middle{};
+    for (const levelfiles::Level::Drawn *t : panes)
+    {
+        const Vec n = twice(*t);
+        const float sign = Dotted(n, reference) < 0 ? -1.0F : 1.0F;
+        for (std::size_t i = 0; i < 3; ++i)
+        {
+            sum.at(i) += sign * n.at(i);
+            middle.at(i) += (t->corners.a.at(i) + t->corners.b.at(i) + t->corners.c.at(i)) / 3;
+        }
+    }
+    Window window;
+    window.facing = Unit(sum);
+    const Vec across = Unit(Crossed(window.facing, {0, 0, 1}));
+    const Vec up = Crossed(across, window.facing);
+    std::array<float, 2> least{1e9F, 1e9F};
+    std::array<float, 2> most{-1e9F, -1e9F};
+    for (const levelfiles::Level::Drawn *t : panes)
+    {
+        for (const Vec &corner : {t->corners.a, t->corners.b, t->corners.c})
+        {
+            const std::array<float, 2> on{Dotted(corner, across), Dotted(corner, up)};
+            for (std::size_t i = 0; i < 2; ++i)
+            {
+                least.at(i) = std::min(least.at(i), on.at(i));
+                most.at(i) = std::max(most.at(i), on.at(i));
+            }
+        }
+    }
+    const auto count = static_cast<float>(panes.size());
+    window.at = {middle[0] / count, middle[1] / count, middle[2] / count};
+    window.area = (most[0] - least[0]) * (most[1] - least[1]);
+    return window;
+}
+
+// The models' archives, which a window's triangles are read from, opened
+// once and read by one level at a time.
+std::mutex g_modelsLock;
+std::optional<levelfiles::Archive> g_hierarchies;
+std::optional<levelfiles::Archive> g_meshes;
+
+// The windows of an interior's level, each facing into the level: toward the
+// middle of all its windows, which stand in its outer walls. None where no
+// interior's file names its windows.
+std::vector<Window> ReadWindows(const std::filesystem::path &levelRim)
+{
+    std::vector<Window> windows;
+    const std::wstring name = Lower(levelRim.stem().wstring());
+    const std::vector<std::wstring> materials = daynight::WindowMaterials(name);
+    std::optional<levelfiles::Archive> rooms = materials.empty() ? std::nullopt : levelfiles::Archive::Open(levelRim);
+    if (!rooms)
+    {
+        return windows;
+    }
+    const std::scoped_lock lock(g_modelsLock);
+    if (!g_hierarchies || !g_meshes)
+    {
+        const std::filesystem::path data = GameFolder() / "packages" / "core" / "data";
+        g_hierarchies = levelfiles::Archive::Open(data / "modelhierarchies.erf", true);
+        g_meshes = levelfiles::Archive::Open(data / "modelmeshdata.erf", true);
+    }
+    if (!g_hierarchies || !g_meshes)
+    {
+        return windows;
+    }
+    levelfiles::Level level(levelRim.parent_path(), name, std::move(*rooms), &*g_hierarchies, &*g_meshes);
+    for (const std::wstring &room : level.Rooms())
+    {
+        const levelfiles::level::Room *defined = level.RoomOf(room);
+        for (const levelfiles::level::Placed &placed :
+             defined != nullptr ? defined->models : std::vector<levelfiles::level::Placed>{})
+        {
+            const levelfiles::ModelParts *parts = level.PartsOf(placed.file);
+            const bool glazed = parts != nullptr && std::ranges::any_of(parts->materials, [&](const auto &material) {
+                                    return std::ranges::find(materials, Lower(material.second)) != materials.end();
+                                });
+            if (std::optional<Window> window =
+                    glazed ? WindowOf(level.TrianglesOf(room, placed), materials) : std::nullopt)
+            {
+                windows.push_back(*window);
+            }
+        }
+    }
+    Vec middle{};
+    for (const Window &window : windows)
+    {
+        for (std::size_t i = 0; i < 3; ++i)
+        {
+            middle.at(i) += window.at.at(i) / static_cast<float>(windows.size());
+        }
+    }
+    for (Window &window : windows)
+    {
+        if (Dotted(Minus(middle, window.at), window.facing) < 0)
+        {
+            window.facing = {-window.facing[0], -window.facing[1], -window.facing[2]};
+        }
+    }
+    return windows;
+}
+
 // A level's fires, lit by the plugin from the moment the level opens: the
 // engine runs a room's effects only near the camera, and Haven's mountain
 // top's torches at the temple's gate went dark at night from across the
@@ -402,8 +568,50 @@ struct LevelFires
     // The layouts' lamps that are a fire's light though not named as one,
     // "<layout>/<name>", lower case: the engine's own copies are put out.
     std::vector<std::wstring> atFires;
-    std::size_t glowing = 0; // of `lights`, the glowing ground's (Glowing.h)
+    std::size_t glowing = 0;     // of `lights`, the glowing ground's (Glowing.h)
+    std::vector<Window> windows; // an interior's (ReadWindows), lit by the hour (AddWindows)
 };
+
+// The fire a room places within kAtFire of a lamp at `at`, or none where
+// `may` is false or there is none.
+std::vector<Light>::iterator FireAt(std::vector<Light> &fires, const std::array<float, 3> &at, bool may)
+{
+    if (!may)
+    {
+        return fires.end();
+    }
+    return std::ranges::find_if(
+        fires, [&](const Light &light) { return Near({light.place[0], light.place[1], light.place[2]}, at, kAtFire); });
+}
+
+// Adds a lamp or a fire to a level's lights, or to a light already within
+// kLampMatch of it, as one light of both, which takes one of the shaders'
+// sixteen. Two lamps of a layout at one place are one fitting's light
+// (Redcliffe castle's torches, torch_baked_ and torch_animated_), reaching as
+// far as the further. Two flames are two sources: a candlestick's three
+// flames, a chandelier's ten (the Circle tower's floor places 86 candles'
+// flames, many so), as bright as all of them and reaching as far as the
+// square root of their reaches' squares, where their light is as faint as
+// one flame's at its reach (the light going as the square of the distance):
+// a chandelier's ten at a single candle's 4 m lit nothing of the floor under
+// it, 4 to 5 m down (2026-10-25).
+void AddLight(std::vector<Light> &lights, const Light &light, bool flame)
+{
+    const auto same = std::ranges::find_if(lights, [&](const Light &other) {
+        return Near({other.place[0], other.place[1], other.place[2]}, {light.place[0], light.place[1], light.place[2]},
+                    kLampMatch);
+    });
+    if (same == lights.end())
+    {
+        lights.push_back(light);
+        return;
+    }
+    for (std::size_t c = 0; c < 3; ++c)
+    {
+        same->colour.at(c) += light.colour.at(c);
+    }
+    same->place[3] = flame ? std::hypot(same->place[3], light.place[3]) : std::max(same->place[3], light.place[3]);
+}
 
 // The lamps of every layout of a level that are fires' (named as fires, or
 // at a fire the room places), each fire with none lit as effects.ini says,
@@ -411,6 +619,7 @@ struct LevelFires
 LevelFires ReadLamps(const std::filesystem::path &levelRim)
 {
     LevelFires read;
+    read.windows = ReadWindows(levelRim);
     std::vector<Light> &lamps = read.lights;
     std::optional<levelfiles::Archive> rooms = levelfiles::Archive::Open(levelRim);
     if (!rooms)
@@ -429,10 +638,9 @@ LevelFires ReadLamps(const std::filesystem::path &levelRim)
         for (const levelfiles::Lamp &lamp : level.LampsOf(room))
         {
             const std::array<float, 3> at{lamp.at[0], lamp.at[1], lamp.at[2]};
-            const auto fire = std::ranges::find_if(fires, [&](const Light &light) {
-                return Near({light.place[0], light.place[1], light.place[2]}, at, kAtFire);
-            });
-            if (lamp.reach <= 0 || (!daynight::FireLamp(layout, lamp.name) && fire == fires.end()))
+            const bool named = daynight::FireLamp(layout, lamp.name);
+            const auto fire = FireAt(fires, at, named || daynight::FireColoured(lamp.colour));
+            if (lamp.reach <= 0 || (!named && fire == fires.end()))
             {
                 continue;
             }
@@ -440,30 +648,22 @@ LevelFires ReadLamps(const std::filesystem::path &levelRim)
             if (fire != fires.end())
             {
                 fires.erase(fire);
-                if (!daynight::FireLamp(layout, lamp.name))
+                if (!named)
                 {
                     read.atFires.push_back(layout + L"/" + Lower(lamp.name));
                 }
             }
-            // Two lamps at one place are one light: Redcliffe castle's torches
-            // are each a torch_baked_ and a torch_animated_ (lak200d), and as
-            // two they took two of the shaders' sixteen, the farther torches
-            // left out.
-            const auto same = std::ranges::find_if(lamps, [&](const Light &light) {
-                return Near({light.place[0], light.place[1], light.place[2]}, at, kLampMatch);
-            });
-            if (same != lamps.end())
-            {
-                for (std::size_t c = 0; c < 3; ++c)
-                {
-                    same->colour.at(c) += lamp.colour.at(c);
-                }
-                same->place[3] = std::max(same->place[3], lamp.reach);
-                continue;
-            }
-            lamps.push_back({{at[0], at[1], at[2], lamp.reach}, {lamp.colour[0], lamp.colour[1], lamp.colour[2], 1}});
+            // Two lamps at one place are one light (AddLight): Redcliffe
+            // castle's torches are each a torch_baked_ and a torch_animated_
+            // (lak200d), and as two they took two of the shaders' sixteen, the
+            // farther torches left out.
+            AddLight(lamps, {{at[0], at[1], at[2], lamp.reach}, {lamp.colour[0], lamp.colour[1], lamp.colour[2], 1}},
+                     false);
         }
-        lamps.insert(lamps.end(), fires.begin(), fires.end());
+        for (const Light &fire : fires)
+        {
+            AddLight(lamps, fire, true);
+        }
     }
     // And the light of the ground that glows, lava's (Glowing.h).
     for (const glowing::Light &glow : glowing::LightsOf(level))
@@ -480,8 +680,16 @@ void KeepLamps(const std::filesystem::path &levelRim, const std::wstring &level)
 {
     auto lamps = std::make_shared<const LevelFires>(ReadLamps(levelRim));
     spdlog::info("effects' lights: {} fires in {}'s layouts and rooms, {} of the layouts' lamps at a fire, "
-                 "{} of glowing ground",
-                 lamps->lights.size(), std::filesystem::path(level).string(), lamps->atFires.size(), lamps->glowing);
+                 "{} of glowing ground, {} windows",
+                 lamps->lights.size(), std::filesystem::path(level).string(), lamps->atFires.size(), lamps->glowing,
+                 lamps->windows.size());
+    for (const Window &window : lamps->windows)
+    {
+        spdlog::info("effects' lights: a window at {:.1f} {:.1f} {:.1f} facing {:.2f} {:.2f} {:.2f}, {:.1f} square "
+                     "metres",
+                     window.at[0], window.at[1], window.at[2], window.facing[0], window.facing[1], window.facing[2],
+                     window.area);
+    }
     const std::scoped_lock lock(g_lampLock);
     g_levelLamps[level] = std::move(lamps);
 }
@@ -524,6 +732,53 @@ void AddLamps(std::vector<Light> &lights)
             lamp.colour.at(c) *= g_fireShare.load(std::memory_order_relaxed);
         }
         lights.push_back(lamp);
+    }
+}
+
+// How far into the room a window's light is put from the middle of its
+// opening, metres: clear of its tracery, which would shade the whole room
+// from a light behind it.
+constexpr float kWindowInside = 0.5F;
+
+// A light's aim, its fourth colour (effect_lights.hlsl's DaoEffectAim): 1
+// for a light that shines every way; for a window's, 2 plus the way it faces,
+// its turn about the upright in 256ths of a turn and its height in 256ths of
+// a half turn.
+float AimOf(const std::array<float, 3> &facing)
+{
+    constexpr float kTurn = 2 * std::numbers::pi_v<float>;
+    const float round = std::atan2(facing[1], facing[0]);
+    const float turn = std::round((round < 0 ? round + kTurn : round) / kTurn * 255);
+    const float up =
+        std::round(((std::asin(std::clamp(facing[2], -1.0F, 1.0F)) / std::numbers::pi_v<float>)+0.5F) * 255);
+    return 2 + std::fmod(turn, 256.0F) + (up / 256);
+}
+
+// The level's windows as lights of the hour (daynight::WindowLight): each
+// as bright as its opening is large, aimed into the room.
+void AddWindows(std::vector<Light> &lights)
+{
+    const daynight::Windows hour = daynight::WindowLight();
+    if (!g_lampsWanted.load(std::memory_order_relaxed) || hour.reach <= 0 ||
+        std::max({hour.colour[0], hour.colour[1], hour.colour[2]}) <= 0)
+    {
+        return;
+    }
+    std::shared_ptr<const LevelFires> lamps;
+    {
+        const std::scoped_lock lock(g_lampLock);
+        if (const auto found = g_levelLamps.find(g_lampLevel); found != g_levelLamps.end())
+        {
+            lamps = found->second;
+        }
+    }
+    for (const Window &window : lamps ? lamps->windows : std::vector<Window>{})
+    {
+        lights.push_back(
+            {{window.at[0] + (kWindowInside * window.facing[0]), window.at[1] + (kWindowInside * window.facing[1]),
+              window.at[2] + (kWindowInside * window.facing[2]), hour.reach},
+             {hour.colour[0] * window.area, hour.colour[1] * window.area, hour.colour[2] * window.area,
+              AimOf(window.facing)}});
     }
 }
 
@@ -787,6 +1042,7 @@ void Read()
         const std::size_t engines = lights.size();
         AddLamps(lights);
         AddFires(lights, engines);
+        AddWindows(lights);
     }
     // What lights nothing on the screen left out, then, of more than the
     // shaders take, those that light the most about the camera: each by its

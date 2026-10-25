@@ -20,6 +20,7 @@
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -87,6 +88,15 @@ struct LevelLight
     std::array<float, 3> skyLight{};
 };
 
+// What an interior's file says of its own light (data/areas/README.md).
+struct IndoorLight
+{
+    float fill = 1;                    // how much of its makers' unmotivated light is kept (`fill`)
+    float window = 0;                  // the windows' light a square metre, a share of the outdoor light (`window`)
+    float windowReach = 0;             // metres (`window_reach`)
+    std::vector<std::wstring> windows; // the materials of its windows' models (`windows`)
+};
+
 struct Pair
 {
     LevelLight day;
@@ -110,6 +120,10 @@ struct Pair
     bool heldOwn = false;            // held at the level's own hour (its file's `hour = own`)
     float ownHour = 0;               // the hour the level's own sun stands where it is
     std::vector<std::pair<std::wstring, std::int32_t>> heldUntil; // plots' flags any of which lets the clock run
+    // An interior (its file's `outside`): the fields above are the outside
+    // area's, whose clock and sky its windows see; its own light is its
+    // level's, the makers', by the hour (IndoorsAt).
+    std::optional<IndoorLight> indoors;
 };
 
 std::wstring Lower(std::wstring text)
@@ -413,6 +427,8 @@ struct Cycled
     std::optional<float> heldHour; // the hour its light is held at (its file's `hour`), none for the clock's
     bool heldOwn = false;          // held at the level's own hour (its file's `hour = own`)
     std::vector<std::pair<std::wstring, std::int32_t>> heldUntil; // plots' flags any of which lets the clock run
+    std::wstring outside;               // an interior's: the area whose clock and sky its windows see
+    std::optional<IndoorLight> indoors; // an interior's own light
 };
 // The sun's and the moon's radius as seen, radians: a body is gone when its
 // disc is.
@@ -741,6 +757,7 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
         light.sunOverDay.at(i) = sunLights != pair.ownIsNight ? through : 0;
         const float skyLight = std::lerp(nightSkyLight.at(i), pair.day.skyLight.at(i), day);
         light.baked.at(i) = ownSkyLight.at(i) > 0 ? skyLight / ownSkyLight.at(i) : 1;
+        light.outdoor.at(i) = light.sun.color.at(i) + skyLight;
         light.even.at(i) = pair.ownIsNight ? skyLight : nightSkyLight.at(i);
     }
     // The bake gives way to the sky's even light by night (night_sky.hlsl),
@@ -761,6 +778,60 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
     light.sky.moonAlpha = sunLights ? daySky.moonAlpha * SmoothStep(kOver, -kOver, sunHeight) : nightSky.moonAlpha * up;
     WaterAndSpray(light, pair, daySky, nightSky, day, sunLights);
     LightAir(light, pair, daySky, nightSky, day);
+    return light;
+}
+
+// outdoors.tune's Fill, Window and WindowReach (TryIndoors). The game thread's.
+std::optional<float> g_tryFill;
+std::optional<float> g_tryWindow;
+std::optional<float> g_tryReach;
+
+// An interior's light by the hour (its file's `outside`): its level is lit
+// by its makers as a night, and every light of theirs, its bake and ambient
+// colour, its probes, its layouts' lamps, its figures' fills and key light and
+// its fog, goes by the light out of doors at the hour (the outside's sun or
+// moon and its sky light) over midnight's, in each colour, and is kept to
+// `fill` of it: what no fitting or window of the room's own motivates (the
+// user, 2026-10-25: "We can try reducing fill light to different levels to
+// see what's an appropriate level of darkness. The fill light color probably
+// also needs to change between day and night"). The Circle's tower floors are
+// a night's bake (lak503d's lightmaps' mean 0.096, 0.105, 0.182 of white, as
+// stored); the mage origin's tower, lit by day, 0.289, 0.222, 0.149 (lak303d,
+// another floor, measured 2026-10-25), 3.0, 2.1 and 0.82 times, where the light
+// out of doors at noon over midnight's is about 2.5, 2.0 and 1.0 times. The
+// windows are lights of their own (WindowLight), and the beams of light their
+// makers placed (effects.ini's `lit`) go by the same light and are not fill.
+Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::Sunlight &ownSun,
+                const dao::core::Sky &ownSky, float hour, float night, float nightFill, float haze)
+{
+    const float fill = std::max(g_tryFill.value_or(indoors.fill), 0.0F);
+    const Light out = LightAt(pair, ownSky, hour, night, nightFill, haze);
+    const Light midnight = LightAt(pair, ownSky, 0, night, nightFill, haze);
+    Light light;
+    light.sun = ownSun;
+    light.sky = ownSky;
+    light.outdoor = out.outdoor;
+    const std::array<float *, 3> fog{&light.sky.fogRed, &light.sky.fogGreen, &light.sky.fogBlue};
+    for (std::size_t i = 0; i < 3; ++i)
+    {
+        const float by = midnight.outdoor.at(i) > 0 ? out.outdoor.at(i) / midnight.outdoor.at(i) : 1;
+        light.sun.characterColor.at(i) *= fill * by;
+        light.baked.at(i) = fill * by;
+        light.sunOverDay.at(i) = fill * by;
+        *fog.at(i) *= fill * by;
+        light.lit.at(i) = by;
+        light.window.at(i) = std::max(g_tryWindow.value_or(indoors.window), 0.0F) * out.outdoor.at(i);
+    }
+    // Said as the hour or the tuning moves it by more than a little.
+    static std::array<float, 3> said{};
+    if (std::abs(light.lit[0] - said[0]) + std::abs(light.lit[1] - said[1]) + std::abs(light.lit[2] - said[2]) > 0.05F)
+    {
+        said = light.lit;
+        spdlog::info("day and night: indoors at {:.2f}, the light out of doors {:.3f} {:.3f} {:.3f}, {:.2f} {:.2f} "
+                     "{:.2f} times midnight's; its makers' light kept at {:.2f}",
+                     hour, out.outdoor[0], out.outdoor[1], out.outdoor[2], light.lit[0], light.lit[1], light.lit[2],
+                     fill);
+    }
     return light;
 }
 
@@ -810,7 +881,11 @@ std::array<std::atomic<float>, 3> g_daySky{0.0F, 0.0F, 0.0F};
 std::optional<std::array<float, 3>> g_disc;
 std::vector<LampMove> g_lampMoves;  // the running area's, under g_lock
 std::atomic<bool> g_running{false}; // the clock runs in a level with a night
+std::atomic<bool> g_indoors{false}; // and in an interior
 std::array<std::atomic<float>, 3> g_layoutLightsBy{1.0F, 1.0F, 1.0F};
+// An interior's windows' light (WindowLight).
+std::array<std::atomic<float>, 3> g_window{0.0F, 0.0F, 0.0F};
+std::atomic<float> g_windowReach{0};
 
 // The clock: the hour, and when it was last moved on.
 float g_hour = 12;
@@ -836,6 +911,12 @@ void Stopped()
     g_nightShare.store(0, std::memory_order_relaxed);
     g_evenShare.store(0, std::memory_order_relaxed);
     g_running.store(false, std::memory_order_relaxed);
+    g_indoors.store(false, std::memory_order_relaxed);
+    for (std::atomic<float> &value : g_window)
+    {
+        value.store(0, std::memory_order_relaxed);
+    }
+    g_windowReach.store(0, std::memory_order_relaxed);
     const std::scoped_lock lock(g_lock);
     g_disc.reset();
     g_lampMoves.clear();
@@ -909,31 +990,104 @@ std::vector<LampMove> LampMovesOf(const Keys &keys)
     return moves;
 }
 
+// A key's value in an area's file, or defaults.ini's where it says none.
+std::optional<std::string> Said(const Keys &keys, const Keys &defaults, const std::string &key)
+{
+    if (const auto value = keys.find(key); value != keys.end())
+    {
+        return value->second;
+    }
+    if (const auto value = defaults.find(key); value != defaults.end())
+    {
+        return value->second;
+    }
+    return std::nullopt;
+}
+
+std::wstring Wide(const std::string &text)
+{
+    return Lower(std::wstring(text.begin(), text.end()));
+}
+
+// An area's `hour` and `hour_until`, its own file's alone. `hour`: the hour
+// the area's light is held at, the story's (Soldier's Peak's night before its
+// quest is done, the user, 2026-10-25: "before you beat the quest and claim
+// the keep for your own, it should be night. After that it can cycle
+// normally"); `hour = own`: the level's own hour, its makers' light
+// (Redcliffe's day before the night's siege). `hour_until`: `<plot> <flag>`,
+// several by commas, any of which, the party's, lets the clock run.
+void ReadHold(const Keys &keys, Cycled &area)
+{
+    const std::string hour = keys.contains("hour") ? keys.at("hour") : "";
+    area.heldOwn = hour == "own";
+    area.heldHour = area.heldOwn ? std::optional<float>(0.0F) : Number(hour);
+    if (keys.contains("hour_until"))
+    {
+        std::istringstream all(keys.at("hour_until"));
+        for (std::string one; std::getline(all, one, ',');)
+        {
+            std::istringstream until(one);
+            std::string plot;
+            std::int32_t flag = -1;
+            if (until >> plot >> flag && flag >= 0)
+            {
+                area.heldUntil.emplace_back(Wide(plot), flag);
+            }
+        }
+    }
+}
+
+// An interior's file (its `outside`): its level, the area whose clock and
+// sky its windows see, how much of its makers' light it keeps and how its
+// windows light it; none where it lacks one of them.
+std::optional<Cycled> IndoorsOf(const std::string &tag, const Keys &keys, const Keys &defaults)
+{
+    Cycled area;
+    area.area = Wide(tag);
+    area.own = Wide(Said(keys, defaults, "level").value_or(""));
+    area.outside = Wide(Said(keys, defaults, "outside").value_or(""));
+    IndoorLight indoors;
+    const std::optional<float> fill = Number(Said(keys, defaults, "fill").value_or(""));
+    const std::optional<float> window = Number(Said(keys, defaults, "window").value_or(""));
+    const std::optional<float> reach = Number(Said(keys, defaults, "window_reach").value_or(""));
+    std::istringstream windows(Said(keys, defaults, "windows").value_or(""));
+    for (std::string material; windows >> material;)
+    {
+        indoors.windows.push_back(Wide(material));
+    }
+    if (area.own.empty() || area.outside.empty() || !fill || !window || !reach)
+    {
+        spdlog::warn("day and night: areas/{}.ini, an interior, lacks its level, its outside, its fill or its windows' "
+                     "light or reach",
+                     tag);
+        return std::nullopt;
+    }
+    indoors.fill = std::max(*fill, 0.0F);
+    indoors.window = std::max(*window, 0.0F);
+    indoors.windowReach = std::max(*reach, 0.0F);
+    area.indoors = std::move(indoors);
+    ReadHold(keys, area);
+    return area;
+}
+
 // One area's file, with defaults.ini's values where it says none; none
 // where it lacks what the clock needs.
 std::optional<Cycled> AreaOf(const std::string &tag, const Keys &keys, const Keys &defaults)
 {
-    const auto wide = [](const std::string &text) { return Lower(std::wstring(text.begin(), text.end())); };
-    const auto said = [&](const std::string &key) -> std::optional<std::string> {
-        if (const auto value = keys.find(key); value != keys.end())
-        {
-            return value->second;
-        }
-        if (const auto value = defaults.find(key); value != defaults.end())
-        {
-            return value->second;
-        }
-        return std::nullopt;
-    };
+    if (keys.contains("outside"))
+    {
+        return IndoorsOf(tag, keys, defaults);
+    }
+    const auto said = [&](const std::string &key) { return Said(keys, defaults, key); };
     Cycled area;
-    area.area = wide(tag);
-    area.own = wide(said("level").value_or(""));
+    area.area = Wide(tag);
+    area.own = Wide(said("level").value_or(""));
     // `night`: the night borrowed, the level the day; `day`: the day
     // borrowed, the level the night (the Circle's docks). Not both.
     const std::string borrowedNight = said("night").value_or("");
     const std::string borrowedDay = said("day").value_or("");
     area.ownIsNight = !borrowedDay.empty();
-    area.other = wide(area.ownIsNight ? borrowedDay : borrowedNight);
+    area.other = Wide(area.ownIsNight ? borrowedDay : borrowedNight);
     const std::optional<float> declination = Number(said("declination").value_or(""));
     const std::optional<float> noon = Number(said("noon").value_or(""));
     const std::optional<float> nightFill = Number(said("night_fill").value_or(""));
@@ -957,36 +1111,12 @@ std::optional<Cycled> AreaOf(const std::string &tag, const Keys &keys, const Key
     const std::string moonHeight = said("moon_height").value_or("own");
     area.moonHeight = moonHeight == "own" ? std::nullopt : Number(moonHeight);
     area.moonTurn = Number(said("moon_turn").value_or("")).value_or(0);
-    // `hour`: the hour the area's light is held at, the story's (Soldier's
-    // Peak's night before its quest is done, the user, 2026-10-25: "before you
-    // beat the quest and claim the keep for your own, it should be night. After
-    // that it can cycle normally"); `hour_until`: a plot and its flag, the
-    // party's, after which the clock runs there.
-    // `hour = own`: the level's own hour, its makers' light (Redcliffe's day
-    // before the night's siege). `hour_until`: `<plot> <flag>`, several by
-    // commas, any of which lets the clock run.
-    const std::string hour = keys.contains("hour") ? keys.at("hour") : "";
-    area.heldOwn = hour == "own";
-    area.heldHour = area.heldOwn ? std::optional<float>(0.0F) : Number(hour);
-    if (keys.contains("hour_until"))
-    {
-        std::istringstream all(keys.at("hour_until"));
-        for (std::string one; std::getline(all, one, ',');)
-        {
-            std::istringstream until(one);
-            std::string plot;
-            std::int32_t flag = -1;
-            if (until >> plot >> flag && flag >= 0)
-            {
-                area.heldUntil.emplace_back(wide(plot), flag);
-            }
-        }
-    }
+    ReadHold(keys, area);
     const std::string latitude = said("latitude").value_or("");
     area.latitude = Number(latitude);
     if (!area.latitude)
     {
-        area.latitudeOf = wide(latitude);
+        area.latitudeOf = Wide(latitude);
     }
     return area;
 }
@@ -1008,7 +1138,6 @@ Table ReadTable(const std::filesystem::path &folder)
     {
         defaults = found->second;
     }
-    const auto wide = [](const std::string &text) { return Lower(std::wstring(text.begin(), text.end())); };
     Table table;
     if (const auto strength = defaults.find("fire_strength"); strength != defaults.end())
     {
@@ -1019,7 +1148,7 @@ Table ReadTable(const std::filesystem::path &folder)
         std::istringstream names(fires->second);
         for (std::string name; names >> name;)
         {
-            table.fires.push_back(wide(name));
+            table.fires.push_back(Wide(name));
         }
     }
     for (const auto &[tag, keys] : sections)
@@ -1037,6 +1166,11 @@ Table ReadTable(const std::filesystem::path &folder)
 }
 
 } // namespace
+
+bool FireColoured(const std::array<float, 3> &colour)
+{
+    return colour[0] >= colour[1] && colour[1] >= colour[2];
+}
 
 float FireStrength()
 {
@@ -1078,6 +1212,84 @@ Scattered Scattering(const dao::core::Sky &sky)
     return scattered;
 }
 
+namespace
+{
+
+// The light of an area's day and night: `own` its level's, `other` the
+// level it borrows the other of them from (Cycled's); `folderOf` the levels'
+// folder a level is in.
+std::shared_ptr<Pair> MakePair(const Cycled &cycled, const LevelLight &own, const LevelLight &other,
+                               const std::function<std::filesystem::path(const std::wstring &)> &folderOf)
+{
+    auto pair = std::make_shared<Pair>();
+    pair->ownIsNight = cycled.ownIsNight;
+    pair->day = cycled.ownIsNight ? other : own;
+    pair->night = cycled.ownIsNight ? own : other;
+    pair->area = cycled.area;
+    pair->declination = cycled.declination * kDegree;
+    pair->noon = cycled.noon;
+    pair->nightFill = cycled.nightFill;
+    pair->nightHaze = cycled.nightHaze;
+    pair->sprayMoon = cycled.sprayMoon;
+    pair->lampMoves = cycled.lampMoves;
+    pair->heldHour = cycled.heldHour;
+    pair->heldOwn = cycled.heldOwn;
+    pair->heldUntil = cycled.heldUntil;
+    pair->ownMoon = {-pair->night.sun.direction[0], -pair->night.sun.direction[1], -pair->night.sun.direction[2]};
+    pair->moonHeight = cycled.moonHeight;
+    pair->moonTurn = cycled.moonTurn;
+    pair->midnight = MidnightOf(pair->ownMoon, cycled.moonTurn, cycled.moonHeight);
+    LevelLight of;
+    // The day level's sun, the area's own or the borrowed day's.
+    const std::wstring &dayLevel = cycled.ownIsNight ? cycled.other : cycled.own;
+    const std::wstring &latitudeOf = cycled.latitudeOf.empty() ? dayLevel : cycled.latitudeOf;
+    const dao::core::Sunlight &by =
+        latitudeOf == dayLevel || !ReadArl(folderOf(latitudeOf) / (latitudeOf + L".arl"), of) ? pair->day.sun : of.sun;
+    pair->latitude = cycled.latitude ? *cycled.latitude * kDegree
+                                     : (std::numbers::pi_v<float> / 2) -
+                                           Height({-by.direction[0], -by.direction[1], -by.direction[2]});
+    const Vec3 levelSun{-pair->day.sun.direction[0], -pair->day.sun.direction[1], -pair->day.sun.direction[2]};
+    pair->ownHour = pair->noon + (SunPathThrough(levelSun, pair->latitude, pair->declination).second / (15 * kDegree));
+    spdlog::info("day and night: {}'s level's sun is the season's at {:02d}:{:02d}, at {:.1f} degrees' latitude",
+                 std::filesystem::path(cycled.area).string(), static_cast<int>(pair->ownHour),
+                 static_cast<int>((pair->ownHour - std::floor(pair->ownHour)) * 60), pair->latitude / kDegree);
+    spdlog::info("day and night: {} by day and {} by night, their skies' light {:.3f} {:.3f} {:.3f} and {:.3f} "
+                 "{:.3f} {:.3f}",
+                 std::filesystem::path(cycled.ownIsNight ? cycled.other : cycled.own).string(),
+                 std::filesystem::path(cycled.ownIsNight ? cycled.own : cycled.other).string(), pair->day.skyLight[0],
+                 pair->day.skyLight[1], pair->day.skyLight[2], pair->night.skyLight[0], pair->night.skyLight[1],
+                 pair->night.skyLight[2]);
+    return pair;
+}
+
+// The areas the clock runs in on a level, each out of doors, and each
+// interior with the area out of doors its windows look on. Under g_lock.
+void AreasOn(const std::wstring &level, std::vector<Cycled> &areas, std::vector<std::pair<Cycled, Cycled>> &interiors)
+{
+    for (const Cycled &cycled : g_cycled)
+    {
+        if (cycled.own != level)
+        {
+            continue;
+        }
+        if (!cycled.indoors)
+        {
+            areas.push_back(cycled);
+            continue;
+        }
+        const auto outside = std::ranges::find(g_cycled, cycled.outside, &Cycled::area);
+        if (outside == g_cycled.end() || outside->indoors)
+        {
+            spdlog::warn("day and night: {}'s outside, {}, has no file of an area out of doors",
+                         std::filesystem::path(cycled.area).string(), std::filesystem::path(cycled.outside).string());
+            continue;
+        }
+        interiors.emplace_back(cycled, *outside);
+    }
+}
+
+} // namespace
+
 void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &coreEnv)
 {
     const std::wstring level = Lower(levelRim.stem().wstring());
@@ -1092,13 +1304,14 @@ void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &
     // letter: d for the day's, n for the night's (lak100d and lak100n). The
     // clock runs in the areas data/areas names alone: a night level is the
     // story's night, and the other places are left until the story's times
-    // are known.
+    // are known. An interior is lit by the hour of the area its windows look
+    // out on, whose levels are read with its own.
     std::vector<Cycled> areas;
+    std::vector<std::pair<Cycled, Cycled>> interiors;
     {
         const std::scoped_lock lock(g_lock);
         g_asked.insert(level);
-        std::ranges::copy_if(g_cycled, std::back_inserter(areas),
-                             [&](const Cycled &cycled) { return cycled.own == level; });
+        AreasOn(level, areas, interiors);
     }
     const std::filesystem::path env = levelRim.parent_path().parent_path();
     // A level is in its own levels' folder, an add-in's or the game's: an
@@ -1119,59 +1332,41 @@ void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &
     }
     for (const Cycled &cycled : areas)
     {
-        std::optional<LevelLight> other = ReadLevel(folderOf(cycled.other), cycled.other);
+        const std::optional<LevelLight> other = ReadLevel(folderOf(cycled.other), cycled.other);
         if (!own || !other)
         {
             spdlog::warn("day and night: {} or {} could not be read", std::filesystem::path(level).string(),
                          std::filesystem::path(cycled.other).string());
             continue;
         }
-        auto pair = std::make_shared<Pair>();
-        pair->ownIsNight = cycled.ownIsNight;
-        pair->day = cycled.ownIsNight ? *other : *own;
-        pair->night = cycled.ownIsNight ? *own : *other;
-        pair->area = cycled.area;
-        pair->declination = cycled.declination * kDegree;
-        pair->noon = cycled.noon;
-        pair->nightFill = cycled.nightFill;
-        pair->nightHaze = cycled.nightHaze;
-        pair->sprayMoon = cycled.sprayMoon;
-        pair->lampMoves = cycled.lampMoves;
-        pair->heldHour = cycled.heldHour;
-        pair->heldOwn = cycled.heldOwn;
-        pair->heldUntil = cycled.heldUntil;
-        pair->ownMoon = {-pair->night.sun.direction[0], -pair->night.sun.direction[1], -pair->night.sun.direction[2]};
-        pair->moonHeight = cycled.moonHeight;
-        pair->moonTurn = cycled.moonTurn;
-        pair->midnight = MidnightOf(pair->ownMoon, cycled.moonTurn, cycled.moonHeight);
-        {
-            LevelLight of;
-            // The day level's sun, the area's own or the borrowed day's.
-            const std::wstring &dayLevel = cycled.ownIsNight ? cycled.other : level;
-            const std::wstring &latitudeOf = cycled.latitudeOf.empty() ? dayLevel : cycled.latitudeOf;
-            const dao::core::Sunlight &by =
-                latitudeOf == dayLevel || !ReadArl(folderOf(latitudeOf) / (latitudeOf + L".arl"), of) ? pair->day.sun
-                                                                                                      : of.sun;
-            pair->latitude = cycled.latitude ? *cycled.latitude * kDegree
-                                             : (std::numbers::pi_v<float> / 2) -
-                                                   Height({-by.direction[0], -by.direction[1], -by.direction[2]});
-            const Vec3 levelSun{-pair->day.sun.direction[0], -pair->day.sun.direction[1], -pair->day.sun.direction[2]};
-            const float at =
-                pair->noon + (SunPathThrough(levelSun, pair->latitude, pair->declination).second / (15 * kDegree));
-            pair->ownHour = at;
-            spdlog::info("day and night: {}'s level's sun is the season's at {:02d}:{:02d}, at {:.1f} degrees' "
-                         "latitude",
-                         std::filesystem::path(cycled.area).string(), static_cast<int>(at),
-                         static_cast<int>((at - std::floor(at)) * 60), pair->latitude / kDegree);
-        }
-        spdlog::info("day and night: {} by day and {} by night, their skies' light {:.3f} {:.3f} {:.3f} and {:.3f} "
-                     "{:.3f} {:.3f}",
-                     std::filesystem::path(cycled.ownIsNight ? cycled.other : level).string(),
-                     std::filesystem::path(cycled.ownIsNight ? level : cycled.other).string(), pair->day.skyLight[0],
-                     pair->day.skyLight[1], pair->day.skyLight[2], pair->night.skyLight[0], pair->night.skyLight[1],
-                     pair->night.skyLight[2]);
+        std::shared_ptr<Pair> pair = MakePair(cycled, *own, *other, folderOf);
         const std::scoped_lock lock(g_lock);
         g_pairs[cycled.area] = std::move(pair);
+    }
+    for (const auto &[inside, outside] : interiors)
+    {
+        const std::optional<LevelLight> outsideOwn = ReadLevel(folderOf(outside.own), outside.own);
+        const std::optional<LevelLight> outsideOther = ReadLevel(folderOf(outside.other), outside.other);
+        if (!outsideOwn || !outsideOther)
+        {
+            spdlog::warn("day and night: {} or {}, {}'s outside, could not be read",
+                         std::filesystem::path(outside.own).string(), std::filesystem::path(outside.other).string(),
+                         std::filesystem::path(inside.area).string());
+            continue;
+        }
+        // The outside's clock and sky, held as the interior's own file says.
+        std::shared_ptr<Pair> pair = MakePair(outside, *outsideOwn, *outsideOther, folderOf);
+        pair->area = inside.area;
+        pair->heldHour = inside.heldHour;
+        pair->heldOwn = inside.heldOwn;
+        pair->heldUntil = inside.heldUntil;
+        pair->lampMoves = inside.lampMoves;
+        pair->indoors = inside.indoors;
+        spdlog::info("day and night: {} indoors, its windows on {}'s sky, its makers' light kept at {:.2f}",
+                     std::filesystem::path(inside.area).string(), std::filesystem::path(outside.area).string(),
+                     inside.indoors.value_or(IndoorLight{}).fill);
+        const std::scoped_lock lock(g_lock);
+        g_pairs[inside.area] = std::move(pair);
     }
 }
 
@@ -1242,13 +1437,52 @@ bool Cycles(std::wstring_view area)
 {
     const std::wstring tag = Lower(std::wstring(area));
     const std::scoped_lock lock(g_lock);
-    return std::ranges::any_of(g_cycled, [&](const Cycled &cycled) { return Lower(cycled.area) == tag; });
+    return std::ranges::any_of(g_cycled,
+                               [&](const Cycled &cycled) { return !cycled.indoors && Lower(cycled.area) == tag; });
+}
+
+bool Indoors(std::wstring_view area)
+{
+    const std::wstring tag = Lower(std::wstring(area));
+    const std::scoped_lock lock(g_lock);
+    return std::ranges::any_of(g_cycled,
+                               [&](const Cycled &cycled) { return cycled.indoors && Lower(cycled.area) == tag; });
+}
+
+std::vector<std::wstring> WindowMaterials(std::wstring_view level)
+{
+    const std::wstring name = Lower(std::wstring(level));
+    const std::scoped_lock lock(g_lock);
+    std::vector<std::wstring> materials;
+    for (const Cycled &cycled : g_cycled)
+    {
+        if (cycled.indoors && cycled.own == name)
+        {
+            materials.insert(materials.end(), cycled.indoors->windows.begin(), cycled.indoors->windows.end());
+        }
+    }
+    return materials;
+}
+
+Windows WindowLight()
+{
+    return {{g_window[0].load(std::memory_order_relaxed), g_window[1].load(std::memory_order_relaxed),
+             g_window[2].load(std::memory_order_relaxed)},
+            g_windowReach.load(std::memory_order_relaxed)};
+}
+
+void TryIndoors(std::optional<float> fill, std::optional<float> window, std::optional<float> reach)
+{
+    g_tryFill = fill;
+    g_tryWindow = window;
+    g_tryReach = reach;
 }
 
 std::optional<Borrowed> BorrowedBy(std::wstring_view level)
 {
     const std::scoped_lock lock(g_lock);
-    const auto cycled = std::ranges::find(g_cycled, level, &Cycled::own);
+    const auto cycled =
+        std::ranges::find_if(g_cycled, [&](const Cycled &each) { return !each.indoors && each.own == level; });
     return cycled != g_cycled.end() ? std::optional<Borrowed>(Borrowed{cycled->other, cycled->ownIsNight})
                                     : std::nullopt;
 }
@@ -1322,7 +1556,9 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
         const std::scoped_lock lock(g_lock);
         for (const auto &[tag, each] : g_pairs)
         {
-            if (tag == Lower(std::wstring(area)) && Same(Own(*each).sun, ownSun))
+            // An interior is its own level's whatever its sun; an area out of
+            // doors is the one of its levels the area's sun says.
+            if (tag == Lower(std::wstring(area)) && (each->indoors || Same(Own(*each).sun, ownSun)))
             {
                 pair = each;
                 break;
@@ -1350,8 +1586,12 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
             MidnightOf(pair->ownMoon, g_tryTurn.value_or(pair->moonTurn), g_tryHeight ? g_tryHeight : pair->moonHeight);
         lit = &tried;
     }
-    const Light light = LightAt(*lit, ownSky, HeldHour(*pair).value_or(g_hour), night, fill.value_or(pair->nightFill),
-                                std::clamp(haze.value_or(pair->nightHaze), 0.0F, 1.0F));
+    const float hour = HeldHour(*pair).value_or(g_hour);
+    const float nightFill = fill.value_or(pair->nightFill);
+    const float nightHaze = std::clamp(haze.value_or(pair->nightHaze), 0.0F, 1.0F);
+    const Light light = pair->indoors
+                            ? IndoorsAt(*lit, *pair->indoors, ownSun, ownSky, hour, night, nightFill, nightHaze)
+                            : LightAt(*lit, ownSky, hour, night, nightFill, nightHaze);
     for (std::size_t i = 0; i < 3; ++i)
     {
         g_baked.at(i).store(light.baked.at(i), std::memory_order_relaxed);
@@ -1371,6 +1611,13 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
         g_daySky.at(i).store(pair->day.skyLight.at(i), std::memory_order_relaxed);
     }
     g_evenShare.store(light.evenShare, std::memory_order_relaxed);
+    for (std::size_t i = 0; i < g_window.size(); ++i)
+    {
+        g_window.at(i).store(light.window.at(i), std::memory_order_relaxed);
+    }
+    g_windowReach.store(pair->indoors ? std::max(g_tryReach.value_or(pair->indoors->windowReach), 0.0F) : 0.0F,
+                        std::memory_order_relaxed);
+    g_indoors.store(pair->indoors.has_value(), std::memory_order_relaxed);
     g_running.store(true, std::memory_order_relaxed);
     const std::scoped_lock lock(g_lock);
     g_disc = light.disc;
@@ -1453,7 +1700,11 @@ void Install()
             return model.size() >= end.size() &&
                    _wcsnicmp(model.data() + model.size() - end.size(), end.data(), end.size()) == 0;
         };
-        if (endsWith(L"_ll") && !FireLamp(model, light.name))
+        // Indoors a fire-coloured one is a lantern's or a candle's and keeps
+        // its light (FireColoured); the rest are its makers' fill.
+        const bool fitting =
+            g_indoors.load(std::memory_order_relaxed) && FireColoured({light.color[0], light.color[1], light.color[2]});
+        if (endsWith(L"_ll") && !FireLamp(model, light.name) && !fitting)
         {
             for (std::size_t i = 0; i < 3; ++i)
             {

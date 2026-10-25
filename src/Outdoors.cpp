@@ -662,17 +662,19 @@ std::wstring AreaTag()
 
 // The light of the hour, each frame, where the clock runs in the area
 // (DayNight.h) and the options screen's Day / night cycle runs it: out of
-// doors with Improved lighting on.
+// doors, or in an interior with a file of its own, with Improved lighting on.
 void KeepHour()
 {
     const std::optional<dao::atmosphere::Sunlight> sun = dao::atmosphere::AreaOwnSunlight();
     const std::optional<dao::atmosphere::Sky> sky = dao::atmosphere::AreaOwnSky();
-    const bool running = sun && sky && g_wanted && g_outdoors && g_clockOn;
+    const std::wstring area = AreaTag();
+    const bool running = sun && sky && g_wanted && (g_outdoors || daynight::Indoors(area)) && g_clockOn;
     const bool had = g_hourLight.has_value();
     daynight::TryMoon(Tuned("MoonTurn"), Tuned("MoonHeight"));
+    daynight::TryIndoors(Tuned("Fill"), Tuned("Window"), Tuned("WindowReach"));
     daynight::TryNightColour(Tuned("NightColour"));
     daynight::TryDayHaze(Tuned("DawnHaze"), Tuned("DuskHaze"));
-    g_hourLight = sun && sky ? daynight::Now(AreaTag(), *sun, *sky, running, Tuned("DayMinutes").value_or(kDayMinutes),
+    g_hourLight = sun && sky ? daynight::Now(area, *sun, *sky, running, Tuned("DayMinutes").value_or(kDayMinutes),
                                              Tuned("Night").value_or(kNight), Tuned("NightFill"), Tuned("NightHaze"))
                              : std::nullopt;
     if (had != g_hourLight.has_value())

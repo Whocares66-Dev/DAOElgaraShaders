@@ -18,6 +18,11 @@ One file an area, named by its tag (`lot100ar_lothering.ini`), read as the plugi
 | `hour_until` | `<plot> <flag>`, several by commas: with `hour`, the clock runs there once the party has any of these flags (a plot by its resource name, `arl100pt_siege`) |
 | `spray_moon` | how much of the moon's light the area's spray and mist (effects.ini's `lit`) take by night, 0 to 1, beside the night sky's: 0 for spray under trees, 1 for spray in the open moon |
 | `move_lamp` | `x y z > x y z`: a lamp named as a fire that the level puts at the first place (to a tenth of a metre) lit at the second, where its lantern or fire is; a flame there is then lit by the lamp alone. Several keys may start `move_lamp` |
+| `outside` | an interior's: the area out of doors (its file's name) whose clock and sky its windows see. Its own level is then lit by its makers' light, as at midnight, by the light out of doors at the hour over midnight's in each colour; it needs no `night` or `day` |
+| `windows` | an interior's: the materials of its windows' models, each window a light of the hour aimed into the room |
+| `fill` | an interior's: how much of its makers' light it keeps (its bake, ambient colour, probes, layouts' lamps that are not fires, figures' fills and key light), 0 to 1; defaults.ini's 0.5 |
+| `window` | an interior's: the light of a square metre of window, a share of the light out of doors at the hour; defaults.ini's |
+| `window_reach` | an interior's: how far a window's light reaches, metres; defaults.ini's |
 | `fire_strength` | (`defaults.ini` only) how bright the plugin lights fires and lamps, a share of their own light |
 | `fires` | (`defaults.ini` only) the starts of the names of layouts' lights that are fires, which keep their light by night; every other layout light goes with the sun |
 

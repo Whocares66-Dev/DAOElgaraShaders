@@ -84,6 +84,8 @@ struct Light
     std::array<float, 3> lit{1, 1, 1};  // the light on what is lit about, over the level's own (Lit)
     float evenShare = 0;                // how far the bake gives way to the even light (EvenShare)
     std::array<float, 3> even{};        // that light, as the lightmaps keep light (EvenLight)
+    std::array<float, 3> outdoor{};     // the sun's or the moon's light and the sky's together, out of doors
+    std::array<float, 3> window{};      // an interior's: its windows' light a square metre (WindowLight)
 };
 
 // Reads data/areas (a file for each area the clock runs in, from the plugin's
@@ -140,6 +142,16 @@ float Hour();
 // lights by them itself (EffectLights.cpp). Any thread, once Install has run.
 bool FireLamp(std::wstring_view model, std::wstring_view name);
 
+// Whether a light's colour is a fire's: red the most, blue the least. A
+// level's layouts light more than fires about a fire: the Circle tower's
+// floors (lak503d) put the moonlight's blue bounce (bounce_RT, 0.34, 0.51,
+// 0.99) and its pink (bounce_pink_RT), the books' violet glow (book_RT) and
+// the windows' (window_001_RT, 0.69, 0.72, 0.79) among their candles and
+// lanterns (candle_001_RT, Cndl_RT, lamp_001_RT, 0.91, 0.48, 0.15; read
+// 2026-10-25). Indoors, where no sun is, a fire-coloured layout light is a
+// fitting's and the rest are the makers' fill. Any thread.
+bool FireColoured(const std::array<float, 3> &colour);
+
 // How bright the plugin lights fires, a share of what the level or
 // effects.ini says (data/areas/defaults.ini's `fire_strength`). Any thread,
 // once Install has run.
@@ -167,9 +179,38 @@ struct Borrowed
 };
 std::optional<Borrowed> BorrowedBy(std::wstring_view level);
 
-// Whether the clock runs in an area (its tag): it has a file in data/areas.
-// Any thread, once Install has run.
+// Whether the clock runs in an area (its tag) out of doors: it has a file in
+// data/areas that is not an interior's. Any thread, once Install has run.
 bool Cycles(std::wstring_view area);
+
+// Whether an area (its tag) is an interior the clock runs in: its file says
+// the area out of doors its windows look on (`outside`). Its own level keeps
+// its makers' light, a share of it (`fill`), by the hour's light out of doors
+// over midnight's, and its windows are lights of the hour (WindowLight).
+// Any thread, once Install has run.
+bool Indoors(std::wstring_view area);
+
+// The materials of a level's windows, as the file of an interior on it names
+// them (`windows`); none where no interior's file names the level. Any
+// thread, once Install has run.
+std::vector<std::wstring> WindowMaterials(std::wstring_view level);
+
+// An interior's windows' light as of the last Now: a square metre of opening's
+// colour, the area's `window` times the light out of doors (Light's outdoor),
+// and how far it reaches, metres; nothing where the clock is not running
+// indoors. Any thread.
+struct Windows
+{
+    std::array<float, 3> colour{};
+    float reach = 0;
+};
+Windows WindowLight();
+
+// An interior's share of its makers' light, its windows' light and their
+// reach to try in place of its file's `fill`, `window` and `window_reach`
+// (outdoors.tune's Fill, Window and WindowReach, a developer's), none for the
+// file's. Call on the game's thread, before Now.
+void TryIndoors(std::optional<float> fill, std::optional<float> window, std::optional<float> reach);
 
 // A moon to try in place of the area's file's (outdoors.tune's MoonTurn and
 // MoonHeight, a developer's): its turn and its height in degrees, none for the

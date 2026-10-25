@@ -97,6 +97,29 @@ float DaoEffectShadow(sampler2D map, int i, float3 world)
     return lit / 9;
 }
 
+// How much of light i is sent toward a point by the way it is aimed. A lamp
+// or a flame shines every way (its colour's fourth number 1). A window's
+// light (EffectLights.cpp's AimOf: 2 plus the way the window faces into the
+// room, its turn about the upright in 256ths of a turn and its height in
+// 256ths of a half turn) is the sky's through its opening: as an opening
+// lit evenly from outside, it sends light by the cosine of the way from the
+// way it faces, and only downward, the ground under a tower's window sending
+// little up through it; the edge at the level is softened over 3 degrees.
+float DaoEffectAim(int i, float3 world)
+{
+    const float aim = daoEffectLights[2 * i + 1].a;
+    if (aim < 2)
+    {
+        return 1;
+    }
+    const float coded = aim - 2;
+    const float turn = floor(coded) / 255 * 6.2831853;
+    const float up = (frac(coded) * 256 / 255 - 0.5) * 3.1415927;
+    const float3 facing = float3(cos(up) * cos(turn), cos(up) * sin(turn), sin(up));
+    const float3 way = normalize(world - daoEffectLights[2 * i].xyz);
+    return saturate(dot(way, facing)) * saturate(0.5 - way.z * 10);
+}
+
 // A light's shadow at a point, where the shader has a sampler for the atlas;
 // where it has none left (a face's: Direct3D 9's sixteen all taken), none.
 #ifdef DAO_NO_EFFECT_SHADOWS
@@ -129,7 +152,7 @@ float3 DaoEffectDiffuse(float3 world, float3 normal)
         const float distance = max(length(way), 0.001);
         const float fall = cos(1.5707963 * saturate(distance / place.w));
         sum += fall * fall * saturate(dot(normal, way / distance)) * daoEffectLights[2 * i + 1].rgb *
-               DAO_EFFECT_SHADOW(i, world);
+               DAO_EFFECT_SHADOW(i, world) * DaoEffectAim(i, world);
     }
     return sum;
 }

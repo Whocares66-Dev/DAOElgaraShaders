@@ -1510,9 +1510,10 @@ def with_effect_lights(shader):
 
     lines = ["[loop] for (int daoI = 0; daoI < daoEffectCount.x; daoI++)", "{"]
     # The light's colour, less what stands between it and the point.
+    # and the way it is aimed (a window's; effect_lights.hlsl's DaoEffectAim).
     lines += [
         "    const float4 daoEffectColour = float4(daoEffectLights[2 * daoI + 1].rgb *"
-        f" DAO_EFFECT_SHADOW(daoI, {world}.xyz), daoEffectLights[2 * daoI + 1].a);"
+        f" DAO_EFFECT_SHADOW(daoI, {world}.xyz) * DaoEffectAim(daoI, {world}.xyz), 1);"
     ]
     lines += [f"    float4 dao_{name} = {name};" for name in sorted(written)]
     lines += [
