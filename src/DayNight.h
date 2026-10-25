@@ -86,7 +86,9 @@ std::array<float, 3> NightSky();
 // Says a level was opened: `levelRim` its archive of rooms,
 // packages\core\env\<level>\<level>.rim. Reads the level's and its other's
 // light where it has one. Any thread.
-void Opened(const std::filesystem::path &levelRim);
+// `coreEnv`: the game's own levels' folder, where a night or a latitude an
+// add-in's level borrows is looked for when its own folder has none.
+void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &coreEnv);
 
 // Sets the clock to an hour, 0 to 24. Call on the game's thread.
 void SetHour(float hour);

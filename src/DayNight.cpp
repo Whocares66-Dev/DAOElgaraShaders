@@ -472,6 +472,7 @@ Vec3 MidnightOf(const Vec3 &own, float turn, std::optional<float> height)
 // outdoors.tune's MoonTurn and MoonHeight, a developer's, to try a moon live
 // in place of the area's file's (TryMoon). The game thread's.
 std::optional<float> g_tryTurn;
+const void *g_ownSunLogged = nullptr; // the pair last logged as taking its area's own sun
 std::optional<float> g_tryHeight;
 
 Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float night, float fill, float haze)
@@ -856,7 +857,7 @@ Scattered Scattering(const dao::core::Sky &sky)
     return scattered;
 }
 
-void Opened(const std::filesystem::path &levelRim)
+void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &coreEnv)
 {
     const std::wstring level = Lower(levelRim.stem().wstring());
     {
@@ -879,12 +880,18 @@ void Opened(const std::filesystem::path &levelRim)
                              [&](const Cycled &cycled) { return cycled.day == level; });
     }
     const std::filesystem::path env = levelRim.parent_path().parent_path();
+    // A level is in its own levels' folder, an add-in's or the game's: an
+    // add-in's level borrows the game's night (Awakening's, Redcliffe's).
+    const auto folderOf = [&](const std::wstring &name) {
+        std::error_code error;
+        return std::filesystem::exists(env / (name + L".arl"), error) ? env : coreEnv;
+    };
     for (const Cycled &cycled : areas)
     {
         // Some small files (the two .arl and the layouts), read as the level
         // is opened.
         std::optional<LevelLight> day = ReadLevel(env, level);
-        std::optional<LevelLight> night = ReadLevel(env, cycled.night);
+        std::optional<LevelLight> night = ReadLevel(folderOf(cycled.night), cycled.night);
         if (!day || !night)
         {
             spdlog::warn("day and night: {} or {} could not be read", std::filesystem::path(level).string(),
@@ -909,7 +916,7 @@ void Opened(const std::filesystem::path &levelRim)
             LevelLight of;
             const std::wstring &latitudeOf = cycled.latitudeOf.empty() ? level : cycled.latitudeOf;
             const dao::core::Sunlight &by =
-                latitudeOf == level || !ReadArl(env / (latitudeOf + L".arl"), of) ? pair->day.sun : of.sun;
+                latitudeOf == level || !ReadArl(folderOf(latitudeOf) / (latitudeOf + L".arl"), of) ? pair->day.sun : of.sun;
             pair->latitude = cycled.latitude ? *cycled.latitude * kDegree
                                              : (std::numbers::pi_v<float> / 2) -
                                                    Height({-by.direction[0], -by.direction[1], -by.direction[2]});
@@ -973,7 +980,7 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
         const std::scoped_lock lock(g_lock);
         for (const auto &[tag, each] : g_pairs)
         {
-            if (tag == Lower(std::wstring(area)) && Same(each->day.sun, ownSun))
+            if (tag == Lower(std::wstring(area)))
             {
                 pair = each;
                 break;
@@ -994,9 +1001,25 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
     }
     Pair tried;
     const Pair *lit = pair.get();
-    if (g_tryTurn || g_tryHeight)
+    // An area may give itself a sun of its own over its level's: Awakening's
+    // Vigil's Keep by day (vgk101ar_exterior on vgk101d) does, and the clock,
+    // waiting for the level's own, never ran there (2026-10-24). The day's
+    // sun is then the area's.
+    if (!Same(pair->day.sun, ownSun))
     {
         tried = *pair;
+        tried.day.sun = ownSun;
+        lit = &tried;
+        if (g_ownSunLogged != pair.get())
+        {
+            g_ownSunLogged = pair.get();
+            spdlog::info("day and night: {} has a sun of its own, not its level's: the day's sun is the area's",
+                         std::filesystem::path(pair->area).string());
+        }
+    }
+    if (g_tryTurn || g_tryHeight)
+    {
+        tried = *lit;
         tried.midnight = MidnightOf(pair->ownMoon, g_tryTurn.value_or(pair->moonTurn),
                                     g_tryHeight ? g_tryHeight : pair->moonHeight);
         lit = &tried;

@@ -347,25 +347,56 @@ void OnProbe(dao::lights::ProbeLight &probe)
     ByTheHour(probe.irradiance, times, night);
 }
 
+// The file a level's own archive is, by the name the engine opens it by:
+// a level's folder's archive of the folder's name, the game's levels' (ENV:)
+// or an add-in's (BUILD_ADDINS:<add-in>\core\env\), or none.
+std::optional<std::filesystem::path> LevelRimOf(std::wstring_view name)
+{
+    constexpr std::wstring_view kLevels = L"ENV:";
+    constexpr std::wstring_view kAddins = L"BUILD_ADDINS:";
+    std::filesystem::path file;
+    if (name.starts_with(kLevels))
+    {
+        file = GameFolder() / "packages" / "core" / "env" / std::filesystem::path(name.substr(kLevels.size()));
+    }
+    else if (name.starts_with(kAddins))
+    {
+        file = GameFolder() / "Addins" / std::filesystem::path(name.substr(kAddins.size()));
+        if (_wcsicmp(file.parent_path().parent_path().filename().c_str(), L"env") != 0)
+        {
+            return std::nullopt;
+        }
+    }
+    else
+    {
+        return std::nullopt;
+    }
+    std::wstring extension = file.extension().wstring();
+    std::ranges::transform(extension, extension.begin(),
+                           [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+    if (extension != L".rim" || _wcsicmp(file.stem().c_str(), file.parent_path().filename().c_str()) != 0)
+    {
+        return std::nullopt;
+    }
+    return file;
+}
+
 std::uintptr_t __fastcall OpenArchive(void *self, int unused, const dao::core::WStringRep *path, std::uintptr_t a2,
                                       std::uintptr_t a3, std::uintptr_t a4, std::uintptr_t a5)
 {
     const std::uintptr_t result = g_openArchive.Original()(self, unused, path, a2, a3, a4, a5);
     // The engine names a level's archives by its own name for the levels'
-    // folder: ENV:lak303d\lak303d.rim (logged 2026-10-11). A level's rooms
-    // are in the archive of its folder that has the folder's name.
-    constexpr std::wstring_view kLevels = L"ENV:";
-    if (path != nullptr && path->size > kLevels.size() && path->size < 1024 && path->View().starts_with(kLevels))
+    // folder: ENV:lak303d\lak303d.rim (logged 2026-10-11), and an add-in's
+    // by its folder: BUILD_ADDINS:DAO_PRC_EP_1\core\env\amn100d\amn100d.rim
+    // (Awakening's Amaranthine, logged 2026-10-24). A level's rooms are in the
+    // archive of its folder that has the folder's name.
+    if (path != nullptr && path->size > 0 && path->size < 1024)
     {
-        const std::filesystem::path file(path->View().substr(kLevels.size()));
-        std::wstring extension = file.extension().wstring();
-        std::ranges::transform(extension, extension.begin(),
-                               [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
-        if (extension == L".rim" && _wcsicmp(file.stem().c_str(), file.parent_path().c_str()) == 0)
+        if (const std::optional<std::filesystem::path> rim = LevelRimOf(path->View()))
         {
-            probebaker::Want(GameFolder() / "packages" / "core" / "env" / file);
-            daynight::Opened(GameFolder() / "packages" / "core" / "env" / file);
-            effectlights::LevelOpened(GameFolder() / "packages" / "core" / "env" / file);
+            probebaker::Want(*rim);
+            daynight::Opened(*rim, GameFolder() / "packages" / "core" / "env");
+            effectlights::LevelOpened(*rim);
             levelshadows::Forget();
         }
     }
