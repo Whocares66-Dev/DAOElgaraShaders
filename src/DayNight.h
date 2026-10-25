@@ -83,6 +83,9 @@ void Install();
 // the night level's sky's, paled and as strong as Now's `night` says. 0 where
 // the clock is not running. Any thread.
 float NightShare();
+
+// Whether the clock ran at the last Now. Any thread.
+bool Running();
 std::array<float, 3> NightSky();
 
 // The bake's even light (night_sky.hlsl): how far the level's bake gives way

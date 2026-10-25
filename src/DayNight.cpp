@@ -1006,6 +1006,11 @@ float NightShare()
     return g_nightShare.load(std::memory_order_relaxed);
 }
 
+bool Running()
+{
+    return g_running.load(std::memory_order_relaxed);
+}
+
 std::array<float, 3> NightSky()
 {
     return {g_nightSky[0].load(std::memory_order_relaxed), g_nightSky[1].load(std::memory_order_relaxed),

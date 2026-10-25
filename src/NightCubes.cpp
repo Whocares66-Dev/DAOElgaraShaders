@@ -68,8 +68,15 @@ struct Kept
     std::wstring level; // the day level's, lak100d
     std::shared_ptr<const Cubes> cubes;
     bool none = false; // the night has no such cube, or it could not be read
-    float written = 0; // the night's share the texture holds
-    float making = 0;  // the share the blend under way is for
+    // The night's share the texture holds, none until it is first seen: then
+    // the level's own cube's, 1 where the level is the night of a borrowed
+    // day. Taken for 0, the docks' night cube (lak300d's) stayed in the lake
+    // all day: the share was 0 from noon to dusk, as written, and the cube
+    // was never made (2026-10-24, the user: "The docks still have the water
+    // being nighttime blue during the day problem").
+    std::optional<float> written;
+    float own = 0;    // the night's share the level's own cube is
+    float making = 0; // the share the blend under way is for
     std::future<Made> made;
 };
 
@@ -295,7 +302,9 @@ void Install()
 
 void Presented()
 {
-    const float share = daynight::NightShare();
+    // The hour's share while the clock runs, else each level's own cube.
+    const bool running = daynight::Running();
+    const float hour = daynight::NightShare();
     const std::scoped_lock lock(g_lock);
     for (const std::unique_ptr<Kept> &kept : g_kept)
     {
@@ -303,6 +312,13 @@ void Presented()
         {
             continue;
         }
+        if (!kept->written)
+        {
+            const std::optional<daynight::Borrowed> borrowed = daynight::BorrowedBy(kept->level);
+            kept->own = borrowed && borrowed->ownIsNight ? 1.0F : 0.0F;
+            kept->written = kept->own;
+        }
+        const float share = running ? hour : kept->own;
         if (kept->made.valid())
         {
             if (kept->made.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
@@ -323,8 +339,8 @@ void Presented()
         }
         // Again where the share has moved a step, and always to the ends:
         // the day's own cube by day, the night's by night.
-        const bool end = (share == 0 || share == 1) && share != kept->written;
-        if (std::abs(share - kept->written) < kStep && !end)
+        const bool end = (share == 0 || share == 1) && share != *kept->written;
+        if (std::abs(share - *kept->written) < kStep && !end)
         {
             continue;
         }
