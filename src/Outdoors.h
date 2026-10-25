@@ -1,16 +1,17 @@
-// The light of the air out of doors: the area's fog lit by its sun
-// (Improved lighting on the options screen). The engine fogs every surface and its
-// sky towards one colour an area gives, whichever way one looks; haze in
-// daylight is brighter and warmer towards the sun. This keeps the area's
-// colour and how much fog there is, and adds the sun's light in the air by
-// the way each pixel looks (shaders/haze.hlsl): each frame it hands the
-// device's registers the air's light and the view each surface, the sky and
-// the effects reckon it along.
+// The light of the air out of doors: the area's fog lit by its sun and its
+// sky (Improved lighting on the options screen). The engine fogs every surface
+// and its sky toward one color an area gives, whichever way one looks; haze
+// in daylight is brighter toward the sun, in the sun's color. This keeps
+// how much fog there is and the area's color on the mean, and gives the air
+// the sun's light by the way each pixel looks (shaders/haze.hlsl): each frame
+// it hands the device's registers the air's light and the view each surface,
+// the sky and the effects reckon it along.
 //
 // What each area has of its own is written to the log as the party comes
 // into it. A file beside the DLL, `outdoors.tune`, is a developer's: while the
 // game runs it is read again whenever it is saved, `name = value` a line:
-// `Haze = 0` for none; `SunlitFigures` 0 or 1 in place
+// `Haze = 0` for none; `HazeG`, how the air's glow leans toward the sun (0
+// to 0.95, 0.3 if not said); `SunlitFigures` 0 or 1 in place
 // of the options screen's; `Fills`, how many times the area's own its fills
 // are on figures, out of doors, in place of Improved lighting's rule; `Sun` and `SunOnFigures`, how many
 // times the area's own the sun is on the ground and on figures; `sky.<a field
@@ -25,13 +26,14 @@
 namespace outdoors
 {
 
-// The air's light as the sky and the clouds are to fog towards it (haze.hlsl):
-// whether it is ours, the part the air's molecules scatter (Rayleigh's),
-// the part its haze scatters (Mie's), and Mie's asymmetry, towards the sun.
+// The air's light as every fogged surface, the sky and the clouds fog
+// toward it (haze.hlsl): whether it is ours, the part the sky's light makes
+// (the same every way), the part the sun or the moon makes (its mean over all
+// ways), and how that part's glow leans toward the light.
 struct SkyHaze
 {
     bool on = false;
-    std::array<float, 3> air{};
+    std::array<float, 3> sky{};
     std::array<float, 3> sun{};
     float g = 0;
 };

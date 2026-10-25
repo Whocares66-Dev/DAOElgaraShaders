@@ -24,11 +24,13 @@
 //   scattering, Scattering), and none under the horizon. The engine's one sun
 //   is the moon once the sun is down, coming up from nothing as the sun goes
 //   to 6 degrees under.
-// - The sky, the fog and the clouds go from the day level's to the night's
+// - The sky and the clouds go from the day level's to the night's
 //   (dao::core::Blend) as the sun goes from 6 degrees up to 12 under, the end
 //   of nautical twilight. The level's bake goes, as the sky does, to the night
 //   sky's even light (night_sky.hlsl), and its probes (Probes.cpp) and the
 //   ambient colour the engine adds (dao::lights::OnAmbient) with it.
+// - The fog's color is what the hour's sun or moon and sky light make of the
+//   air (Air), by how much of the light on it each level's own fog color is.
 // - The layouts' lights (_ll: the makers' sunlight about the village) go with
 //   the sun's light, the figures' fills (_lc) with the sky's
 //   (dao::lights::OnPointLight); and the engine's grid of where a figure is
@@ -52,16 +54,28 @@
 namespace daynight
 {
 
+// The air's light, which every fogged surface, the sky and the effects fog
+// toward (Outdoors.cpp's HazeOf, haze.hlsl): the part the sun or the moon
+// makes of it, its mean over all ways (the shader gives it its glow toward
+// the light), and the part the sky's light makes, the same every way. The two
+// together are the fog's color.
+struct Air
+{
+    std::array<float, 3> sun{};
+    std::array<float, 3> sky{};
+};
+
 // The light of the hour: the sun or the moon as the engine is to have it,
 // the sky, the sky's light over the level's own, the sun's light over the
-// day level's (for its lamps and the haze's share of it), and the colour the
-// sky's disc is drawn in.
+// day level's (for its lamps), the air's light, and the color the sky's
+// disc is drawn in.
 struct Light
 {
     dao::core::Sunlight sun;
     dao::core::Sky sky;
     std::array<float, 3> baked{1, 1, 1};
     std::array<float, 3> sunOverDay{1, 1, 1};
+    Air air;
     std::array<float, 3> disc{1, 1, 1}; // the sun's hue through the air, the moon's white
     float nightShare = 0;               // how far the hour is from the day's bake to the night sky's light
     std::array<float, 3> nightSky{};    // the night sky's light, as the lightmaps keep light (night_sky.hlsl)
@@ -100,9 +114,15 @@ std::array<float, 3> EvenLight();
 // Any thread.
 std::array<float, 3> DaySky();
 
+// The air's light where the clock does not run: the area's own fog color
+// (`fog`) as its own level's sun (`ownSun`, the area's own) and sky light make
+// it, the sky light read as the level was opened (Opened). None where it was
+// not read. Any thread.
+std::optional<Air> OwnAir(const dao::core::Sunlight &ownSun, const std::array<float, 3> &fog);
+
 // Says a level was opened: `levelRim` its archive of rooms,
-// packages\core\env\<level>\<level>.rim. Reads the level's and its other's
-// light where it has one. Any thread.
+// packages\core\env\<level>\<level>.rim. Reads the level's light (its sun,
+// sky and sky light), and its other's where it has one. Any thread.
 // `coreEnv`: the game's own levels' folder, where a night or a latitude an
 // add-in's level borrows is looked for when its own folder has none.
 void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &coreEnv);

@@ -196,69 +196,54 @@ bool SunlitFigures()
 bool g_outdoors = false;
 bool g_sunlit = false; // out of doors with a sun on the ground (Sunlit)
 
-// The air's light from the area's own. Its fog colour is the air's light as
-// its makers saw it, the same every way. The air is a scatterer of the sun's
-// light: in each channel a share of the colour is scattered by the air's
-// molecules (Rayleigh's, as bright towards the sun as away from it, darkest
-// across) and the rest by its haze (Mie's, bright towards the sun). The two
-// shares are the area's own, reckoned as the engine reckons them for its sky
-// (lib-agent, read in the sky's recompute 0x0055BFA0, 2026-10-16): Rayleigh's
-// rayleighMultiplier times (6.95, 11.8, 24.4) per million metres, Mie's
-// mieMultiplier times Preetham's 0.434 c pi (2 pi / lambda)^2 0.67, c of the
-// turbidity, at 650, 570 and 475 nm; and Mie's phase is Henyey-Greenstein's
-// with the area's hg. On the mean over all ways the haze is the area's own
-// colour: nothing is added, and the light only goes where the air sends it.
-// Only the lobe's way is not the engine's: its sky takes hg against the way
-// to the sun, and every area's hg is negative (-0.5 the default), which puts
-// the haze's glow behind the eye, where no haze sends it; Preetham's model
-// and the sky over us send it forward, so the size of hg is taken and the
-// lobe faces the sun. An area with no sun keeps its fog as it is.
-// (Two forms before this one had a share of my own and a phase of my own;
-// the first added the sun's light on top of the colour, and far trees towards
-// the sun went white in the Dalish camp, whose fog is brighter than its sun;
-// the user, 2026-10-16: "Are we just applying hacks on top of a problem we
-// don't understand".)
-// Under a day and a night the sky is the hour's, and the haze's part is the
-// sun's light scattered on, so it goes with the sun's colour over the day's
-// (`sunOverDay`); the moon's is left in the sky's own fog colour.
-// The haze's part is of the luminance its share of the colour has, in the
-// fog's own hue (below). Haven's fog is nearly all haze
-// (its Mie multiplier 0.046 against Rayleigh's 0.028) of a deep teal, and
-// with the lobe towards the sun its far mountains went a flat neon cyan
-// brighter than its sky (the user, 2026-10-23: "fog w/ improved lighting
-// makes mountains look too intense", issue 53; its daytime "is cool, not
-// warm": the haze is not given the sun's colour either).
-SkyHaze HazeOf(const dao::atmosphere::Sunlight &sun, const dao::atmosphere::Sky &sky, bool outdoors,
-               const std::array<float, 3> &sunOverDay)
+// The air's light (haze.hlsl): what the sun or the moon and the sky's light
+// make of the air, by how much of the light on it the area's own fog color
+// is (DayNight.cpp's FogOver). The fog color is the air as the makers lit it,
+// chosen by eye and the same every way; on the mean over all ways it is still
+// that color at the level's own light, the sun's part brighter toward the
+// sun and dimmer away, in the sun's color through the fog's. Under the day and
+// the night the light is the hour's, the same that lights the ground, and the
+// moon lights its own lobe; elsewhere the area's own, its sky's light read
+// with its level (daynight::OwnAir). An area with no sun, or whose level's
+// sky light was not read, keeps its fog as it is.
+// (Before 2026-10-25 the color was split by the sky dome's Mie and Rayleigh
+// numbers, which the dome, drawn at 1 to 2 in 100, hardly shows: they gave the
+// sun 0.30 of Redcliffe's fog, 0.42 of the Dalish camp's, 0.86 of the farm's
+// and 0.93 of Haven's, and with the dome's hg of 0.5 the air toward a low sun
+// was 4.4 to 5.6 times its fog's brightness at the farm and in Haven, white,
+// in the fog's blue or teal (the user, 2026-10-23: "fog w/ improved lighting
+// makes mountains look too intense"; 2026-10-24: "The haze in general looks
+// screwed up").)
+// How the air's glow leans toward the sun, Henyey-Greenstein's g, one for
+// every area: at 0.3 the air toward the sun is 1.4 to 2.3 times its fog's
+// brightness in those four areas and 0.4 to 0.6 times away from it. The
+// game's fogs are thick (1/e at 60 to 130 m), and a haze that thick sends
+// light on more than once, which spreads its lobe; the areas' own hg is -0.5
+// in every area logged, and the engine's sky aims it behind the eye.
+// outdoors.tune's `HazeG` tries another.
+constexpr float kHazeG = 0.3F;
+
+SkyHaze HazeOf(const dao::atmosphere::Sunlight &sun, const dao::atmosphere::Sky &sky, bool outdoors)
 {
     SkyHaze haze;
     const bool sunny = std::max({sun.color[0], sun.color[1], sun.color[2]}) > 0;
-    haze.on = outdoors && sunny && g_wanted && Tuned("Haze").value_or(1) > 0;
-    const daynight::Scattered scattered = daynight::Scattering(sky);
-    const std::array<float, 3> fog{sky.fogRed, sky.fogGreen, sky.fogBlue};
-    constexpr std::array<double, 3> kLuminance{0.2126, 0.7152, 0.0722};
-    double hazeLuminance = 0;
-    for (std::size_t i = 0; i < 3; ++i)
+    const std::optional<daynight::Air> air =
+        g_hourLight ? std::optional(g_hourLight->air)
+                    : daynight::OwnAir(sun, std::array<float, 3>{sky.fogRed, sky.fogGreen, sky.fogBlue});
+    haze.on = outdoors && sunny && air && g_wanted && Tuned("Haze").value_or(1) > 0;
+    static std::optional<bool> said;
+    if (outdoors && sunny && said != air.has_value())
     {
-        const double rayleigh = scattered.air.at(i);
-        const double mie = scattered.haze.at(i);
-        const double mieShare = rayleigh + mie > 0 ? mie / (rayleigh + mie) : 0;
-        haze.air.at(i) = static_cast<float>((1 - mieShare) * fog.at(i));
-        hazeLuminance += kLuminance.at(i) * mieShare * fog.at(i);
+        said = air.has_value();
+        spdlog::info("the air: {}", air ? "lit by the level's sun and sky light"
+                                        : "the level's sky light was not read, its fog as it is");
     }
-    // In the fog's own hue, at the luminance the haze's share of it has: the
-    // makers' colour of the air, not its brightness. In grey the Dalish camp's
-    // and the Brecilian Forest's gold went a cool grey (the user, 2026-10-24,
-    // asked the makers' colour back); Haven's neon (issue 53) was the haze's
-    // own brightness, and at this luminance its far mountains are as they were
-    // in grey (94, 118, 135 of 255 against 92, 118, 136).
-    const double fogLuminance = (kLuminance[0] * fog[0]) + (kLuminance[1] * fog[1]) + (kLuminance[2] * fog[2]);
-    for (std::size_t i = 0; i < 3; ++i)
+    if (air)
     {
-        const double tint = fogLuminance > 0 ? fog.at(i) / fogLuminance : 1.0;
-        haze.sun.at(i) = static_cast<float>(hazeLuminance * tint) * sunOverDay.at(i);
+        haze.sun = air->sun;
+        haze.sky = air->sky;
     }
-    haze.g = std::min(std::abs(sky.hg), 0.95F);
+    haze.g = std::clamp(Tuned("HazeG").value_or(kHazeG), 0.0F, 0.95F);
     return haze;
 }
 
@@ -368,9 +353,7 @@ void KeepAir()
         spdlog::info("the area is {}",
                      outdoors ? "out of doors: its air is lit by its sun" : "indoors: its fog as it is");
     }
-    g_haze = sun && sky
-                 ? HazeOf(*sun, *sky, outdoors, g_hourLight ? g_hourLight->sunOverDay : std::array<float, 3>{1, 1, 1})
-                 : SkyHaze{};
+    g_haze = sun && sky ? HazeOf(*sun, *sky, outdoors) : SkyHaze{};
     g_outdoors = sun && sky && outdoors;
     const bool sunny = sun && std::max({sun->color[0], sun->color[1], sun->color[2]}) > 0;
     g_sunlit = g_outdoors && sunny;

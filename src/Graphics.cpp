@@ -190,10 +190,10 @@ constexpr UINT kNightSkyRegister = 215; // night_sky.hlsl's daoNightSky
 // Water's light (water_light.hlsl's daoWaterLight), under the effects' lights':
 // the game's pixel shaders reach c55 at the most (their listings, 2026-10-22).
 constexpr UINT kWaterLightRegister = 159;
-// The air's light the sky, the clouds and the effects fog towards
-// (outdoors::Haze), in registers of their own below these (look.hlsl's
-// daoHaze): the sky's part and whether it is ours, the sun's part and its
-// asymmetry.
+// The air's light every fogged surface, the sky, the clouds and the effects
+// fog toward (outdoors::Haze), in registers of their own below these
+// (look.hlsl's daoHaze): the sky light's part and whether it is ours, the
+// sun's part and how its glow leans toward the sun.
 constexpr UINT kHazeRegister = 218;
 constexpr std::size_t kHazeRegisters = 2;
 std::array<std::atomic<float>, kHazeRegisters * 4> g_hazeLook{};
@@ -1523,7 +1523,7 @@ void KeepLookRegisters()
     const outdoors::SkyHaze haze = outdoors::Haze();
     for (std::size_t c = 0; c < 3; ++c)
     {
-        g_hazeLook.at(c).store(haze.air.at(c), std::memory_order_relaxed);
+        g_hazeLook.at(c).store(haze.sky.at(c), std::memory_order_relaxed);
         g_hazeLook.at(4 + c).store(haze.sun.at(c), std::memory_order_relaxed);
     }
     g_hazeLook.at(3).store(haze.on ? 1.0F : 0.0F, std::memory_order_relaxed);

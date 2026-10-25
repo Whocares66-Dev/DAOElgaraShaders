@@ -1,25 +1,23 @@
-// The air's light: what fog is lit by, seen one way (Outdoors.cpp has where
-// its numbers come from). The air's light's pass puts it in place of the
-// area's fog colour over every surface, by the fog the engine reckoned for
-// it (haze_pass.hlsl), and the sky and the clouds fog towards it in their
-// own shaders (build_shaders.py's with_lit_sky_fog), so the two meet at the
-// horizon.
+// The air's light: what fog is lit by, seen one way (Outdoors.cpp's HazeOf
+// has where its numbers come from). Every fogged surface puts it in place of
+// the area's fog color in its own shader, by the fog the engine gave it
+// (build_shaders.py's with_surface_haze), what writes no distance fogs
+// toward it (with_ray_haze_fog), and the sky and the clouds in theirs
+// (with_lit_sky_fog), so they meet at the horizon.
 //
-// `toSun` is the cosine between the way one looks and the way to the sun;
-// `air` the part the air's molecules scatter, by Rayleigh's phase; `sun` the
-// part its haze scatters, by Henyey-Greenstein's of asymmetry `g`. Each
-// phase is times 4 pi, so that its mean over all ways is 1, and the two
-// parts are the area's own fog colour together (Outdoors.cpp's HazeOf): the
-// light is sent where the air sends it, and none is added.
+// `toSun` is the cosine between the way one looks and the way to the sun (or
+// the moon); `sky` the part the sky's light makes, the same every way; `sun`
+// the part the sun makes, by Henyey-Greenstein's phase of asymmetry `g`,
+// times 4 pi so that its mean over all ways is 1. At the level's own light
+// the two make its fog color on that mean: the light is sent where the air
+// sends it, and none is added.
 
 #ifndef DAO_HAZE_HLSL
 #define DAO_HAZE_HLSL
 
-float3 DaoHazeLight(float toSun, float3 air, float3 sun, float g)
+float3 DaoHazeLight(float toSun, float3 sky, float3 sun, float g)
 {
-    const float rayleigh = 0.75 * (1 + toSun * toSun);
-    const float mie = (1 - g * g) / pow(max(1 + g * g - 2 * g * toSun, 1e-4), 1.5);
-    return air * rayleigh + sun * mie;
+    return sky + sun * (1 - g * g) / pow(max(1 + g * g - 2 * g * toSun, 1e-4), 1.5);
 }
 
 #ifdef DAO_LOOK_HLSL
@@ -34,7 +32,7 @@ float4 DaoSkyFog(float3 way, float3 sunGoing, float4 own)
     {
         return own;
     }
-    const float3 light = DaoHazeLight(dot(normalize(way), -sunGoing), DAO_HAZE_AIR, DAO_HAZE_SUN, DAO_HAZE_G);
+    const float3 light = DaoHazeLight(dot(normalize(way), -sunGoing), DAO_HAZE_SKY, DAO_HAZE_SUN, DAO_HAZE_G);
     return float4(light, own.w);
 }
 
@@ -83,11 +81,10 @@ float DaoSkyFogAlong(float3 ray)
     return daoHazeView[4].x * saturate(exp2(ray.z * ray.z * ray.z * (-1.4426950 / (0.0636620 * zenith))));
 }
 
-// The air's light seen along `ray`, the sun's part all lit: what the sun's
-// shadows in the air take away is the pass's (haze_pass.hlsl).
+// The air's light seen along `ray`.
 float3 DaoHazeAlong(float3 ray)
 {
-    return DaoHazeLight(dot(ray, daoHazeView[3].xyz), DAO_HAZE_AIR, DAO_HAZE_SUN, DAO_HAZE_G);
+    return DaoHazeLight(dot(ray, daoHazeView[3].xyz), DAO_HAZE_SKY, DAO_HAZE_SUN, DAO_HAZE_G);
 }
 
 // What a surface fogged by the engine is to have added, where the haze is
