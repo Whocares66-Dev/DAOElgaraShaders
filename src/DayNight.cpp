@@ -472,7 +472,6 @@ Vec3 MidnightOf(const Vec3 &own, float turn, std::optional<float> height)
 // outdoors.tune's MoonTurn and MoonHeight, a developer's, to try a moon live
 // in place of the area's file's (TryMoon). The game thread's.
 std::optional<float> g_tryTurn;
-const void *g_ownSunLogged = nullptr; // the pair last logged as taking its area's own sun
 std::optional<float> g_tryHeight;
 
 Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float night, float fill, float haze)
@@ -916,7 +915,8 @@ void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &
             LevelLight of;
             const std::wstring &latitudeOf = cycled.latitudeOf.empty() ? level : cycled.latitudeOf;
             const dao::core::Sunlight &by =
-                latitudeOf == level || !ReadArl(folderOf(latitudeOf) / (latitudeOf + L".arl"), of) ? pair->day.sun : of.sun;
+                latitudeOf == level || !ReadArl(folderOf(latitudeOf) / (latitudeOf + L".arl"), of) ? pair->day.sun
+                                                                                                   : of.sun;
             pair->latitude = cycled.latitude ? *cycled.latitude * kDegree
                                              : (std::numbers::pi_v<float> / 2) -
                                                    Height({-by.direction[0], -by.direction[1], -by.direction[2]});
@@ -987,7 +987,7 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
         const std::scoped_lock lock(g_lock);
         for (const auto &[tag, each] : g_pairs)
         {
-            if (tag == Lower(std::wstring(area)))
+            if (tag == Lower(std::wstring(area)) && Same(each->day.sun, ownSun))
             {
                 pair = each;
                 break;
@@ -1008,27 +1008,11 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
     }
     Pair tried;
     const Pair *lit = pair.get();
-    // An area may give itself a sun of its own over its level's: Awakening's
-    // Vigil's Keep by day (vgk101ar_exterior on vgk101d) does, and the clock,
-    // waiting for the level's own, never ran there (2026-10-24). The day's
-    // sun is then the area's.
-    if (!Same(pair->day.sun, ownSun))
-    {
-        tried = *pair;
-        tried.day.sun = ownSun;
-        lit = &tried;
-        if (g_ownSunLogged != pair.get())
-        {
-            g_ownSunLogged = pair.get();
-            spdlog::info("day and night: {} has a sun of its own, not its level's: the day's sun is the area's",
-                         std::filesystem::path(pair->area).string());
-        }
-    }
     if (g_tryTurn || g_tryHeight)
     {
-        tried = *lit;
-        tried.midnight = MidnightOf(pair->ownMoon, g_tryTurn.value_or(pair->moonTurn),
-                                    g_tryHeight ? g_tryHeight : pair->moonHeight);
+        tried = *pair;
+        tried.midnight =
+            MidnightOf(pair->ownMoon, g_tryTurn.value_or(pair->moonTurn), g_tryHeight ? g_tryHeight : pair->moonHeight);
         lit = &tried;
     }
     const Light light = LightAt(*lit, ownSky, g_hour, night, fill.value_or(pair->nightFill),
