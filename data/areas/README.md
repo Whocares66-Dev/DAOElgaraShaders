@@ -6,7 +6,7 @@ One file an area, named by its tag (`lot100ar_lothering.ini`), read as the plugi
 |---|---|
 | `level` | the area's level (its day level), as its `.are` names it |
 | `night` | the level its night is taken from: its moon, its sky and its sky's light |
-| `day` | in place of `night`, for an area whose own level is a night (made so, its bake the makers' night): the level its day is taken from, its sun, its sky and its sky's light; the area's own level is then its night, its moon the level's own sun. Not both `night` and `day` |
+| `day` | out of doors, in place of `night`, for an area whose own level is a night (made so, its bake the makers' night): the level its day is taken from, its sun, its sky and its sky's light; the area's own level is then its night, its moon the level's own sun. Not both `night` and `day` |
 | `latitude` | degrees, or a level: the latitude at which that level's sun is an equinox's noon (90 less its height) |
 | `moon_height` | degrees up at midnight, or `own` for the night level's own moon's; defaults.ini's 60 |
 | `moon_turn` | degrees about the upright from the night level's own moon; default 0 |
@@ -19,6 +19,7 @@ One file an area, named by its tag (`lot100ar_lothering.ini`), read as the plugi
 | `spray_moon` | how much of the moon's light the area's spray and mist (effects.ini's `lit`) take by night, 0 to 1, beside the night sky's: 0 for spray under trees, 1 for spray in the open moon |
 | `move_lamp` | `x y z > x y z`: a lamp named as a fire that the level puts at the first place (to a tenth of a metre) lit at the second, where its lantern or fire is; a flame there is then lit by the lamp alone. Several keys may start `move_lamp` |
 | `outside` | an interior's: the area out of doors (its file's name) whose clock and sky its windows see. Its own level is then lit by its makers' light, as at midnight, by the light out of doors at the hour over midnight's in each colour; it needs no `night` or `day` |
+| `day` | (an interior's) the level its makers lit by day whose rooms' fill is the colour its own fill takes by day; the sun's colour comes in by its windows alone |
 | `windows` | an interior's: the materials of its windows' models, each window a light of the hour aimed into the room |
 | `fill` | an interior's: how much of its makers' light it keeps (its bake, ambient colour, probes, layouts' lamps that are not fires, figures' fills and key light), 0 to 1; defaults.ini's 0.5 |
 | `window` | an interior's: the light of a square metre of window, a share of the light out of doors at the hour; defaults.ini's |

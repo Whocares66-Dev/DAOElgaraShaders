@@ -570,6 +570,9 @@ struct LevelFires
     std::vector<std::wstring> atFires;
     std::size_t glowing = 0;     // of `lights`, the glowing ground's (Glowing.h)
     std::vector<Window> windows; // an interior's (ReadWindows), lit by the hour (AddWindows)
+    // The flames the level's makers light already (MadeLit), each where it
+    // is lit: the engine's running effect there is given no light (AddFires).
+    std::vector<std::array<float, 3>> madeLit;
 };
 
 // The fire a room places within kAtFire of a lamp at `at`, or none where
@@ -613,6 +616,40 @@ void AddLight(std::vector<Light> &lights, const Light &light, bool flame)
     same->place[3] = flame ? std::hypot(same->place[3], light.place[3]) : std::max(same->place[3], light.place[3]);
 }
 
+// The level makers' fire-coloured lights, each its place and reach.
+using MadeLights = std::vector<std::array<float, 4>>;
+
+// The flames a level places within half the reach of a fire-coloured light
+// of its makers', where that light is at least half as strong as at its
+// place (the engine's fall-off, cos^2 of a quarter turn times the distance
+// over the reach), are lit by that light and given none of their own (effects.ini's
+// is for a flame whose light is in the bake alone, the user, 2026-10-25:
+// "We found that fire props in some other levels don't actually emit light,
+// their lighting is baked"). The Circle tower's floor lights its candles by
+// its makers' candle_001_RT, Cndl_RT and lamp_001_RT (3 to 16 m), and with a
+// light of each flame's own on top the wall over a table's candles at
+// midnight was 43.7, 20.2, 29.8 of 255 where vanilla's is 30.5, 10.9, 22.6
+// (the user: "Candles are too bright I think. Compare with the original").
+// Within the whole reach, Redcliffe castle's torch stands, in the reach of its
+// wall torches' lights (5 and 6 m), went unlit (4 of its 8 by the log, lak200d,
+// 2026-10-25). The rest are added
+// to `read`'s lights.
+void MadeLit(LevelFires &read, const std::vector<Light> &fires, const MadeLights &made)
+{
+    for (const Light &fire : fires)
+    {
+        const std::array<float, 3> at{fire.place[0], fire.place[1], fire.place[2]};
+        if (std::ranges::any_of(made, [&](const std::array<float, 4> &light) {
+                return Near(at, {light[0], light[1], light[2]}, light[3] / 2);
+            }))
+        {
+            read.madeLit.push_back(at);
+            continue;
+        }
+        AddLight(read.lights, fire, true);
+    }
+}
+
 // The lamps of every layout of a level that are fires' (named as fires, or
 // at a fire the room places), each fire with none lit as effects.ini says,
 // in the world.
@@ -628,6 +665,8 @@ LevelFires ReadLamps(const std::filesystem::path &levelRim)
     }
     const std::wstring name = Lower(levelRim.stem().wstring());
     levelfiles::Level level(levelRim.parent_path(), name, std::move(*rooms), nullptr, nullptr);
+    std::vector<Light> unlit; // the flames no lamp of the makers' at it lights
+    MadeLights made;
     for (const std::wstring &room : level.Rooms())
     {
         std::wstring layout = name;
@@ -639,7 +678,12 @@ LevelFires ReadLamps(const std::filesystem::path &levelRim)
         {
             const std::array<float, 3> at{lamp.at[0], lamp.at[1], lamp.at[2]};
             const bool named = daynight::FireLamp(layout, lamp.name);
-            const auto fire = FireAt(fires, at, named || daynight::FireColoured(lamp.colour));
+            const bool fiery = named || daynight::FireColoured(lamp.colour);
+            if (fiery && lamp.reach > 0)
+            {
+                made.push_back({at[0], at[1], at[2], lamp.reach});
+            }
+            const auto fire = FireAt(fires, at, fiery);
             if (lamp.reach <= 0 || (!named && fire == fires.end()))
             {
                 continue;
@@ -660,11 +704,9 @@ LevelFires ReadLamps(const std::filesystem::path &levelRim)
             AddLight(lamps, {{at[0], at[1], at[2], lamp.reach}, {lamp.colour[0], lamp.colour[1], lamp.colour[2], 1}},
                      false);
         }
-        for (const Light &fire : fires)
-        {
-            AddLight(lamps, fire, true);
-        }
+        unlit.insert(unlit.end(), fires.begin(), fires.end());
     }
+    MadeLit(read, unlit, made);
     // And the light of the ground that glows, lava's (Glowing.h).
     for (const glowing::Light &glow : glowing::LightsOf(level))
     {
@@ -680,9 +722,9 @@ void KeepLamps(const std::filesystem::path &levelRim, const std::wstring &level)
 {
     auto lamps = std::make_shared<const LevelFires>(ReadLamps(levelRim));
     spdlog::info("effects' lights: {} fires in {}'s layouts and rooms, {} of the layouts' lamps at a fire, "
-                 "{} of glowing ground, {} windows",
+                 "{} of glowing ground, {} windows, {} flames lit by the makers' lights",
                  lamps->lights.size(), std::filesystem::path(level).string(), lamps->atFires.size(), lamps->glowing,
-                 lamps->windows.size());
+                 lamps->windows.size(), lamps->madeLit.size());
     for (const Window &window : lamps->windows)
     {
         spdlog::info("effects' lights: a window at {:.1f} {:.1f} {:.1f} facing {:.2f} {:.2f} {:.2f}, {:.1f} square "
@@ -791,8 +833,19 @@ void AddFires(std::vector<Light> &lights, std::size_t engines)
         return;
     }
     const std::vector<daynight::LampMove> moves = daynight::LampMoves();
-    // The level's lamps and fires (AddLamps), after the engine's lights.
-    const std::vector<Light> levelLit(lights.begin() + static_cast<std::ptrdiff_t>(engines), lights.end());
+    // The level's lamps and fires (AddLamps), after the engine's lights, and
+    // the flames its makers light (MadeLit).
+    std::vector<Light> levelLit(lights.begin() + static_cast<std::ptrdiff_t>(engines), lights.end());
+    {
+        const std::scoped_lock lock(g_lampLock);
+        if (const auto found = g_levelLamps.find(g_lampLevel); found != g_levelLamps.end())
+        {
+            for (const std::array<float, 3> &at : found->second->madeLit)
+            {
+                levelLit.push_back({{at[0], at[1], at[2], 0}, {}});
+            }
+        }
+    }
     for (const dao::vfx::RunningEffect &effect : dao::vfx::RunningEffects())
     {
         if (effect.modelHasLight || !effect.position)

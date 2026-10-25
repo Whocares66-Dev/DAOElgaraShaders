@@ -77,15 +77,16 @@ struct Light
     std::array<float, 3> baked{1, 1, 1};
     std::array<float, 3> sunOverDay{1, 1, 1};
     Air air;
-    std::array<float, 3> disc{1, 1, 1}; // the sun's hue through the air, the moon's white
-    float nightShare = 0;               // how far the hour is from the day's bake to the night sky's light
-    std::array<float, 3> nightSky{};    // the night sky's light, as the lightmaps keep light (night_sky.hlsl)
-    std::array<float, 2> water{1, 1};   // water's light over the level's own, and its colour kept (Water)
-    std::array<float, 3> lit{1, 1, 1};  // the light on what is lit about, over the level's own (Lit)
-    float evenShare = 0;                // how far the bake gives way to the even light (EvenShare)
-    std::array<float, 3> even{};        // that light, as the lightmaps keep light (EvenLight)
-    std::array<float, 3> outdoor{};     // the sun's or the moon's light and the sky's together, out of doors
-    std::array<float, 3> window{};      // an interior's: its windows' light a square metre (WindowLight)
+    std::array<float, 3> disc{1, 1, 1};       // the sun's hue through the air, the moon's white
+    float nightShare = 0;                     // how far the hour is from the day's bake to the night sky's light
+    std::array<float, 3> nightSky{};          // the night sky's light, as the lightmaps keep light (night_sky.hlsl)
+    std::array<float, 2> water{1, 1};         // water's light over the level's own, and its colour kept (Water)
+    std::array<float, 3> lit{1, 1, 1};        // the light on what is lit about, over the level's own (Lit)
+    float evenShare = 0;                      // how far the bake gives way to the even light (EvenShare)
+    std::array<float, 3> even{};              // that light, as the lightmaps keep light (EvenLight)
+    std::array<float, 3> outdoor{};           // the sun's or the moon's light and the sky's together, out of doors
+    std::array<float, 3> window{};            // an interior's: its windows' light a square metre (WindowLight)
+    std::array<float, 4> bakeHue{1, 1, 1, 0}; // an interior's: its bake's hue, and how far each texel takes it
 };
 
 // Reads data/areas (a file for each area the clock runs in, from the plugin's
@@ -205,6 +206,14 @@ struct Windows
     float reach = 0;
 };
 Windows WindowLight();
+
+// An interior's bake's mean colour at a luminance of 1, and how far each
+// texel of its lightmaps takes that colour at its own luminance (night_sky.hlsl's
+// daoBakeHue): by day wholly, so that the daylight's colour (DayTint, by
+// Baked) lights a violet moonlit stone and an orange candle's pool alike
+// neutral; at night none. 0 where the clock is not running indoors. Any
+// thread.
+std::array<float, 4> BakeHue();
 
 // An interior's share of its makers' light, its windows' light and their
 // reach to try in place of its file's `fill`, `window` and `window_reach`

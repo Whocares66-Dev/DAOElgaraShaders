@@ -187,6 +187,7 @@ constexpr std::size_t kBakedLight = 8;
 // kReceiverRegister).
 constexpr UINT kDiscRegister = 214;
 constexpr UINT kNightSkyRegister = 215; // night_sky.hlsl's daoNightSky
+constexpr UINT kBakeHueRegister = 155;  // night_sky.hlsl's daoBakeHue
 // Water's light (water_light.hlsl's daoWaterLight), under the effects' lights':
 // the game's pixel shaders reach c55 at the most (their listings, 2026-10-22).
 constexpr UINT kWaterLightRegister = 159;
@@ -997,6 +998,9 @@ void HandFills(IDirect3DDevice9 *device)
         night = {daynight::EvenShare(), sky[0], sky[1], sky[2]};
     }
     device->SetPixelShaderConstantF(kNightSkyRegister, night.data(), 1);
+    // An interior's bake by day, in the frame's own picture alone.
+    const std::array<float, 4> hue = g_drawsPicture ? daynight::BakeHue() : std::array<float, 4>{1, 1, 1, 0};
+    device->SetPixelShaderConstantF(kBakeHueRegister, hue.data(), 1);
     // Water's on every target: no portrait or inventory scene has water.
     const std::array<float, 2> water = daynight::Water();
     const std::array<float, 4> waterLight{water[0], water[1], 0, 0};

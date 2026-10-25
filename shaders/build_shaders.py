@@ -2009,8 +2009,9 @@ def with_baked_light(shader):
     """The level's baked light by the hour, where the lightmap is read
     (night_sky.hlsl): the day's colour, times the hour's (look.hlsl's
     DAO_BAKED_LIGHT) as the sun goes, and toward the night sky's even light
-    by the night's share. Its alpha, which says where the sun reaches, is
-    kept. Run after with_shaped_bake, so that its line comes first after the
+    by the night's share; an interior's by day takes its bake's own mean hue
+    first (DaoBakeHued), which the hour's multiplier makes the daylight's.
+    Its alpha, which says where the sun reaches, is kept. Run after with_shaped_bake, so that its line comes first after the
     read and what the shaped bake keeps of the light (daoBaked) has it."""
     lightmap = shader.parameters["smpLightmap"]
     read = shader.find(rf"^texld\w* r\d+, .*, s{lightmap.base}$")
@@ -2018,7 +2019,8 @@ def with_baked_light(shader):
     shader.insert(
         read,
         [
-            f"{register}.xyz = lerp({register}.xyz * DAO_BAKED_LIGHT, daoNightSky.yzw, daoNightSky.x);"
+            f"{register}.xyz = lerp(DaoBakeHued({register}.xyz) * DAO_BAKED_LIGHT, daoNightSky.yzw,"
+            " daoNightSky.x);"
         ],
     )
 

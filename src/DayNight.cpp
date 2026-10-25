@@ -2,6 +2,7 @@
 
 #include "dao/Lights.h"
 #include "dao/Module.h"
+#include "dao/core/Dds.h"
 #include "dao/core/Erf.h"
 #include "dao/core/Gff4.h"
 #include "dao/generated/ScriptApi.h"
@@ -91,10 +92,13 @@ struct LevelLight
 // What an interior's file says of its own light (data/areas/README.md).
 struct IndoorLight
 {
-    float fill = 1;                    // how much of its makers' unmotivated light is kept (`fill`)
-    float window = 0;                  // the windows' light a square metre, a share of the outdoor light (`window`)
-    float windowReach = 0;             // metres (`window_reach`)
-    std::vector<std::wstring> windows; // the materials of its windows' models (`windows`)
+    float fill = 1;                        // how much of its makers' unmotivated light is kept (`fill`)
+    float window = 0;                      // the windows' light a square metre, a share of the outdoor light (`window`)
+    float windowReach = 0;                 // metres (`window_reach`)
+    std::vector<std::wstring> windows;     // the materials of its windows' models (`windows`)
+    std::wstring day;                      // the level whose fill is its daylight's colour (`day`)
+    std::array<float, 3> dayTint{1, 1, 1}; // its bake's mean times this is in that colour (DayTint)
+    std::array<float, 3> bakeHue{1, 1, 1}; // its bake's mean colour at a luminance of 1 (DayTint)
 };
 
 struct Pair
@@ -455,6 +459,12 @@ float NightColour()
     return std::clamp(g_tryColour.value_or(kNightColour), 0.0F, 1.0F);
 }
 
+// A colour's luminance.
+float Luminance(const std::array<float, 3> &colour)
+{
+    return (0.2126F * colour[0]) + (0.7152F * colour[1]) + (0.0722F * colour[2]);
+}
+
 // A colour with `kept` of its saturation: 0 its grey of the same luminance.
 std::array<float, 3> Paler(const std::array<float, 3> &colour, float kept)
 {
@@ -788,19 +798,20 @@ std::optional<float> g_tryReach;
 
 // An interior's light by the hour (its file's `outside`): its level is lit
 // by its makers as a night, and every light of theirs, its bake and ambient
-// colour, its probes, its layouts' lamps, its figures' fills and key light and
-// its fog, goes by the light out of doors at the hour (the outside's sun or
-// moon and its sky light) over midnight's, in each colour, and is kept to
-// `fill` of it: what no fitting or window of the room's own motivates (the
-// user, 2026-10-25: "We can try reducing fill light to different levels to
-// see what's an appropriate level of darkness. The fill light color probably
-// also needs to change between day and night"). The Circle's tower floors are
-// a night's bake (lak503d's lightmaps' mean 0.096, 0.105, 0.182 of white, as
-// stored); the mage origin's tower, lit by day, 0.289, 0.222, 0.149 (lak303d,
-// another floor, measured 2026-10-25), 3.0, 2.1 and 0.82 times, where the light
-// out of doors at noon over midnight's is about 2.5, 2.0 and 1.0 times. The
-// windows are lights of their own (WindowLight), and the beams of light their
-// makers placed (effects.ini's `lit`) go by the same light and are not fill.
+// colour, its probes, its layouts' lamps that are not a fitting's, its
+// figures' fills and key light and its fog, is kept to `fill` of it: what no
+// fitting or window of the room's own motivates (the user, 2026-10-25: "We can
+// try reducing fill light to different levels to see what's an appropriate
+// level of darkness. The fill light color probably also needs to change
+// between day and night"). It is as bright as the light out of doors at the
+// hour against midnight's, and by day of its daylight's colour (DayTint, its
+// file's `day`), going to it as the sky goes from night to day; the sun's
+// colour comes in by the windows alone (WindowLight), and the beams of light
+// its makers placed (effects.ini's `lit`) are the windows' and go by it. Taken
+// in the sun's colour, each channel by the light out of doors at noon over
+// midnight's (2.28, 1.63, 0.74), the violet bake (lak503d's lightmaps' mean
+// 0.096, 0.105, 0.182) went a red-brown at noon, read as firelight, not
+// daylight (2026-10-25).
 Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::Sunlight &ownSun,
                 const dao::core::Sky &ownSky, float hour, float night, float nightFill, float haze)
 {
@@ -812,14 +823,19 @@ Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::S
     light.sky = ownSky;
     light.outdoor = out.outdoor;
     const std::array<float *, 3> fog{&light.sky.fogRed, &light.sky.fogGreen, &light.sky.fogBlue};
+    const float brighter = Luminance(midnight.outdoor) > 0 ? Luminance(out.outdoor) / Luminance(midnight.outdoor) : 1;
+    const float day = 1 - out.nightShare;
+    light.bakeHue[3] = day;
     for (std::size_t i = 0; i < 3; ++i)
     {
         const float by = midnight.outdoor.at(i) > 0 ? out.outdoor.at(i) / midnight.outdoor.at(i) : 1;
-        light.sun.characterColor.at(i) *= fill * by;
-        light.baked.at(i) = fill * by;
-        light.sunOverDay.at(i) = fill * by;
-        *fog.at(i) *= fill * by;
+        const float kept = fill * brighter * std::lerp(1.0F, indoors.dayTint.at(i), day);
+        light.sun.characterColor.at(i) *= kept;
+        light.baked.at(i) = kept;
+        light.sunOverDay.at(i) = kept;
+        *fog.at(i) *= kept;
         light.lit.at(i) = by;
+        light.bakeHue.at(i) = indoors.bakeHue.at(i);
         light.window.at(i) = std::max(g_tryWindow.value_or(indoors.window), 0.0F) * out.outdoor.at(i);
     }
     // Said as the hour or the tuning moves it by more than a little.
@@ -828,9 +844,9 @@ Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::S
     {
         said = light.lit;
         spdlog::info("day and night: indoors at {:.2f}, the light out of doors {:.3f} {:.3f} {:.3f}, {:.2f} {:.2f} "
-                     "{:.2f} times midnight's; its makers' light kept at {:.2f}",
+                     "{:.2f} times midnight's; its makers' light kept at {:.3f} {:.3f} {:.3f}",
                      hour, out.outdoor[0], out.outdoor[1], out.outdoor[2], light.lit[0], light.lit[1], light.lit[2],
-                     fill);
+                     light.baked[0], light.baked[1], light.baked[2]);
     }
     return light;
 }
@@ -886,6 +902,8 @@ std::array<std::atomic<float>, 3> g_layoutLightsBy{1.0F, 1.0F, 1.0F};
 // An interior's windows' light (WindowLight).
 std::array<std::atomic<float>, 3> g_window{0.0F, 0.0F, 0.0F};
 std::atomic<float> g_windowReach{0};
+// An interior's bake's own hue and how much each texel takes it (BakeHue).
+std::array<std::atomic<float>, 4> g_bakeHue{1.0F, 1.0F, 1.0F, 0.0F};
 
 // The clock: the hour, and when it was last moved on.
 float g_hour = 12;
@@ -917,6 +935,7 @@ void Stopped()
         value.store(0, std::memory_order_relaxed);
     }
     g_windowReach.store(0, std::memory_order_relaxed);
+    g_bakeHue[3].store(0, std::memory_order_relaxed);
     const std::scoped_lock lock(g_lock);
     g_disc.reset();
     g_lampMoves.clear();
@@ -1050,6 +1069,7 @@ std::optional<Cycled> IndoorsOf(const std::string &tag, const Keys &keys, const 
     const std::optional<float> fill = Number(Said(keys, defaults, "fill").value_or(""));
     const std::optional<float> window = Number(Said(keys, defaults, "window").value_or(""));
     const std::optional<float> reach = Number(Said(keys, defaults, "window_reach").value_or(""));
+    indoors.day = Wide(Said(keys, defaults, "day").value_or(""));
     std::istringstream windows(Said(keys, defaults, "windows").value_or(""));
     for (std::string material; windows >> material;)
     {
@@ -1262,6 +1282,126 @@ std::shared_ptr<Pair> MakePair(const Cycled &cycled, const LevelLight &own, cons
     return pair;
 }
 
+// Each file of a level's folder's archives that `wanted` says, by its name in
+// lower case, handed to `take` until it answers true.
+void EachFile(const std::filesystem::path &folder, const std::function<bool(const std::wstring &)> &wanted,
+              const std::function<bool(const std::vector<std::byte> &)> &take)
+{
+    std::error_code error;
+    for (const std::filesystem::directory_entry &file : std::filesystem::directory_iterator(folder, error))
+    {
+        if (Lower(file.path().extension().wstring()) != L".rim")
+        {
+            continue;
+        }
+        const std::optional<dao::core::erf::Archive> archive = dao::core::erf::Archive::Open(file.path());
+        if (!archive || !archive->Readable())
+        {
+            continue;
+        }
+        for (const dao::core::erf::Entry &entry : archive->Entries())
+        {
+            if (!wanted(Lower(entry.name)))
+            {
+                continue;
+            }
+            if (const std::optional<std::vector<std::byte>> bytes = archive->Read(entry); bytes && take(*bytes))
+            {
+                return;
+            }
+        }
+    }
+}
+
+// The ambient light (a node `nalt`) of a level of rooms, its first room
+// layout's (<level>_<room>_ll.mmh, in its rooms' archives): the light its
+// makers filled its rooms with. The mage origin's tower, lit as a day
+// (lak303d), fills every room with 0.104, 0.112, 0.108, its GreyRT and GreyBK
+// lights alike gray (0.39, 0.42, 0.40); the Broken Circle's night floors with
+// 0.015, 0.045, 0.095 (read 2026-10-25).
+std::optional<std::array<float, 3>> RoomsAmbient(const std::filesystem::path &folder, const std::wstring &level)
+{
+    std::optional<std::array<float, 3>> ambient;
+    EachFile(
+        folder, [&](const std::wstring &name) { return name.starts_with(level + L"_") && name.ends_with(L"_ll.mmh"); },
+        [&](const std::vector<std::byte> &bytes) {
+            const std::optional<gff4::File> parsed = gff4::File::Parse(bytes);
+            if (const std::optional<gff4::Struct> root = parsed ? parsed->Root() : std::nullopt)
+            {
+                Under(*root, 0, ambient);
+            }
+            return ambient.has_value();
+        });
+    return ambient;
+}
+
+// The mean colour of a level's lightmaps (<level>_room*.dds, in its
+// archives) as stored, over the texels with any light, every fourth a side:
+// the colour of its makers' bake. lak503d's is 0.096, 0.105, 0.182 (measured
+// 2026-10-25), a violet.
+std::optional<std::array<float, 3>> BakeColour(const std::filesystem::path &folder, const std::wstring &level)
+{
+    std::array<double, 3> sum{};
+    std::size_t counted = 0;
+    EachFile(
+        folder, [&](const std::wstring &name) { return name.starts_with(level + L"_room") && name.ends_with(L".dds"); },
+        [&](const std::vector<std::byte> &bytes) {
+            const std::optional<dao::core::dds::Image> image = dao::core::dds::Decode(bytes);
+            constexpr std::size_t kEvery = 4;
+            for (std::size_t y = 0; image && y < image->height; y += kEvery)
+            {
+                for (std::size_t x = 0; x < image->width; x += kEvery)
+                {
+                    const std::uint8_t *pixel = &image->rgba[((y * image->width) + x) * 4];
+                    if (pixel[0] + pixel[1] + pixel[2] <= 3)
+                    {
+                        continue;
+                    }
+                    for (std::size_t c = 0; c < 3; ++c)
+                    {
+                        sum.at(c) += pixel[c] / 255.0;
+                    }
+                    ++counted;
+                }
+            }
+            return false;
+        });
+    if (counted == 0)
+    {
+        return std::nullopt;
+    }
+    const auto mean = [&](std::size_t c) { return static_cast<float>(sum.at(c) / static_cast<double>(counted)); };
+    return std::array<float, 3>{mean(0), mean(1), mean(2)};
+}
+
+// What an interior's bake is multiplied by, each colour, to be lit by day in
+// its daylight's colour (its file's `day`, a level its makers lit by day): the
+// day's fill's hue over the bake's own, at the same luminance. 1 where either
+// could not be read.
+void DayTint(IndoorLight &indoors, const std::filesystem::path &env, const std::wstring &own,
+             const std::function<std::filesystem::path(const std::wstring &)> &folderOf)
+{
+    const std::wstring &day = indoors.day;
+    const std::optional<std::array<float, 3>> daylight =
+        day.empty() ? std::nullopt : RoomsAmbient(folderOf(day) / day, day);
+    const std::optional<std::array<float, 3>> bake = BakeColour(env / own, own);
+    if (!daylight || !bake || Luminance(*daylight) <= 0 || Luminance(*bake) <= 0)
+    {
+        return;
+    }
+    std::array<float, 3> &tint = indoors.dayTint;
+    for (std::size_t c = 0; c < 3; ++c)
+    {
+        indoors.bakeHue.at(c) = bake->at(c) / Luminance(*bake);
+        tint.at(c) = bake->at(c) > 0 ? (daylight->at(c) / Luminance(*daylight)) / indoors.bakeHue.at(c) : 1;
+    }
+    spdlog::info("day and night: {}'s bake {:.3f} {:.3f} {:.3f} lit by day as {}'s fill {:.3f} {:.3f} {:.3f}: times "
+                 "{:.2f} {:.2f} {:.2f}",
+                 std::filesystem::path(own).string(), bake->at(0), bake->at(1), bake->at(2),
+                 std::filesystem::path(day).string(), daylight->at(0), daylight->at(1), daylight->at(2), tint[0],
+                 tint[1], tint[2]);
+}
+
 // The areas the clock runs in on a level, each out of doors, and each
 // interior with the area out of doors its windows look on. Under g_lock.
 void AreasOn(const std::wstring &level, std::vector<Cycled> &areas, std::vector<std::pair<Cycled, Cycled>> &interiors)
@@ -1362,6 +1502,10 @@ void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &
         pair->heldUntil = inside.heldUntil;
         pair->lampMoves = inside.lampMoves;
         pair->indoors = inside.indoors;
+        if (pair->indoors)
+        {
+            DayTint(*pair->indoors, env, level, folderOf);
+        }
         spdlog::info("day and night: {} indoors, its windows on {}'s sky, its makers' light kept at {:.2f}",
                      std::filesystem::path(inside.area).string(), std::filesystem::path(outside.area).string(),
                      inside.indoors.value_or(IndoorLight{}).fill);
@@ -1462,6 +1606,12 @@ std::vector<std::wstring> WindowMaterials(std::wstring_view level)
         }
     }
     return materials;
+}
+
+std::array<float, 4> BakeHue()
+{
+    return {g_bakeHue[0].load(std::memory_order_relaxed), g_bakeHue[1].load(std::memory_order_relaxed),
+            g_bakeHue[2].load(std::memory_order_relaxed), g_bakeHue[3].load(std::memory_order_relaxed)};
 }
 
 Windows WindowLight()
@@ -1614,6 +1764,10 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
     for (std::size_t i = 0; i < g_window.size(); ++i)
     {
         g_window.at(i).store(light.window.at(i), std::memory_order_relaxed);
+    }
+    for (std::size_t i = 0; i < g_bakeHue.size(); ++i)
+    {
+        g_bakeHue.at(i).store(light.bakeHue.at(i), std::memory_order_relaxed);
     }
     g_windowReach.store(pair->indoors ? std::max(g_tryReach.value_or(pair->indoors->windowReach), 0.0F) : 0.0F,
                         std::memory_order_relaxed);
