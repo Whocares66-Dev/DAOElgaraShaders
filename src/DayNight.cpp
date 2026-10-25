@@ -4,6 +4,7 @@
 #include "dao/Module.h"
 #include "dao/core/Erf.h"
 #include "dao/core/Gff4.h"
+#include "dao/generated/ScriptApi.h"
 
 #include <spdlog/spdlog.h>
 
@@ -105,6 +106,10 @@ struct Pair
     float nightHaze = 0;             // how much of the area's own haze its night's sky has (its area's file)
     float sprayMoon = 0;             // how much of the moon's light its spray and mist take (its area's file)
     std::vector<LampMove> lampMoves; // its file's `move_lamp`s
+    std::optional<float> heldHour;   // the hour its light is held at (its file's `hour`), none for the clock's
+    bool heldOwn = false;            // held at the level's own hour (its file's `hour = own`)
+    float ownHour = 0;               // the hour the level's own sun stands where it is
+    std::vector<std::pair<std::wstring, std::int32_t>> heldUntil; // plots' flags any of which lets the clock run
 };
 
 std::wstring Lower(std::wstring text)
@@ -405,6 +410,9 @@ struct Cycled
     float nightHaze = 0;
     float sprayMoon = 0;
     std::vector<LampMove> lampMoves;
+    std::optional<float> heldHour; // the hour its light is held at (its file's `hour`), none for the clock's
+    bool heldOwn = false;          // held at the level's own hour (its file's `hour = own`)
+    std::vector<std::pair<std::wstring, std::int32_t>> heldUntil; // plots' flags any of which lets the clock run
 };
 // The sun's and the moon's radius as seen, radians: a body is gone when its
 // disc is.
@@ -949,6 +957,31 @@ std::optional<Cycled> AreaOf(const std::string &tag, const Keys &keys, const Key
     const std::string moonHeight = said("moon_height").value_or("own");
     area.moonHeight = moonHeight == "own" ? std::nullopt : Number(moonHeight);
     area.moonTurn = Number(said("moon_turn").value_or("")).value_or(0);
+    // `hour`: the hour the area's light is held at, the story's (Soldier's
+    // Peak's night before its quest is done, the user, 2026-10-25: "before you
+    // beat the quest and claim the keep for your own, it should be night. After
+    // that it can cycle normally"); `hour_until`: a plot and its flag, the
+    // party's, after which the clock runs there.
+    // `hour = own`: the level's own hour, its makers' light (Redcliffe's day
+    // before the night's siege). `hour_until`: `<plot> <flag>`, several by
+    // commas, any of which lets the clock run.
+    const std::string hour = keys.contains("hour") ? keys.at("hour") : "";
+    area.heldOwn = hour == "own";
+    area.heldHour = area.heldOwn ? std::optional<float>(0.0F) : Number(hour);
+    if (keys.contains("hour_until"))
+    {
+        std::istringstream all(keys.at("hour_until"));
+        for (std::string one; std::getline(all, one, ',');)
+        {
+            std::istringstream until(one);
+            std::string plot;
+            std::int32_t flag = -1;
+            if (until >> plot >> flag && flag >= 0)
+            {
+                area.heldUntil.emplace_back(wide(plot), flag);
+            }
+        }
+    }
     const std::string latitude = said("latitude").value_or("");
     area.latitude = Number(latitude);
     if (!area.latitude)
@@ -1104,6 +1137,9 @@ void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &
         pair->nightHaze = cycled.nightHaze;
         pair->sprayMoon = cycled.sprayMoon;
         pair->lampMoves = cycled.lampMoves;
+        pair->heldHour = cycled.heldHour;
+        pair->heldOwn = cycled.heldOwn;
+        pair->heldUntil = cycled.heldUntil;
         pair->ownMoon = {-pair->night.sun.direction[0], -pair->night.sun.direction[1], -pair->night.sun.direction[2]};
         pair->moonHeight = cycled.moonHeight;
         pair->moonTurn = cycled.moonTurn;
@@ -1122,6 +1158,7 @@ void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &
             const Vec3 levelSun{-pair->day.sun.direction[0], -pair->day.sun.direction[1], -pair->day.sun.direction[2]};
             const float at =
                 pair->noon + (SunPathThrough(levelSun, pair->latitude, pair->declination).second / (15 * kDegree));
+            pair->ownHour = at;
             spdlog::info("day and night: {}'s level's sun is the season's at {:02d}:{:02d}, at {:.1f} degrees' "
                          "latitude",
                          std::filesystem::path(cycled.area).string(), static_cast<int>(at),
@@ -1233,6 +1270,49 @@ void TryMoon(std::optional<float> turn, std::optional<float> height)
     g_tryHeight = height;
 }
 
+namespace
+{
+
+// The hour an area's light is held at, where its file holds it and the
+// party has not the flag that lets its clock run; none for the clock's. The
+// flag is asked of the scripts once a second. The game thread's.
+std::optional<float> HeldHour(const Pair &pair)
+{
+    if (!pair.heldHour)
+    {
+        return std::nullopt;
+    }
+    const float held = pair.heldOwn ? pair.ownHour : *pair.heldHour;
+    if (pair.heldUntil.empty())
+    {
+        return held;
+    }
+    static std::wstring asked; // the area last asked for
+    static bool set = false;
+    static std::chrono::steady_clock::time_point at;
+    const auto now = std::chrono::steady_clock::now();
+    if (asked != pair.area || now - at > std::chrono::seconds(1))
+    {
+        namespace api = dao::script::api;
+        const bool was = set && asked == pair.area;
+        const dao::ObjectId party = api::GetParty(api::GetHero());
+        set = std::ranges::any_of(pair.heldUntil, [&](const auto &until) {
+            const std::wstring guid = api::GetPlotGUID(until.first);
+            return !guid.empty() && api::GetPartyPlotFlag(party, guid, until.second) != 0;
+        });
+        if (set != was || asked != pair.area)
+        {
+            spdlog::info("day and night: {}'s light {}", std::filesystem::path(pair.area).string(),
+                         set ? "goes with the clock, its plot's flag set" : "held, no flag of its plots set");
+        }
+        asked = pair.area;
+        at = now;
+    }
+    return set ? std::nullopt : std::optional(held);
+}
+
+} // namespace
+
 std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownSun, const dao::core::Sky &ownSky,
                          bool running, float dayMinutes, float night, std::optional<float> fill,
                          std::optional<float> haze)
@@ -1270,7 +1350,7 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
             MidnightOf(pair->ownMoon, g_tryTurn.value_or(pair->moonTurn), g_tryHeight ? g_tryHeight : pair->moonHeight);
         lit = &tried;
     }
-    const Light light = LightAt(*lit, ownSky, g_hour, night, fill.value_or(pair->nightFill),
+    const Light light = LightAt(*lit, ownSky, HeldHour(*pair).value_or(g_hour), night, fill.value_or(pair->nightFill),
                                 std::clamp(haze.value_or(pair->nightHaze), 0.0F, 1.0F));
     for (std::size_t i = 0; i < 3; ++i)
     {
