@@ -440,11 +440,6 @@ bool g_passLastFrame = false;
 // smpShadowPart1), which is given the atlas.
 std::unordered_map<IDirect3DPixelShader9 *, DWORD> g_receivers;
 std::unordered_map<IDirect3DPixelShader9 *, DWORD> g_receiversFar; // the engine's far map's sampler: the old aim's
-// The passes that read the maps for the air (haze_pass.hlsl's smpDaoSunMaps),
-// by the sampler they read them on; and whether the receivers' registers
-// were set for one, to be set back after its draw.
-std::unordered_map<IDirect3DPixelShader9 *, DWORD> g_air;
-bool g_airSet = false;
 
 // What a receiver's draw had on the sampler it is given the atlas on, given
 // back when the draw is done (Drawn). The engine keeps the sampler states it
@@ -1611,30 +1606,6 @@ void UseSamplerState(SetSamplerStateFn set)
     g_setSampler = set;
 }
 
-void Air(IDirect3DDevice9 *device)
-{
-    IDirect3DPixelShader9 *pixel = nullptr;
-    device->GetPixelShader(&pixel);
-    if (pixel == nullptr)
-    {
-        return;
-    }
-    pixel->Release();
-    const auto air = g_air.find(pixel);
-    if (air == g_air.end())
-    {
-        return;
-    }
-    // The pass is drawn after the picture, into a target of the chain's, but
-    // reads the maps the picture was drawn with.
-    g_airSet = true;
-    SetReceiversFor(device, true);
-    if (g_atlasReady)
-    {
-        Lend(device, air->second);
-    }
-}
-
 // What was lent a draw given back.
 static void GiveBack(IDirect3DDevice9 *device, Lent &lent)
 {
@@ -1656,11 +1627,6 @@ static void GiveBack(IDirect3DDevice9 *device, Lent &lent)
 
 void Drawn(IDirect3DDevice9 *device)
 {
-    if (g_airSet)
-    {
-        g_airSet = false;
-        SetReceivers(device);
-    }
     GiveBack(device, g_lent);
     GiveBack(device, g_lentEffects);
     GiveBack(device, g_lentOld);
@@ -2771,15 +2737,10 @@ void CreatedPixel(const DWORD *code, IDirect3DPixelShader9 *shader)
     }
     g_receivers.erase(shader); // the last made here's alone (Created)
     g_receiversFar.erase(shader);
-    g_air.erase(shader);
     g_effectReceivers.erase(shader);
     if (const std::optional<UINT> sampler = RegisterOf(CodeOf(code), "smpDaoEffectShadows"))
     {
         g_effectReceivers[shader] = *sampler;
-    }
-    if (const std::optional<UINT> sampler = RegisterOf(CodeOf(code), "smpDaoSunMaps"))
-    {
-        g_air[shader] = *sampler;
     }
     // The near map's name: the Character material's, or the Face's and the
     // HairAlpha's own (build_shaders.py's SHADOW_MAPS). Until 2026-10-16 only

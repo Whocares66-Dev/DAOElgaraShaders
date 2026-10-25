@@ -1689,48 +1689,10 @@ LOOK = [
     ("DaoLift", "grade", 0.0, 0, 1),
     # The picture's width and height on a plane one unit before the eye
     # (Graphics.cpp's KeepLens), each frame.
-    ("DaoLensX", "occlusion+haze", 1.0, 0, 64),
-    ("DaoLensY", "occlusion+haze", 1.0, 0, 64),
+    ("DaoLensX", "occlusion", 1.0, 0, 64),
+    ("DaoLensY", "occlusion", 1.0, 0, 64),
     ("DaoOcclusion", "occlusion", 1.0, 0, 6),
     ("DaoOcclusionRadius", "occlusion", 0.7, 0.1, 3),
-    # The air's light (haze_pass.hlsl), from the area's sun, sky and fog
-    # and the camera's way (Outdoors.cpp).
-    ("DaoHaze", "haze", 0.0, 0, 1),
-    ("DaoFogR", "haze", 0.0, 0, 16),
-    ("DaoFogG", "haze", 0.0, 0, 16),
-    ("DaoFogB", "haze", 0.0, 0, 16),
-    ("DaoSunX", "haze", 0.0, -1, 1),
-    ("DaoSunY", "haze", 0.0, -1, 1),
-    ("DaoSunZ", "haze", 0.0, -1, 1),
-    ("DaoAirR", "haze", 0.0, 0, 16),
-    ("DaoAirG", "haze", 0.0, 0, 16),
-    ("DaoAirB", "haze", 0.0, 0, 16),
-    ("DaoSunR", "haze", 0.0, 0, 16),
-    ("DaoSunG", "haze", 0.0, 0, 16),
-    ("DaoSunB", "haze", 0.0, 0, 16),
-    ("DaoHazeG", "haze", 0.7, -1, 1),
-    # The fog's intensity (the area's fog_intensity: the engine keeps
-    # exp(-(intensity d)^2) of a surface's light at d metres), and the
-    # camera's place and axes in the world, for the sun's shadows in the
-    # air (haze_pass.hlsl's DaoSunInAir).
-    ("DaoFogIntensity", "haze", 0.0, 0, 1),
-    # The most of a surface's light the fog takes (the area's fog_cap), and the
-    # fog's zenith, in degrees: the sky fogs itself less as it rises.
-    ("DaoFogCap", "haze", 1.0, 0, 1),
-    ("DaoFogZenith", "haze", 45.0, 0, 90),
-    ("DaoEyeX", "haze", 0.0, -1000000, 1000000),
-    ("DaoEyeY", "haze", 0.0, -1000000, 1000000),
-    ("DaoEyeZ", "haze", 0.0, -1000000, 1000000),
-    ("DaoRightX", "haze", 1.0, -1, 1),
-    ("DaoRightY", "haze", 0.0, -1, 1),
-    ("DaoRightZ", "haze", 0.0, -1, 1),
-    ("DaoDownX", "haze", 0.0, -1, 1),
-    ("DaoDownY", "haze", 0.0, -1, 1),
-    ("DaoDownZ", "haze", -1.0, -1, 1),
-    ("DaoAheadX", "haze", 0.0, -1, 1),
-    ("DaoAheadY", "haze", 1.0, -1, 1),
-    ("DaoAheadZ", "haze", 0.0, -1, 1),
-    ("DaoHazeShow", "haze", 0.0, 0, 2),
 ]
 
 
@@ -1769,32 +1731,20 @@ CHAIN_RESOURCES = """
         <backbuffer id="SceneDepthTexture" index="1" />
         <runtime id="focalplane" value="scene_focalplane" />
         <target id="DaoDepthMetres" width="BACKBUFFER_WIDTH" height="BACKBUFFER_HEIGHT" format="R32F" shared="true"/>
-        <target id="DaoHazed" width="BACKBUFFER_WIDTH" height="BACKBUFFER_HEIGHT" format="A8R8G8B8" shared="true"/>
         <target id="DaoOcclusionA" width="BACKBUFFER_WIDTH" height="BACKBUFFER_HEIGHT" format="A8R8G8B8" shared="true"/>
         <target id="DaoOcclusionB" width="BACKBUFFER_WIDTH" height="BACKBUFFER_HEIGHT" format="A8R8G8B8" shared="true"/>
         <float id="DaoAcross" value="0.0" range="0.0 1.0" />
         <float id="DaoDown" value="1.0" range="0.0 1.0" />"""
 
-# The first two passes, before the anti-aliasing's: the depth in metres, and
-# the picture with the air's light (DaoHazed, which the anti-aliasing and the
-# grade read in place of the game's BackBufferCopy). A target the size of
-# the picture of eight bits is made 16 by the plugin as the game asks for it
-# (Graphics.cpp's CreateTexture), so the air's light keeps what is over white.
+# The first pass, before the anti-aliasing's: the depth in metres. The air's
+# light is laid on by each surface's own shader (haze.hlsl); the pass that took
+# the sun's shadows in the air away from the finished picture went on
+# 2026-10-25 (dev/NOTES.md).
 FIRST_FILTERS = """<filter id="Dao Depth" library="DAEffects" material="HSLMatrix">
                 SceneDepth  = SceneDepthTexture
                 fFocalPlane = focalplane
                 bind DaoDepthMetres at 0
                 run semantic DaoDepth
-            </filter>
-
-            <filter id="Dao Haze" library="DAEffects" material="HSLMatrix">
-                Input       = BackBufferCopy
-                Metres      = DaoDepthMetres
-                SceneDepth  = SceneDepthTexture
-                fFocalPlane = focalplane
-{haze_look}
-                bind DaoHazed at 0
-                run semantic DaoHaze
             </filter>
 
             """
@@ -1853,14 +1803,6 @@ DEPTH_PARAMETERS = [
 ]
 METRES_PARAMETER = '<Parameter Type="Texture" Name="Metres" SamplerName="smpDepth" />'
 SCENE_PARAMETER = '<Parameter Type="Texture" Name="Input" SamplerName="smpScene" />'
-# The air's light's pass reads the depth in metres unfiltered, at sampler 1,
-# and the game's distance target, for the fog each surface kept.
-HAZE_PARAMETERS = [
-    '<Parameter Type="Texture" Name="Input" SamplerName="smpScene" />',
-    '<Parameter Type="Texture" Name="Metres" SamplerName="smpMetres" />',
-    '<Parameter Type="Texture" Name="SceneDepth" SamplerName="smpDepth" />',
-    '<Parameter Type="Float" Name="fFocalPlane" Default="1000.0"/>',
-]
 OCCLUSION_PARAMETER = (
     '<Parameter Type="Texture" Name="Occlusion" SamplerName="smpOcclusion" />'
 )
@@ -1869,7 +1811,6 @@ OCCLUSION_PARAMETER = (
 # material asks for.
 OURS = [
     ("occlusion_depth.hlsl", "daodepth.psh.fxo"),
-    ("haze_pass.hlsl", "daohaze.psh.fxo"),
     ("occlusion.hlsl", "daoocclusion.psh.fxo"),
     ("occlusion_blur.hlsl", "daoocclusionblur.psh.fxo"),
     ("shadow_cast.hlsl", "daoshadow.psh.fxo"),
@@ -1903,7 +1844,7 @@ def with_our_passes(chain, material, antialias=True):
     reads = "Input       = BackBufferCopy"
     if reads not in chain:
         raise shader_hlsl.ShaderError(f"the game's file has no {reads!r}")
-    picture = smaa.PICTURE if antialias else "DaoHazed"
+    picture = smaa.PICTURE if antialias else "BackBufferCopy"
     chain = chain.replace(
         reads,
         f"Input       = {picture}\n                Occlusion   = DaoOcclusionA"
@@ -1920,12 +1861,8 @@ def with_our_passes(chain, material, antialias=True):
     chain = put(
         chain,
         '<filter id="HSL Filter"',
-        FIRST_FILTERS.replace("\n{haze_look}", look_settings("haze"))
-        + (
-            smaa.CHAIN_FILTERS.replace("Input   = BackBufferCopy", "Input   = DaoHazed")
-            if antialias
-            else ""
-        )
+        FIRST_FILTERS
+        + (smaa.CHAIN_FILTERS if antialias else "")
         + CHAIN_FILTERS.replace("\n{occlusion_look}", look_settings("occlusion")),
         before=True,
     )
@@ -1946,7 +1883,6 @@ def with_our_passes(chain, material, antialias=True):
     material = picture_parameter.join(pieces)
     semantics = (
         semantic("DaoDepth", DEPTH_PARAMETERS)
-        + semantic("DaoHaze", [*HAZE_PARAMETERS, *look_parameters("haze")])
         + semantic(
             "DaoOcclusion",
             [METRES_PARAMETER, SCENE_PARAMETER, *look_parameters("occlusion")],
@@ -2317,32 +2253,18 @@ def depth_vertex_instanced(shader):
     shader.add_output("depth", "float", "TEXCOORD0", "abs(o0.w)")
 
 
-def with_far_depth(shader):
-    """The depth pass's distance no more than 0.9 of the focal plane, as
-    with_far_distance writes it for far things where the picture's own pass
-    writes the distance. Where the game's anti-aliasing is on, the distance
-    is this pass's (a target of its own), and what lay past the focal plane,
-    the mountains behind Redcliffe's castle, was written 1, the sky's, and
-    the air's light's pass took it for sky."""
-    index = shader.find(r"^mul_sat r0\.x, r0\.x, v0\.x$")
-    shader.insert(index, ["r0.x = min(r0.x, 0.9);"])
-
-
 def depth_pixel_by_texture(shader):
     """Write no depth where the surface's texture is clear. The game's depth
     pass reads no texture, so a bush's or a fence's whole card is written, and
     the ambient occlusion shaded the card's outline on what stands behind it
     (seen in Redcliffe, 2026-10-11). The test is the one the picture's own
     pass is drawn with (DAMshPnch1S.sta: alpha over 127 of 255)."""
-    with_far_depth(shader)
     shader.add_input("uv", "float2", "TEXCOORD1")
     # Only by a texture whose alpha is coverage: a solid thing's texture may
     # hold none at all, and the mountains behind Redcliffe's castle
     # (vst_mount_d.dds, its alpha 0 throughout) were cut out of the pass
-    # whole, left the sky's distance, and the air's light's pass took them
-    # for sky: dark blue shapes in the haze toward a low sun where the game's
-    # anti-aliasing is on (the user, 2026-10-21). The smallest of the
-    # texture's pictures is its alpha's mean.
+    # whole and left the sky's distance (the user, 2026-10-21). The smallest
+    # of the texture's pictures is its alpha's mean.
     shader.insert(
         0,
         [
@@ -2546,7 +2468,8 @@ def keeps_fog(stem, listing):
 def fogs_unseen(stem, listing):
     """Whether a shader fogs what it draws and writes no distance beside it:
     the effects (vfx0, vfx0_atm, the chunky ones), hair, blended props
-    (propalpha1). The air's light's pass cannot see what these draw."""
+    (propalpha1). These have no distance of their own beside the picture and
+    fog toward the air's light along the pixel's ray (DaoRayFog)."""
     return (
         stem not in SKIES
         and not stem.endswith("toolset")
@@ -2662,36 +2585,6 @@ def with_surface_haze(shader):
         index,
         [f"oC0.xyz += DaoSurfaceHaze(input.pixel, {kept}, mml_vFogParams[0].xyz);"],
     )
-
-
-# The distance the sky writes beside the picture (sky.psh's oC1), as the
-# listing has the constant.
-SKY_DISTANCE = "0.344639987, 0.99609375, 0.996084154"
-
-
-def writes_sky_distance(stem, listing):
-    """Whether a shader that is not the sky's fogs and writes the sky's
-    distance: the forms of things drawn far off (vista3, bakedlowlod,
-    terrain3, static3_alpha, prop2, cloth2, weapon2: read 2026-10-16)."""
-    return (
-        stem not in SKIES
-        and SKY_DISTANCE in listing
-        and "mml_vFogParams" in listing
-        and "ps_3_0" in listing
-    )
-
-
-def with_far_distance(shader):
-    """A far thing's distance written as 0.9 of the focal plane, not the
-    sky's. The forms of things drawn far off write the very constant the sky
-    does (Redcliffe's castle is a vista and its cliff a low form), so the
-    air's light's pass took them for sky and gave them none of it: with the
-    area's fog colour black they were black shapes. Fogged to the cap by
-    their own vertex shaders, as anything that far is, they are given the
-    air's light as any surface is. The game's depth of field reads them as
-    just as far."""
-    index = shader.find(r"^mov oC1, c\d+$")
-    shader.replace(index, index, ["oC1 = float4(0, 0, 0.9, 1);"])
 
 
 # The bloom's first pass, which picks out what is bright in the picture (the
@@ -2974,12 +2867,6 @@ def changes_for(stem, listing, show):
     if stem in SKIES:
         changes += [with_lit_sky_fog, with_one_disc]
         preamble += ours("look.hlsl") + ours("haze.hlsl") + DISC
-    if writes_sky_distance(stem, listing):
-        changes.append(with_far_distance)
-    # The depth pass of vista and terrain, the game's own (vista.mat.xml,
-    # terrain.mat.xml); static's and prop's are daostatic_depth (DEPTH_PIXEL).
-    if stem == "static_depth":
-        changes.append(with_far_depth)
     if stem in BLOOM_MASKS:
         changes.append(with_bounded_bloom)
         # A shader of model 2, which reaches no register of look.hlsl's: the
@@ -3033,8 +2920,9 @@ def changes_for(stem, listing, show):
     if glows(listing):
         changes.append(with_glow)
         preamble += ours("glow.hlsl")
-    # The fog kept for the air's light's pass, after all else: it is found by
-    # the game's own last statement, which no other change rewrites.
+    # Each fogged surface fogs itself toward the air's light, after all
+    # else: it is found by the game's own last statement, which no other
+    # change rewrites.
     if keeps_fog(stem, listing) or fogs_unseen(stem, listing):
         changes.append(
             with_surface_haze if keeps_fog(stem, listing) else with_ray_haze_fog

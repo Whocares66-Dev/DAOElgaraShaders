@@ -72,12 +72,7 @@ void Drawing(IDirect3DDevice9 *device, bool picture, D3DPRIMITIVETYPE type, INT 
 // were aimed anew (the user: "trees pulsate b/t light / dark").
 void DrawingPlain(IDirect3DDevice9 *device, bool picture);
 
-// A draw not of the scene about to be made (the colour grade's chain): a pass
-// that reads the maps for the air (haze_pass.hlsl) is lent them and their
-// registers, as they were for the frame's picture.
-void Air(IDirect3DDevice9 *device);
-// The draw Drawing or Air was told of made: what it lent the draw is given
-// back.
+// The draw Drawing was told of made: what it lent the draw is given back.
 void Drawn(IDirect3DDevice9 *device);
 
 // The device's first target about to change: where the level is drawn into a

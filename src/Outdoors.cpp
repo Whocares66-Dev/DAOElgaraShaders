@@ -57,11 +57,6 @@ float Dot(const Vec3 &a, const Vec3 &b)
     return (a[0] * b[0]) + (a[1] * b[1]) + (a[2] * b[2]);
 }
 
-Vec3 Times(const Mat3 &m, const Vec3 &v)
-{
-    return {Dot(m[0], v), Dot(m[1], v), Dot(m[2], v)};
-}
-
 std::string_view Trimmed(std::string_view text)
 {
     constexpr std::string_view kSpace = " \t\r";
@@ -434,14 +429,6 @@ void KeepSun()
     }
 }
 
-void Set(std::wstring_view name, float value)
-{
-    if (const std::optional<float> has = dao::framebuffer::Value(kChain, name); has && std::abs(*has - value) > 1e-6F)
-    {
-        dao::framebuffer::SetValue(kChain, name, value);
-    }
-}
-
 // The camera's turn: the matrix that takes a way in the world into the
 // camera's axes (x right, y down the picture, z ahead). Nothing of the
 // camera is read but where it is: points far off along twenty-six ways are
@@ -540,19 +527,16 @@ std::optional<Mat3> CameraTurn(const dao::Vector &eye, float width, float height
     return Nearest(sum);
 }
 
-// Hands the grade what the air's light is reckoned by (grade.hlsl's
-// DaoHaze), each frame: the camera's way moves the sun about the picture.
+// Hands the surfaces' shaders the view they reckon the air's light along
+// (HazeView), each frame: the camera's way moves the sun about the picture.
 void KeepHaze()
 {
-    const bool hazed = g_haze.on;
-    Set(L"DaoHaze", hazed ? 1.0F : 0.0F);
     g_hazeView = {};
-    if (!hazed)
+    if (!g_haze.on)
     {
         return;
     }
     const std::optional<dao::atmosphere::Sunlight> sun = BaseSunlight();
-    const std::optional<dao::atmosphere::Sky> sky = BaseSky();
     const std::optional<dao::world::ViewSize> size = dao::world::ScreenSize();
     const std::optional<float> lens = dao::framebuffer::Value(kChain, L"DaoLensX");
     const dao::CClientExoApp *app = dao::CClientExoApp::Get();
@@ -568,7 +552,7 @@ void KeepHaze()
     {
         levelshadows::Focus(std::nullopt);
     }
-    if (!sun || !sky || !size || !lens || *lens <= 0 || camera == nullptr || size->width <= 0)
+    if (!sun || !size || !lens || *lens <= 0 || camera == nullptr || size->width <= 0)
     {
         return;
     }
@@ -579,25 +563,6 @@ void KeepHaze()
     {
         return;
     }
-    const Vec3 toSun = Times(*turn, {-sun->direction[0], -sun->direction[1], -sun->direction[2]});
-    Set(L"DaoSunX", toSun[0]);
-    Set(L"DaoSunY", toSun[1]);
-    Set(L"DaoSunZ", toSun[2]);
-    // The camera's place and its axes in the world (the turn's rows), for the
-    // sun's shadows in the air (haze_pass.hlsl's DaoSunInAir).
-    const dao::Vector eye = camera->Position();
-    Set(L"DaoEyeX", eye.x);
-    Set(L"DaoEyeY", eye.y);
-    Set(L"DaoEyeZ", eye.z);
-    Set(L"DaoRightX", (*turn)[0][0]);
-    Set(L"DaoRightY", (*turn)[0][1]);
-    Set(L"DaoRightZ", (*turn)[0][2]);
-    Set(L"DaoDownX", (*turn)[1][0]);
-    Set(L"DaoDownY", (*turn)[1][1]);
-    Set(L"DaoDownZ", (*turn)[1][2]);
-    Set(L"DaoAheadX", (*turn)[2][0]);
-    Set(L"DaoAheadY", (*turn)[2][1]);
-    Set(L"DaoAheadZ", (*turn)[2][2]);
     const std::optional<float> lensY = dao::framebuffer::Value(kChain, L"DaoLensY");
     std::array<float, 20> view{};
     for (std::size_t axis = 0; axis < 3; ++axis)
@@ -614,29 +579,13 @@ void KeepHaze()
     view[13] = -sun->direction[1];
     view[14] = -sun->direction[2];
     view[15] = lensY.value_or(*lens * height / width);
-    const SkyHaze haze = g_haze;
-    // The colour the engine fogs surfaces towards, which the pass takes away
-    // again where it gives the air's light, and how fast it thickens.
+    // The sky's own fog, which bounds a surface's (haze.hlsl's DaoSkyFogAlong).
     if (const std::optional<dao::atmosphere::Sky> now = dao::atmosphere::CurrentSky())
     {
-        Set(L"DaoFogR", now->fogRed);
-        Set(L"DaoFogG", now->fogGreen);
-        Set(L"DaoFogB", now->fogBlue);
-        Set(L"DaoFogIntensity", now->fogIntensity);
-        Set(L"DaoFogCap", now->fogCap);
-        Set(L"DaoFogZenith", now->fogZenith);
         view[16] = now->fogCap;
         view[17] = now->fogZenith * std::numbers::pi_v<float> / 180;
         view[18] = now->fogIntensity;
     }
-    Set(L"DaoAirR", haze.air[0]);
-    Set(L"DaoAirG", haze.air[1]);
-    Set(L"DaoAirB", haze.air[2]);
-    Set(L"DaoSunR", haze.sun[0]);
-    Set(L"DaoSunG", haze.sun[1]);
-    Set(L"DaoSunB", haze.sun[2]);
-    Set(L"DaoHazeG", haze.g);
-    Set(L"DaoHazeShow", Tuned("HazeShow").value_or(0));
     view[19] = 1;
     g_hazeView = view;
 }

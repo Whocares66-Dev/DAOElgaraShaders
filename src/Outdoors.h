@@ -3,15 +3,14 @@
 // sky towards one colour an area gives, whichever way one looks; haze in
 // daylight is brighter and warmer towards the sun. This keeps the area's
 // colour and how much fog there is, and adds the sun's light in the air by
-// the way each pixel looks (shaders/haze.hlsl, haze_pass.hlsl): each frame it
-// hands the colour grade's chain the camera's way to the sun, and the
-// device's registers the air's light for the sky and the effects.
+// the way each pixel looks (shaders/haze.hlsl): each frame it hands the
+// device's registers the air's light and the view each surface, the sky and
+// the effects reckon it along.
 //
 // What each area has of its own is written to the log as the party comes
 // into it. A file beside the DLL, `outdoors.tune`, is a developer's: while the
 // game runs it is read again whenever it is saved, `name = value` a line:
-// `Haze = 0` for none,
-// `HazeShow = 1` for the fog as white air; `SunlitFigures` 0 or 1 in place
+// `Haze = 0` for none; `SunlitFigures` 0 or 1 in place
 // of the options screen's; `Fills`, how many times the area's own its fills
 // are on figures, out of doors, in place of Improved lighting's rule; `Sun` and `SunOnFigures`, how many
 // times the area's own the sun is on the ground and on figures; `sky.<a field
