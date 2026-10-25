@@ -215,13 +215,18 @@ bool g_sunlit = false; // out of doors with a sun on the ground (Sunlit)
 // makes mountains look too intense"; 2026-10-24: "The haze in general looks
 // screwed up").)
 // How the air's glow leans toward the sun, Henyey-Greenstein's g, one for
-// every area: at 0.3 the air toward the sun is 1.4 to 2.3 times its fog's
-// brightness in those four areas and 0.4 to 0.6 times away from it. The
-// game's fogs are thick (1/e at 60 to 130 m), and a haze that thick sends
-// light on more than once, which spreads its lobe; the areas' own hg is -0.5
-// in every area logged, and the engine's sky aims it behind the eye.
-// outdoors.tune's `HazeG` tries another.
-constexpr float kHazeG = 0.3F;
+// every area: at 0.5, at the level's own light, the air within a few degrees
+// of the sun is 4.1 to 5.0 times its fog's brightness in those four areas,
+// 1.6 to 1.7 times at 45 degrees from it, 0.6 to 0.7 across and 0.4 to 0.5
+// away; a low sun's glow is dimmer as the sun is. It is less than a hazy
+// air's own (0.7 to 0.8): the game's fogs are thick (1/e at 60 to 130 m), and
+// a haze that thick sends light on more than once, which spreads its lobe.
+// The areas' own hg is -0.5 in every area logged, and the engine's sky aims
+// it behind the eye. 0.3 for a day (2026-10-25) spread a dusk's glow too wide
+// to read: the farm's sky by the sun at 20:00 was 120, 114, 145 of 255, and
+// 196, 182, 177 at 0.5 (the user: "Let's try 0.5"). outdoors.tune's `HazeG`
+// tries another.
+constexpr float kHazeG = 0.5F;
 
 SkyHaze HazeOf(const dao::atmosphere::Sunlight &sun, const dao::atmosphere::Sky &sky, bool outdoors)
 {

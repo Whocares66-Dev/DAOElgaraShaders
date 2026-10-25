@@ -11,7 +11,7 @@
 // into it. A file beside the DLL, `outdoors.tune`, is a developer's: while the
 // game runs it is read again whenever it is saved, `name = value` a line:
 // `Haze = 0` for none; `HazeG`, how the air's glow leans toward the sun (0
-// to 0.95, 0.3 if not said); `SunlitFigures` 0 or 1 in place
+// to 0.95, 0.5 if not said); `SunlitFigures` 0 or 1 in place
 // of the options screen's; `Fills`, how many times the area's own its fills
 // are on figures, out of doors, in place of Improved lighting's rule; `Sun` and `SunOnFigures`, how many
 // times the area's own the sun is on the ground and on figures; `DawnHaze`

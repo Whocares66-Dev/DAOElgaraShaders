@@ -326,7 +326,13 @@ std::array<float, 3> Depth(const dao::core::Sky &sky)
 constexpr float kDawnHaze = 0.05F;
 // 0.25 at dusk until 2026-10-24, when 0.25 and 0.5 were seen at the farm and
 // in Redcliffe at 20:00 and 20:30 (the user: "0.5 is too red. Let's try 0.2").
-constexpr float kDuskHaze = 0.2F;
+// 0.2 until 2026-10-25: it left a sun 5 degrees up a quarter of its own
+// light (0.24, 0.18, 0.10), and the farm's air, whose blue is nearly all its
+// sky light's, went navy at 20:00 (its far mountains 43, 51, 118 of 255). At
+// 0.1 that sun keeps 0.46, 0.38, 0.26 of its light, its disc (1, 0.83, 0.58),
+// and the mountains are 81, 83, 132 (with the glow at 0.5, Outdoors.cpp's
+// kHazeG).
+constexpr float kDuskHaze = 0.1F;
 // outdoors.tune's DawnHaze and DuskHaze, a developer's, to try others live
 // (TryDayHaze). The game thread's.
 std::optional<float> g_tryDawnHaze;
