@@ -223,13 +223,17 @@ if(Python3_Interpreter_FOUND)
             "shaders/build_shaders.py inputs failed (${ELGARA_SHADER_INPUTS_RESULT})"
         )
     endif()
+    # The game's archives are read through DAOLib's dao_files (its one
+    # reader of them, issue 106 of DAOLib's), built first: in a consumer's
+    # tree it is built only for what names it.
     add_custom_command(
         OUTPUT "${CMAKE_BINARY_DIR}/shaders.stamp"
         COMMAND
+            "${CMAKE_COMMAND}" -E env "DAO_FILES=$<TARGET_FILE:dao_files>"
             ${ELGARA_SHADERS_RUN}
             "${CMAKE_BINARY_DIR}/daolib/plugins/elgarashaders/override"
         COMMAND "${CMAKE_COMMAND}" -E touch "${CMAKE_BINARY_DIR}/shaders.stamp"
-        DEPENDS ${ELGARA_SHADER_INPUTS} ${ELGARA_HLSL} ${ELGARA_SMAA}
+        DEPENDS ${ELGARA_SHADER_INPUTS} ${ELGARA_HLSL} ${ELGARA_SMAA} dao_files
         COMMENT "elgarashaders: the game's shaders, rebuilt"
         VERBATIM
     )

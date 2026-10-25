@@ -40,12 +40,15 @@ its first `texld <r>, v<N>, s0`, which becomes DaoPicture's reading of it,
 darkened by the ambient occlusion, and DaoGrade has the last word on what
 the shader writes.
 
-It needs the game (tools/script_commands.py's GAME, or DAO_GAME_DIR) and
-fxc.exe of the Windows SDK; without either it says so and writes nothing.
+It needs the game (tools/script_commands.py's GAME, or DAO_GAME_DIR), DAOLib's
+dao_files (DAO_FILES, which the build gives it) to read the game's archives,
+and fxc.exe of the Windows SDK; without the game or fxc it says so and writes
+nothing.
 """
 
 import collections
 import concurrent.futures
+import functools
 import ctypes
 import ctypes.wintypes
 import glob
@@ -56,7 +59,7 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# DAOLib's tools (script_commands.py: where the game is, and its archives):
+# DAOLib's tools (script_commands.py: where the game is):
 # where the build says, else the submodule, else the sibling checkout.
 for tools in (
     os.environ.get("DAOLIB_TOOLS", ""),
@@ -131,6 +134,36 @@ def find_fxc():
 
 # The game's archives the build reads, in packages/core/data.
 GAME_ARCHIVES = ("shaders.erf", "postprocesseffects.erf", "materials.erf", "states.erf")
+
+
+@functools.cache
+def archive_entries(path):
+    """{name: bytes} of an archive's files, as DAOLib's dao_files reads them
+    (DAO_FILES, the build's; DAOLib's one reader of the game's archives):
+    written into a folder of their own in the archive's order, each named on a
+    line of its own, then the count. Read once a build: the chain's and the
+    materials' archives are asked for more than once."""
+    tool = os.environ.get("DAO_FILES", "")
+    if not os.path.isfile(tool):
+        raise shader_hlsl.ShaderError(f"no dao_files (DAO_FILES: {tool!r})")
+    with tempfile.TemporaryDirectory() as folder:
+        done = subprocess.run(
+            [tool, "extract", path, folder], capture_output=True, text=True, check=False
+        )
+        if done.returncode != 0:
+            raise shader_hlsl.ShaderError(
+                f"dao_files extract {path}: {done.stderr.strip() or done.stdout.strip()}"
+            )
+        names = [
+            line
+            for line in done.stdout.splitlines()
+            if line and "\t" not in line and not line.endswith(" files written")
+        ]
+        entries = {}
+        for name in names:
+            with open(os.path.join(folder, name), "rb") as f:
+                entries[name] = f.read()
+        return entries
 
 
 def inputs():
@@ -3090,10 +3123,10 @@ def main(argv):
         ):
             os.remove(os.path.join(out, stale))
     chain, material = with_our_passes(
-        script_commands.erf_entries(os.path.join(data, "postprocesseffects.erf"))[
+        archive_entries(os.path.join(data, "postprocesseffects.erf"))[
             "da_hsvmatrix.ffx.xml"
         ].decode("utf-8-sig"),
-        script_commands.erf_entries(os.path.join(data, "materials.erf"))[
+        archive_entries(os.path.join(data, "materials.erf"))[
             "hslmatrix.mat.xml"
         ].decode("utf-8-sig"),
         antialias,
@@ -3101,12 +3134,12 @@ def main(argv):
     if antialias:
         smaa.write_files(out)
     bloom, bloom_material = with_bloom_switch(
-        script_commands.erf_entries(os.path.join(data, "postprocesseffects.erf"))[
+        archive_entries(os.path.join(data, "postprocesseffects.erf"))[
             "da_bloom.ffx.xml"
         ].decode("utf-8-sig"),
-        script_commands.erf_entries(os.path.join(data, "materials.erf"))[
-            "dabloom.mat.xml"
-        ].decode("utf-8-sig"),
+        archive_entries(os.path.join(data, "materials.erf"))["dabloom.mat.xml"].decode(
+            "utf-8-sig"
+        ),
     )
     for name, text in (
         ("da_hsvmatrix.ffx.xml", chain),
@@ -3117,8 +3150,8 @@ def main(argv):
         with open(os.path.join(out, name), "w", encoding="utf-8", newline="") as f:
             f.write(text)
 
-    materials = script_commands.erf_entries(os.path.join(data, "materials.erf"))
-    states = script_commands.erf_entries(os.path.join(data, "states.erf"))
+    materials = archive_entries(os.path.join(data, "materials.erf"))
+    states = archive_entries(os.path.join(data, "states.erf"))
     find_uses(materials, states)
     find_shadow_maps(materials)
     solid_states = {}
@@ -3176,7 +3209,7 @@ def main(argv):
 
     # The game's pixel shaders of shader model 3 (its sm2_ ones are for
     # hardware that has none), each built if this changes anything in it.
-    shaders = script_commands.erf_entries(archive)
+    shaders = archive_entries(archive)
     entries = {
         name: body
         for name, body in shaders.items()
