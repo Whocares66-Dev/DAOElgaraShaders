@@ -993,8 +993,8 @@ void HandFills(IDirect3DDevice9 *device)
     std::array<float, 4> night{};
     if (g_drawsPicture)
     {
-        const std::array<float, 3> sky = daynight::NightSky();
-        night = {daynight::NightShare(), sky[0], sky[1], sky[2]};
+        const std::array<float, 3> sky = daynight::EvenLight();
+        night = {daynight::EvenShare(), sky[0], sky[1], sky[2]};
     }
     device->SetPixelShaderConstantF(kNightSkyRegister, night.data(), 1);
     // Water's on every target: no portrait or inventory scene has water.

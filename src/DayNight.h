@@ -67,6 +67,8 @@ struct Light
     std::array<float, 3> nightSky{};    // the night sky's light, as the lightmaps keep light (night_sky.hlsl)
     std::array<float, 2> water{1, 1};   // water's light over the level's own, and its colour kept (Water)
     float lit = 1;                      // the light on what is lit about, over the level's own (Lit)
+    float evenShare = 0;                // how far the bake gives way to the even light (EvenShare)
+    std::array<float, 3> even{};        // that light, as the lightmaps keep light (EvenLight)
 };
 
 // Reads data/areas (a file for each area the clock runs in, from the plugin's
@@ -82,6 +84,18 @@ void Install();
 // the clock is not running. Any thread.
 float NightShare();
 std::array<float, 3> NightSky();
+
+// The bake's even light (night_sky.hlsl): how far the level's bake gives way
+// to it, the night's share where the level's own is the day, 1 where it is
+// the night (a borrowed day: its bake is the makers' night); and that light,
+// the hour's sky's as the lightmaps keep light. 0 where the clock is not
+// running. Any thread.
+float EvenShare();
+std::array<float, 3> EvenLight();
+
+// The day level's sky light, as its lightmaps keep light, as of the last Now.
+// Any thread.
+std::array<float, 3> DaySky();
 
 // Says a level was opened: `levelRim` its archive of rooms,
 // packages\core\env\<level>\<level>.rim. Reads the level's and its other's
@@ -119,9 +133,15 @@ struct LampMove
 // running. Any thread.
 std::vector<LampMove> LampMoves();
 
-// The night level a day level of the cycle takes its night from, or empty
-// where the clock does not run in it. Any thread.
-std::wstring NightLevel(std::wstring_view day);
+// What an area's own level borrows: the other level, and whether the own is
+// the night (a borrowed day) and not the day (a borrowed night); none where
+// the clock does not run in it. Any thread.
+struct Borrowed
+{
+    std::wstring other;
+    bool ownIsNight = false;
+};
+std::optional<Borrowed> BorrowedBy(std::wstring_view level);
 
 // Whether the clock runs in an area (its tag): it has a file in data/areas.
 // Any thread, once Install has run.

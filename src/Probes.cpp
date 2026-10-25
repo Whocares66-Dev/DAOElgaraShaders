@@ -330,7 +330,7 @@ void OnProbe(dao::lights::ProbeLight &probe)
                          same(probe.model.substr(probe.model.size() - kLayout.size()), kLayout)) ||
                         same(probe.model, kOutdoorRig);
     const std::array<float, 3> times = levels ? daynight::Baked() : std::array<float, 3>{1, 1, 1};
-    const float night = levels ? daynight::NightShare() : 0;
+    const float night = levels ? daynight::EvenShare() : 0;
     const std::scoped_lock lock(g_blendsLock);
     const auto found = g_blends.find(reinterpret_cast<void *>(probe.state));
     if (found != g_blends.end() && g_wanted.load(std::memory_order_relaxed))

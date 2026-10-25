@@ -118,13 +118,15 @@ std::optional<std::array<dds::Image, 6>> ReadCube(const std::wstring &level, con
     return faces;
 }
 
-// A borrowed night's cube: the day's own place, as the night lights it. The
+// A cube taken to another sky's light: a borrowed night's, the day's own
+// place as the night lights it, and a borrowed day's, the night's own place as
+// the day lights it. The
 // level's bake goes by night to the night sky's even light (night_sky.hlsl),
 // so what the cube sees is that light on what it sees: each channel of the
 // day's cube taken to the night sky's light over the cube's mean. Another
 // level's night cube is another place: Redcliffe's village's in the castle's
 // puddles, and in Denerim's or Lothering's (issue 37).
-std::array<dds::Image, 6> AtNight(std::array<dds::Image, 6> faces, const std::array<float, 3> &nightSky)
+std::array<dds::Image, 6> AtLight(std::array<dds::Image, 6> faces, const std::array<float, 3> &nightSky)
 {
     std::array<double, 3> sum{};
     std::size_t texels = 0;
@@ -161,26 +163,35 @@ std::array<dds::Image, 6> AtNight(std::array<dds::Image, 6> faces, const std::ar
 
 // The two cubes, read where they have not been; then the night's `share` of
 // the night's, each face encoded as the engine's is. `nightSky` is the night
-// sky's light (daynight::NightSky), for a borrowed night's cube.
+// sky's light (daynight::NightSky), for a borrowed night's cube; `daySky` the
+// day's (daynight::DaySky), for a borrowed day's.
 Made Make(std::shared_ptr<const Cubes> cubes, const std::wstring &level, const std::wstring &name, float share,
-          std::array<float, 3> nightSky)
+          std::array<float, 3> nightSky, std::array<float, 3> daySky)
 {
     Made made;
     if (!cubes)
     {
         // The night level's cube of the same probe where it is the day's own
         // night (lak100d's and lak100n's), else the day's own at night.
-        const std::wstring night = daynight::NightLevel(level);
+        const std::optional<daynight::Borrowed> borrowed = daynight::BorrowedBy(level);
+        const std::wstring night = borrowed && !borrowed->ownIsNight ? borrowed->other : std::wstring();
         const bool own = night == level.substr(0, level.size() - 1) + L"n";
         std::optional<std::array<dds::Image, 6>> day = ReadCube(level, name);
         std::optional<std::array<dds::Image, 6>> nightCube;
-        if (own)
+        if (borrowed && borrowed->ownIsNight && day)
+        {
+            // A borrowed day: the level's own cube is its night, and by day
+            // the same place as the day sky lights it.
+            nightCube = std::move(day);
+            day = AtLight(*nightCube, daySky);
+        }
+        else if (own)
         {
             nightCube = ReadCube(night, night + name.substr(level.size()));
         }
         else if (!night.empty() && day)
         {
-            nightCube = AtNight(*day, nightSky);
+            nightCube = AtLight(*day, nightSky);
         }
         if (!day || !nightCube)
         {
@@ -318,8 +329,8 @@ void Presented()
             continue;
         }
         kept->making = share;
-        kept->made =
-            std::async(std::launch::async, Make, kept->cubes, kept->level, kept->name, share, daynight::NightSky());
+        kept->made = std::async(std::launch::async, Make, kept->cubes, kept->level, kept->name, share,
+                                daynight::NightSky(), daynight::DaySky());
     }
 }
 
