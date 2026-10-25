@@ -369,8 +369,18 @@ constexpr float kOver = -2 * kDiscRadius;
 // How much of the night level's colour its moon and its sky's light keep: the
 // night level's moon is a deep blue (0.27, 0.41, 0.79), and the blue of a
 // night is the eye's, moonlight the sun's reflected (the user, 2026-10-21:
-// "light should be more of a pale blue white, not nearly so garish").
-constexpr float kNightColour = 0.35F;
+// "light should be more of a pale blue white, not nearly so garish"); 0.35
+// until 2026-10-24, when midnight at 0.35, 0.5 and 0.65 was seen in Redcliffe
+// village and the West Brecilian Forest (15, 16, 28 and 13, 27, 36 of 255 at
+// 0.5, about as bright, bluer) and the user chose 0.5: "0.5 is fine".
+constexpr float kNightColour = 0.5F;
+// outdoors.tune's NightColour, a developer's, to try another share live
+// (TryNightColour). The game thread's.
+std::optional<float> g_tryColour;
+float NightColour()
+{
+    return std::clamp(g_tryColour.value_or(kNightColour), 0.0F, 1.0F);
+}
 
 // A colour with `kept` of its saturation: 0 its grey of the same luminance.
 std::array<float, 3> Paler(const std::array<float, 3> &colour, float kept)
@@ -447,8 +457,8 @@ void HazeNight(dao::core::Sky &nightSky, const dao::core::Sky &daySky, const Pai
     const auto grey = [](const std::array<float, 4> &c) {
         return (0.2126F * c[0]) + (0.7152F * c[1]) + (0.0722F * c[2]);
     };
-    const std::array<float, 3> moonPaled =
-        Scaled(Paler({pair.night.sun.color[0], pair.night.sun.color[1], pair.night.sun.color[2]}, kNightColour), night);
+    const std::array<float, 3> moonPaled = Scaled(
+        Paler({pair.night.sun.color[0], pair.night.sun.color[1], pair.night.sun.color[2]}, NightColour()), night);
     const float daySun = grey(pair.day.sun.color);
     const float cloudBy = daySun > 0 ? grey({moonPaled[0], moonPaled[1], moonPaled[2], 1}) / daySun : 0;
     nightSky.cloudRed = std::lerp(nightSky.cloudRed, daySky.cloudRed * cloudBy, haze);
@@ -482,7 +492,7 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
     // is: its own deep blue was what a mist and a fall's spray fogged to,
     // and they went blue as they were dimmed (the user, 2026-10-22: "we
     // want it to be a less bright white, not blue").
-    const std::array<float, 3> fog = Paler({nightSky.fogRed, nightSky.fogGreen, nightSky.fogBlue}, kNightColour);
+    const std::array<float, 3> fog = Paler({nightSky.fogRed, nightSky.fogGreen, nightSky.fogBlue}, NightColour());
     nightSky.fogRed = fog[0];
     nightSky.fogGreen = fog[1];
     nightSky.fogBlue = fog[2];
@@ -508,7 +518,7 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
     // light, kept to `fill` of the night level's (the user, 2026-10-21: "fade
     // out the baked lighting and just strengthen the moonlight so it lights
     // things properly from its position").
-    light.nightSky = Scaled(Paler(pair.night.skyLight, kNightColour), fill);
+    light.nightSky = Scaled(Paler(pair.night.skyLight, NightColour()), fill);
 
     // The light through the air: the day's or the night's at its highest, less
     // what the longer way takes out, by the air of the sky of the hour.
@@ -524,7 +534,7 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
     // level's light is about half the day's (its lightmaps', 2026-10-21), a
     // night lit for play, and the user found it "too bright at midnight".
     const auto ofNight = [night](const std::array<float, 3> &colour) {
-        return Scaled(Paler(colour, kNightColour), night);
+        return Scaled(Paler(colour, NightColour()), night);
     };
     const std::array<float, 3> moon =
         ofNight({pair.night.sun.color[0], pair.night.sun.color[1], pair.night.sun.color[2]});
@@ -590,7 +600,7 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
     const float litBy = sunLights ? sun : sun * pair.sprayMoon;
     light.lit = ownLit > 0 ? (litBy + grey(sky[0], sky[1], sky[2])) / ownLit : 1;
     light.water = {skySun > 0 && daySun > 0 ? (sun / daySun) * (daySkySun / skySun) : 1,
-                   std::lerp(1.0F, kNightColour, light.nightShare)};
+                   std::lerp(1.0F, NightColour(), light.nightShare)};
     return light;
 }
 
@@ -970,6 +980,11 @@ std::wstring NightLevel(std::wstring_view day)
     const std::scoped_lock lock(g_lock);
     const auto cycled = std::ranges::find(g_cycled, day, &Cycled::day);
     return cycled != g_cycled.end() ? cycled->night : std::wstring();
+}
+
+void TryNightColour(std::optional<float> kept)
+{
+    g_tryColour = kept;
 }
 
 void TryMoon(std::optional<float> turn, std::optional<float> height)

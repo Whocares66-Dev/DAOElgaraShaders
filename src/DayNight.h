@@ -123,6 +123,20 @@ std::vector<LampMove> LampMoves();
 // where the clock does not run in it. Any thread.
 std::wstring NightLevel(std::wstring_view day);
 
+// Whether the clock runs in an area (its tag): it has a file in data/areas.
+// Any thread, once Install has run.
+bool Cycles(std::wstring_view area);
+
+// A moon to try in place of the area's file's (outdoors.tune's MoonTurn and
+// MoonHeight, a developer's): its turn and its height in degrees, none for the
+// file's. Call on the game's thread, before Now.
+void TryMoon(std::optional<float> turn, std::optional<float> height);
+
+// A share of the night level's colour for the night to keep in place of the
+// plugin's (outdoors.tune's NightColour, a developer's), none for the
+// plugin's. Call on the game's thread, before Now.
+void TryNightColour(std::optional<float> kept);
+
 // The light of the hour for the area as it is, or none where the clock does
 // not run in `area` (its tag) or `running` is false. The level is the one
 // whose sun is `ownSun`, the area's own; `ownSky` is the area's own sky, of
@@ -133,15 +147,6 @@ std::wstring NightLevel(std::wstring_view day);
 // `night_fill`); `haze`, where given, how much of the area's own haze its
 // night's sky has, in place of its file's `night_haze`. Call on the game's
 // thread.
-// A moon to try in place of the area's file's (outdoors.tune's MoonTurn and
-// MoonHeight, a developer's): its turn and its height in degrees, none for the
-// file's. Call on the game's thread, before Now.
-// Whether the clock runs in an area (its tag): it has a file in data/areas.
-// Any thread, once Install has run.
-bool Cycles(std::wstring_view area);
-
-void TryMoon(std::optional<float> turn, std::optional<float> height);
-
 std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownSun, const dao::core::Sky &ownSky,
                          bool running, float dayMinutes, float night, std::optional<float> fill,
                          std::optional<float> haze);
