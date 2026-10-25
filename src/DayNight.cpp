@@ -802,43 +802,52 @@ std::optional<float> g_tryReach;
 
 // An interior's light by the hour (its file's `outside`): its level is lit
 // by its makers as a night (the Broken Circle's tower floors) or as a day (the
-// mage origin's and Witch Hunt's tower, lak303d), and every light of theirs, its bake and ambient
-// colour, its probes, its layouts' lamps that are not a fitting's, its
-// figures' fills and key light and its fog, is kept to `fill` of it: what no
-// fitting or window of the room's own motivates (the user, 2026-10-25: "We can
-// try reducing fill light to different levels to see what's an appropriate
-// level of darkness. The fill light color probably also needs to change
-// between day and night"). It is as bright as the light out of doors at the
-// hour against the makers' own (midnight for a night's bake, the outside's
-// day level's hour for a day's), and of the other's colour (OtherTint, its
-// file's `day` or `night`) as the sky goes from the makers' to the other; the sun's
-// colour comes in by the windows alone (WindowLight), and the beams of light
-// its makers placed (effects.ini's `lit`) are the windows' and go by it. Taken
-// in the sun's colour, each channel by the light out of doors at noon over
-// midnight's (2.28, 1.63, 0.74), the violet bake (lak503d's lightmaps' mean
-// 0.096, 0.105, 0.182) went a red-brown at noon, read as firelight, not
-// daylight (2026-10-25).
+// mage origin's and Witch Hunt's tower, lak303d), and every light of theirs,
+// its bake and ambient colour, its probes, its layouts' lamps that are not a
+// fitting's, its figures' fills and key light and its fog, is whole by day in
+// the daylight's colour and kept to `fill` of it by night in the night's,
+// going between them as the light out of doors does; the candles and lamps
+// light the night. The colour at the makers' own end is their bake's as made,
+// at the other the other level's fill colour (OtherTint, its file's `day` or
+// `night`). The sun's or the moon's colour comes in by the windows alone
+// (WindowLight), and the beams of light its makers placed (effects.ini's
+// `lit`) are the windows' and go by the light out of doors against their
+// makers' hour's. `fill` was first the share kept at every hour, the makers'
+// own as bright as made and the other end by the light out of doors against
+// theirs: Witch Hunt's library was half its vanilla brightness at noon and
+// blue (the user, 2026-10-25: "Should be darker at night. Shouldn't be blue
+// during the day"). Taken in the sun's colour, each channel by the light out
+// of doors at noon over midnight's (2.28, 1.63, 0.74), the Broken Circle's
+// violet bake (lak503d's lightmaps' mean 0.096, 0.105, 0.182) went a
+// red-brown at noon, read as firelight, not daylight.
 Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::Sunlight &ownSun,
                 const dao::core::Sky &ownSky, float hour, float night, float nightFill, float haze)
 {
     const float fill = std::max(g_tryFill.value_or(indoors.fill), 0.0F);
     const Light out = LightAt(pair, ownSky, hour, night, nightFill, haze);
-    // The makers' own hour: midnight for a night's bake, the outside's day
-    // level's own hour for a day's.
+    // The makers' own hour, which their beams of light were made for:
+    // midnight for a night's bake, the outside's day level's own hour for a
+    // day's.
     const Light midnight = LightAt(pair, ownSky, indoors.ownIsNight ? 0 : pair.ownHour, night, nightFill, haze);
+    // How far the hour is from night to day, as the sky and the bake out of
+    // doors go (LightAt's: from the sun 12 degrees under to 6 up). By the
+    // light out of doors' brightness between midnight's and the day's it was
+    // night by 19:30, the sun 10 degrees up: the game's night is lit for play,
+    // 0.48 of white to the day's 0.78, and 19:30's 0.50 was 7 in 100 of the
+    // way (Witch Hunt's library blue, 29.9, 21.4, 43.3 of 255; 2026-10-25).
+    const float day = 1 - out.nightShare;
     Light light;
     light.sun = ownSun;
     light.sky = ownSky;
     light.outdoor = out.outdoor;
     const std::array<float *, 3> fog{&light.sky.fogRed, &light.sky.fogGreen, &light.sky.fogBlue};
-    const float brighter = Luminance(midnight.outdoor) > 0 ? Luminance(out.outdoor) / Luminance(midnight.outdoor) : 1;
-    // How far the hour is from the makers' own to the other of day and night.
-    const float day = indoors.ownIsNight ? 1 - out.nightShare : out.nightShare;
-    light.bakeHue[3] = day;
+    // How far the hour is from the makers' own end to the other.
+    const float other = indoors.ownIsNight ? day : 1 - day;
+    light.bakeHue[3] = other;
     for (std::size_t i = 0; i < 3; ++i)
     {
         const float by = midnight.outdoor.at(i) > 0 ? out.outdoor.at(i) / midnight.outdoor.at(i) : 1;
-        const float kept = fill * brighter * std::lerp(1.0F, indoors.otherTint.at(i), day);
+        const float kept = std::lerp(fill, 1.0F, day) * std::lerp(1.0F, indoors.otherTint.at(i), other);
         light.sun.characterColor.at(i) *= kept;
         light.baked.at(i) = kept;
         light.sunOverDay.at(i) = kept;
