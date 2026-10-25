@@ -136,6 +136,10 @@ std::wstring NightLevel(std::wstring_view day);
 // A moon to try in place of the area's file's (outdoors.tune's MoonTurn and
 // MoonHeight, a developer's): its turn and its height in degrees, none for the
 // file's. Call on the game's thread, before Now.
+// Whether the clock runs in an area (its tag): it has a file in data/areas.
+// Any thread, once Install has run.
+bool Cycles(std::wstring_view area);
+
 void TryMoon(std::optional<float> turn, std::optional<float> height);
 
 std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownSun, const dao::core::Sky &ownSky,

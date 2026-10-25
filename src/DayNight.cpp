@@ -958,6 +958,13 @@ float Hour()
     return g_hour;
 }
 
+bool Cycles(std::wstring_view area)
+{
+    const std::wstring tag = Lower(std::wstring(area));
+    const std::scoped_lock lock(g_lock);
+    return std::ranges::any_of(g_cycled, [&](const Cycled &cycled) { return Lower(cycled.area) == tag; });
+}
+
 std::wstring NightLevel(std::wstring_view day)
 {
     const std::scoped_lock lock(g_lock);

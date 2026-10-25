@@ -330,11 +330,33 @@ void KeepSky()
 // ghilana, 2026-10-16) include Redcliffe castle's floors, Flemeth's hut and
 // Vigil's Keep's basements, where the sun reaches the air only through
 // windows, and air lit towards it all about a room is lit by nothing there.
+// An area the day and night cycle runs in is out of doors by its file
+// (data/areas), whatever its level is made of: Vigil's Keep by day and the
+// Wending Wood (Awakening) are levels of rooms, and the clock, waiting for
+// the out of doors, never ran there (2026-10-24).
+std::wstring AreaTag();
+
 bool OutOfDoors()
 {
     constexpr std::int32_t kTerrainCell = 6;
     const std::vector<dao::world::Room> rooms = dao::world::Rooms();
-    return std::ranges::any_of(rooms, [](const dao::world::Room &room) { return room.state == kTerrainCell; });
+    if (std::ranges::any_of(rooms, [](const dao::world::Room &room) { return room.state == kTerrainCell; }))
+    {
+        return true;
+    }
+    const std::wstring area = AreaTag();
+    if (!daynight::Cycles(area))
+    {
+        return false;
+    }
+    static std::wstring said;
+    if (said != area)
+    {
+        said = area;
+        spdlog::info("the area {} is out of doors by its day and night file, its level being of rooms",
+                     std::filesystem::path(area).string());
+    }
+    return true;
 }
 
 void KeepAir()
