@@ -12,8 +12,11 @@ name is drawn as vanilla.
 
 The tool reads the installed game (GOG's, or DAO_GAME_DIR) and every archive
 of it that it can read: packages\\core\\data and patch, Awakening's, the
-add-ins' and the offers'. Version 2.2 archives are mostly enciphered (Blowfish
-under a password the tool does not have): those are skipped and counted. Per
+add-ins' and the offers', through DAOLib's dao_files (DAO_FILES, else the
+release build's), its one reader of the game's archives and GFF4 files. An
+archive whose models and materials are all enciphered or compressed (most of
+the add-ins' version 2.2 ones: Blowfish under a password the tool does not
+have) is skipped and counted. Per
 model it records the emitters' and meshes' material objects (.mao: material,
 default semantic, textures) and whether a node is a point light (an nplt node,
 GFF4 field MMHNodePointLightColor). Read 2026-10-21: the torches
@@ -26,16 +29,16 @@ lines ending `; by hand` are the decision and a rerun keeps them as they are.
 
 import argparse
 import glob
+import json
 import os
 import re
-import struct
+import subprocess
 import sys
+import tempfile
 from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "extern" / "DAOLib" / "tools"))
-from gff4 import Gff4, field_names  # noqa: E402
 
 GAME = Path(
     os.environ.get(
@@ -139,58 +142,75 @@ def archives():
     return sorted(found, key=order)
 
 
-class Erf:
-    """An ERF 2.0 or 2.2 archive's directory, and its files by name."""
+def dao_files():
+    """DAOLib's dao_files, its one reader of the game's archives and GFF4 files:
+    DAO_FILES, else the release build's."""
+    tool = Path(
+        os.environ.get(
+            "DAO_FILES",
+            ROOT / "build" / "release" / "extern" / "DAOLib" / "dao_files.exe",
+        )
+    )
+    if not tool.is_file():
+        sys.exit(
+            f"no dao_files at {tool}: build the plugin (tools/build.ps1) or set DAO_FILES"
+        )
+    return tool
 
-    def __init__(self, path):
-        self.path = path
-        self.entries = {}
-        self.skipped = None  # why the files cannot be read, if so
-        with open(path, "rb") as f:
-            head = f.read(56)
-            magic = head[:16].decode("utf-16-le", errors="replace")
-            if magic.startswith("ERF V2.0"):
-                first, size, v22 = 32, 72, False
-            elif magic.startswith("ERF V2.2"):
-                first, size, v22 = 56, 76, True
-                flags = struct.unpack_from("<I", head, 32)[0]
-                if (flags >> 4) & 0xF:
-                    self.skipped = "enciphered"
-                    return
-                if flags >> 29:
-                    self.skipped = "compressed"
-                    return
-            else:
-                self.skipped = "not an ERF 2"
-                return
-            count = struct.unpack_from("<I", head, 16)[0]
-            f.seek(first)
-            raw = f.read(count * size)
-        for i in range(count):
-            b = raw[i * size : (i + 1) * size]
-            name = b[:64].decode("utf-16-le", errors="replace").split("\0")[0]
-            offset = struct.unpack_from("<I", b, 64)[0]
-            n = struct.unpack_from("<I", b, 72 if v22 else 68)[0]
-            self.entries[name.lower()] = (offset, n)
 
-    def read(self, f, name):
-        offset, n = self.entries[name]
-        f.seek(offset)
-        return f.read(n)
+FIELD_NAMES = ROOT / "extern" / "DAOLib" / "dev" / "gff4_fields.csv"
+
+
+def extract(archive, folder, *patterns):
+    """(the names written, the names not read) of an archive's files matching the
+    patterns, written into `folder` by dao_files; None if it is no archive it
+    reads."""
+    done = subprocess.run(
+        [dao_files(), "extract", archive, folder, *patterns],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if done.returncode != 0:
+        return None
+    written, unread = [], []
+    for line in done.stdout.splitlines():
+        if "\t" in line:
+            unread.append(line.split("\t", 1)[0])
+        elif line and not line.endswith(" files written"):
+            written.append(line)
+    return written, unread
+
+
+def trees(folder, *inputs):
+    """{file name: GFF4 tree} of the inputs (files, or `archive|pattern`), as
+    dao_files reads them into JSON in `folder`; a file that is no GFF4 is left
+    out."""
+    subprocess.run(
+        [dao_files(), "json", "--names", FIELD_NAMES, folder, *inputs],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    out = {}
+    for path in sorted(Path(folder).glob("*.json")):
+        with open(path, encoding="utf-8") as f:
+            out[path.stem] = json.load(f)
+        path.unlink()
+    return out
 
 
 # ---------------------------------------------------------------------------
 # The models
 # ---------------------------------------------------------------------------
 
-NAMES = {v: k for k, v in field_names().items()}
-L_NAME = NAMES["MMHName"]
-L_CHILDREN = NAMES["MMHChildren"]
-L_MATERIAL = NAMES["MMHMaterialObject"]
-L_LIGHT = NAMES["MMHNodePointLightColor"]
-L_USERPARAM = NAMES["MMHNodeEmitUserParamName"]
+L_NAME = "MMHName"
+L_CHILDREN = "MMHChildren"
+L_MATERIAL = "MMHMaterialObject"
+L_LIGHT = "MMHNodePointLightColor"
+L_USERPARAM = "MMHNodeEmitUserParamName"
 # Either marks an emitter node; a template without both holds none.
-L_EMIT = (NAMES["MMHNodeEmitBirthRate"], NAMES["MMHNodeEmitType"])
+L_EMIT = ("MMHNodeEmitBirthRate", "MMHNodeEmitType")
 
 
 def nodes(tree):
@@ -204,10 +224,8 @@ def nodes(tree):
         stack.extend(node.get(L_CHILDREN) or [])
 
 
-def read_model(data):
-    """The facts of one .mmh, or None if it has no emitter: {light, emitters, materials}."""
-    g = Gff4(data)
-    tree = g.walk()
+def read_model(tree):
+    """The facts of one .mmh's tree, or None if it has no emitter: {light, emitters, materials}."""
     light = False
     emitters = []
     materials = set()
@@ -250,56 +268,66 @@ def scan(deciphered=None):
     read, skipped = 0, Counter()
     skipped_models = 0
     sources = Counter()
-    for path in archives():
-        erf = Erf(path)
-        if erf.skipped:
-            skipped[erf.skipped] += 1
-            if "modelhierarchies" in path.name:
-                skipped_models += 1
-            continue
-        read += 1
-        wanted = [n for n in erf.entries if n.endswith((".mmh", ".mao"))]
-        if not wanted:
-            continue
-        with open(path, "rb") as f:
-            for name in wanted:
-                data = erf.read(f, name)
-                if name.endswith(".mao"):
-                    maos[name[:-4]] = read_mao(data)
-                    continue
-                try:
-                    facts = read_model(data)
-                except (ValueError, struct.error, IndexError):
-                    continue
+    with tempfile.TemporaryDirectory() as work:
+        files = Path(work) / "files"
+        jsons = Path(work) / "json"
+        files.mkdir()
+        jsons.mkdir()
+        for path in archives():
+            got = extract(path, files, "*.mao", "*.mmh")
+            if got is None:
+                skipped["not an archive dao_files reads"] += 1
+                continue
+            written, unread = got
+            if unread and not written:
+                skipped["enciphered or compressed"] += 1
+                if "modelhierarchies" in path.name:
+                    skipped_models += 1
+                continue
+            read += 1
+            for name in written:
+                if name.lower().endswith(".mao"):
+                    maos[name.lower()[:-4]] = read_mao((files / name).read_bytes())
+                (files / name).unlink()
+            if not any(name.lower().endswith(".mmh") for name in written):
+                continue
+            source = "core" if "packages" in path.as_posix().lower() else "addin"
+            for name, tree in trees(jsons, f"{path}|*.mmh").items():
+                facts = read_model(tree)
                 if facts:
-                    facts["source"] = (
-                        "core" if "packages" in path.as_posix().lower() else "addin"
-                    )
-                    models[name[:-4]] = facts
-                    sources[facts["source"]] += 1
-    overridden = 0
-    if deciphered:
-        # Files loose under the folder stand for the add-ins' enciphered
-        # archives. They are read after the core's, so one that has the name of
-        # a core model replaces it: the add-ins come after the core in the
-        # game's order, and a copy that differs is what the add-in's level
-        # draws. The folder is only read, never copied.
-        for path in sorted(Path(deciphered).rglob("*")):
-            if path.suffix.lower() not in (".mmh", ".mao") or not path.is_file():
-                continue
-            name = path.stem.lower()
-            data = path.read_bytes()
-            if path.suffix.lower() == ".mao":
-                maos[name] = read_mao(data)
-                continue
-            try:
-                facts = read_model(data)
-            except (ValueError, struct.error, IndexError):
-                continue
-            if facts:
-                facts["source"] = "addin"
-                overridden += name in models and models[name]["source"] == "core"
-                models[name] = facts
+                    facts["source"] = source
+                    models[name.lower()[:-4]] = facts
+                    sources[source] += 1
+        overridden = 0
+        if deciphered:
+            # Files loose under the folder stand for the add-ins' enciphered
+            # archives. They are read after the core's, so one that has the name of
+            # a core model replaces it: the add-ins come after the core in the
+            # game's order, and a copy that differs is what the add-in's level
+            # draws. The folder is only read, never copied.
+            loose = sorted(
+                path
+                for path in Path(deciphered).rglob("*")
+                if path.suffix.lower() in (".mmh", ".mao") and path.is_file()
+            )
+            for path in loose:
+                if path.suffix.lower() == ".mao":
+                    maos[path.stem.lower()] = read_mao(path.read_bytes())
+            mmhs = [path for path in loose if path.suffix.lower() == ".mmh"]
+            # In handfuls, to keep each command line short.
+            for start in range(0, len(mmhs), 64):
+                handful = mmhs[start : start + 64]
+                read_trees = trees(jsons, *handful)
+                for path in handful:
+                    tree = read_trees.get(path.name)
+                    facts = read_model(tree) if tree is not None else None
+                    if facts:
+                        name = path.stem.lower()
+                        facts["source"] = "addin"
+                        overridden += (
+                            name in models and models[name]["source"] == "core"
+                        )
+                        models[name] = facts
     notes = {
         "overridden": overridden,
         "read": read,
