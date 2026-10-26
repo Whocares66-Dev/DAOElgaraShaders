@@ -87,6 +87,7 @@ struct Light
     std::array<float, 3> outdoor{};           // the sun's or the moon's light and the sky's together, out of doors
     std::array<float, 3> window{};            // an interior's: its windows' light a square metre (WindowLight)
     std::array<float, 4> bakeHue{1, 1, 1, 0}; // an interior's: its bake's hue, and how far each texel takes it
+    std::array<float, 3> bakeWindow{1, 1, 1}; // an interior's: its bake where a window sees it, over the rest
 };
 
 // Reads data/areas (a file for each area the clock runs in, from the plugin's
@@ -214,6 +215,14 @@ Windows WindowLight();
 // orange candle's pool alike; at the makers' own none. 0 where the clock is not running indoors. Any
 // thread.
 std::array<float, 4> BakeHue();
+
+// An interior's bake where a window sees it, over the rest of it
+// (night_sky.hlsl's daoBakeWindow, effect_lights.hlsl's DaoWindowSeen): by
+// day the light out of doors against the day level's own hour's, in each
+// colour, so that the windows' share of the makers' day darkens and warms at
+// dusk (the user, 2026-10-25: "Let's try with the windows carrying daylight");
+// at night 1. 1 where the clock is not running indoors. Any thread.
+std::array<float, 3> BakeWindow();
 
 // An interior's share of its makers' light, its windows' light and their
 // reach to try in place of its file's `fill`, `window` and `window_reach`

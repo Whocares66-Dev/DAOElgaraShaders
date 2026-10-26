@@ -23,6 +23,13 @@ float4 daoNightSky : register(c215);
 // gray: the hall by the children at noon 42.6, 17.6, 15.0 of 255 (2026-10-25).
 float4 daoBakeHue : register(c155);
 
+// An interior's bake where a window sees it, over the rest of it
+// (DayNight.h's BakeWindow): the daylight it holds goes with the light out of
+// doors, the sun's colour by dusk, so that a room's day darkens and warms as
+// the sun goes down where its windows light it; 1 where the clock does not
+// run indoors.
+float4 daoBakeWindow : register(c156);
+
 float3 DaoBakeHued(float3 baked)
 {
     return lerp(baked, dot(baked, float3(0.2126, 0.7152, 0.0722)) * daoBakeHue.xyz, daoBakeHue.w);

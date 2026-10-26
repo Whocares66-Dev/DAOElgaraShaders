@@ -2005,7 +2005,23 @@ def with_baked_billboard_light(shader, tint):
     shader.insert(-1, [f"{tint}.xyz *= DAO_BAKED_LIGHT;"])
 
 
-def with_baked_light(shader):
+def window_point(shader):
+    """The point a shader reckons its lights at (the world's place of the
+    surface, an input: `add <w>.xyz, c<light [9] or [0]>, -v<N>`), or None."""
+    lights = shader.parameters.get("g_vLightParams")
+    if lights is None:
+        return None
+    for place in (9, 0):
+        for st in shader.statements:
+            m = re.match(
+                rf"^add r\d+\.xyz, c{lights.base + place}, -(v\d+)$", st.asm.strip()
+            )
+            if m:
+                return m.group(1)
+    return None
+
+
+def with_baked_light(shader, windows=False):
     """The level's baked light by the hour, where the lightmap is read
     (night_sky.hlsl): the day's colour, times the hour's (look.hlsl's
     DAO_BAKED_LIGHT) as the sun goes, and toward the night sky's even light
@@ -2016,11 +2032,15 @@ def with_baked_light(shader):
     lightmap = shader.parameters["smpLightmap"]
     read = shader.find(rf"^texld\w* r\d+, .*, s{lightmap.base}$")
     register = re.match(r"texld\w* (r\d+),", shader.statements[read].asm).group(1)
+    world = window_point(shader) if windows else None
+    window = (
+        f" * lerp(1, daoBakeWindow.xyz, DaoWindowSeen({world}.xyz))" if world else ""
+    )
     shader.insert(
         read,
         [
-            f"{register}.xyz = lerp(DaoBakeHued({register}.xyz) * DAO_BAKED_LIGHT, daoNightSky.yzw,"
-            " daoNightSky.x);"
+            f"{register}.xyz = lerp(DaoBakeHued({register}.xyz) * DAO_BAKED_LIGHT{window},"
+            " daoNightSky.yzw, daoNightSky.x);"
         ],
     )
 
@@ -2879,7 +2899,13 @@ def changes_for(stem, listing, show):
         changes += [with_ambient_relief, without_cut]
         preamble += ours("look.hlsl") + ours("bake.hlsl")
     if takes_baked_light(listing):
-        changes += [with_shaped_bake, with_baked_light, without_cut]
+        # A window's daylight in the bake, by the effects' window lights
+        # (effect_lights.hlsl, which every such shader takes below).
+        changes += [
+            with_shaped_bake,
+            lambda s: with_baked_light(s, windows=True),
+            without_cut,
+        ]
         if "DaoShapedBake" not in preamble:
             preamble += ours("look.hlsl") + ours("bake.hlsl")
         preamble += ours("night_sky.hlsl")
@@ -2890,7 +2916,7 @@ def changes_for(stem, listing, show):
     if (
         "smpLightmap" in listing
         and "ps_3_0" in listing
-        and with_baked_light not in changes
+        and not takes_baked_light(listing)
     ):
         changes.append(with_baked_light)
         if "DAO_LOOK_HLSL" not in preamble:

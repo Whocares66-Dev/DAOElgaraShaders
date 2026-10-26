@@ -120,6 +120,13 @@ float DaoEffectAim(int i, float3 world)
     return saturate(dot(way, facing)) * saturate(0.5 - way.z * 10);
 }
 
+// How much of a window's light reaches a point, 0 to 1: of the lights aimed
+// as a window's (DaoEffectAim), the most that one sends there by its fall-off,
+// its aim and its shadow, its colour left out. What a lightmap holds of the
+// day at a point a window sees is that window's (night_sky.hlsl's
+// daoBakeWindow).
+float DaoWindowSeen(float3 world);
+
 // A light's shadow at a point, where the shader has a sampler for the atlas;
 // where it has none left (a face's: Direct3D 9's sixteen all taken), none.
 #ifdef DAO_NO_EFFECT_SHADOWS
@@ -127,6 +134,22 @@ float DaoEffectAim(int i, float3 world)
 #else
 #define DAO_EFFECT_SHADOW(i, world) DaoEffectShadow(smpDaoEffectShadows, i, world)
 #endif
+
+float DaoWindowSeen(float3 world)
+{
+    float seen = 0;
+    [loop] for (int i = 0; i < daoEffectCount.x; i++)
+    {
+        if (daoEffectLights[2 * i + 1].a < 2)
+        {
+            continue;
+        }
+        const float4 place = daoEffectLights[2 * i];
+        const float fall = cos(1.5707963 * saturate(length(place.xyz - world) / place.w));
+        seen = max(seen, fall * fall * DaoEffectAim(i, world) * DAO_EFFECT_SHADOW(i, world));
+    }
+    return saturate(seen);
+}
 
 // A texture read in a light's reckoning, run in a loop as long as the lights:
 // at its first level, a loop of no fixed length allowing no gradient. What a
