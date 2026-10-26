@@ -497,6 +497,104 @@ std::mutex g_modelsLock;
 std::optional<levelfiles::Archive> g_hierarchies;
 std::optional<levelfiles::Archive> g_meshes;
 
+// A beam of light's effect as its model has it: where the light comes in,
+// its glow's emitter (a node `sun...`), and the way the beam goes from there,
+// its beam's emitter's (`beam...`) turn of straight down. fxe_sunbeam_w_p's
+// glow is 4.1 m over its place and fxe_moonbm_s_p's 11.1 m, each beam turned
+// 39 degrees from the upright (read 2026-10-25).
+struct Beam
+{
+    Vec at{};
+    Vec way{0, 0, -1};
+};
+
+void BeamUnder(const levelfiles::core::gff4::Struct &node, std::size_t deep, Beam &beam, bool &found)
+{
+    constexpr std::uint32_t kRotation = 6048; // MMHRotation
+    if (deep > levelfiles::kNodesDeep || node.Shape().Find(levelfiles::kChildren) == nullptr)
+    {
+        return;
+    }
+    for (const levelfiles::core::gff4::Struct &child : node.Structs(levelfiles::kChildren))
+    {
+        const std::wstring name = Lower(child.String(levelfiles::kNodeName).value_or(L""));
+        for (const levelfiles::core::gff4::Struct &part : name.starts_with(L"sun") || name.starts_with(L"beam")
+                                                              ? child.Structs(levelfiles::kChildren)
+                                                              : std::vector<levelfiles::core::gff4::Struct>{})
+        {
+            const std::vector<float> at = part.Floats(levelfiles::kTranslation);
+            const std::vector<float> turn = part.Floats(kRotation);
+            if (name.starts_with(L"sun") && part.Label() == "trsl" && at.size() >= 3)
+            {
+                beam.at = {at[0], at[1], at[2]};
+                found = true;
+            }
+            else if (name.starts_with(L"beam") && part.Label() == "rota" && turn.size() >= 4)
+            {
+                beam.way = levelfiles::level::Turned({turn[0], turn[1], turn[2], turn[3]}, {0, 0, -1});
+            }
+        }
+        BeamUnder(child, deep + 1, beam, found);
+    }
+}
+
+// A beam effect's model, read from the models' archive, or none.
+std::optional<Beam> BeamOf(const std::wstring &model)
+{
+    const std::optional<std::vector<std::byte>> bytes =
+        g_hierarchies ? g_hierarchies->Read(Lower(model) + L".mmh") : std::nullopt;
+    const auto file = bytes ? levelfiles::core::gff4::File::Parse(*bytes) : std::nullopt;
+    const std::optional<levelfiles::core::gff4::Struct> root = file ? file->Root() : std::nullopt;
+    Beam beam;
+    bool found = false;
+    if (root)
+    {
+        BeamUnder(*root, 0, beam, found);
+    }
+    return found ? std::optional(beam) : std::nullopt;
+}
+
+// The beams of light a level's rooms place (an interior's file's `beams`,
+// the starts of their models' names), each an opening as large as the level's
+// windows in the mean, where the light comes in, facing the way the beam goes:
+// the daylight of a room no window reaches, as its makers drew it. Witch
+// Hunt's tower places fxe_sunbeam_w_p in three rooms, the Broken Circle's
+// fxe_moonbm_s_p in two (2026-10-25).
+void AddBeams(levelfiles::Level &level, const std::vector<std::wstring> &starts, std::vector<Window> &windows)
+{
+    float area = 0;
+    for (const Window &window : windows)
+    {
+        area += window.area / static_cast<float>(windows.size());
+    }
+    std::map<std::wstring, std::optional<Beam>> read;
+    for (const std::wstring &room : starts.empty() || area <= 0 ? std::vector<std::wstring>{} : level.Rooms())
+    {
+        const levelfiles::level::Room *defined = level.RoomOf(room);
+        for (const levelfiles::level::Placed &placed :
+             defined != nullptr ? defined->models : std::vector<levelfiles::level::Placed>{})
+        {
+            const std::wstring file = Lower(placed.file);
+            if (!std::ranges::any_of(starts, [&](const std::wstring &start) { return file.starts_with(start); }))
+            {
+                continue;
+            }
+            if (!read.contains(file))
+            {
+                read[file] = BeamOf(file);
+            }
+            if (const std::optional<Beam> &beam = read[file])
+            {
+                const Vec at = levelfiles::level::InLevel(*defined, placed, beam->at);
+                const Vec to = levelfiles::level::InLevel(
+                    *defined, placed,
+                    {beam->at[0] + beam->way[0], beam->at[1] + beam->way[1], beam->at[2] + beam->way[2]});
+                windows.push_back({at, Unit(Minus(to, at)), area});
+            }
+        }
+    }
+}
+
 // The windows of an interior's level, each facing into the level: toward the
 // middle of all its windows, which stand in its outer walls. None where no
 // interior's file names its windows.
@@ -554,6 +652,7 @@ std::vector<Window> ReadWindows(const std::filesystem::path &levelRim)
             window.facing = {-window.facing[0], -window.facing[1], -window.facing[2]};
         }
     }
+    AddBeams(level, daynight::BeamModels(name), windows);
     return windows;
 }
 
@@ -973,6 +1072,40 @@ void NoteChoice(std::size_t had, std::size_t kept)
     first.reset();
 }
 
+// Of more than the shaders take, those that light the most about the
+// camera, each by its brightness over its distance squared, an interior's
+// windows and beams (lights aimed, AimOf) first up to kOpeningsMost of them:
+// by brightness alone they were never among the sixteen beside the 70 to 84
+// fires of the Circle's tower floors, a square metre of window as bright as a
+// few candles over a wall's breadth, and lit nothing of the bake they carry
+// the day of (DaoWindowSeen; 2026-10-25). Six: a floor by the tower's outer
+// wall (a dormitory, the start hall) has six of its 24 windows within their
+// 40 m, the candle table in a dormitory seven.
+constexpr std::size_t kOpeningsMost = 6;
+
+void Choose(std::vector<Light> &lights)
+{
+    const std::array<float, 3> eye = Eye();
+    const auto lighting = [&](const Light &light) {
+        const float x = light.place[0] - eye[0];
+        const float y = light.place[1] - eye[1];
+        const float z = light.place[2] - eye[2];
+        const float bright = std::max({light.colour[0], light.colour[1], light.colour[2]});
+        return bright / std::max((x * x) + (y * y) + (z * z), 1.0F);
+    };
+    const auto aimed = [](const Light &light) { return light.colour[3] >= 2; };
+    // The openings first, the most lighting of them; then everything else
+    // by its lighting, those openings left over among it.
+    std::ranges::sort(lights, [&](const Light &a, const Light &b) {
+        return aimed(a) != aimed(b) ? aimed(a) : lighting(a) > lighting(b);
+    });
+    const auto openings = static_cast<std::size_t>(std::ranges::count_if(lights, aimed));
+    const auto kept = static_cast<std::ptrdiff_t>(std::min(openings, kOpeningsMost));
+    std::sort(lights.begin() + kept, lights.end(),
+              [&](const Light &a, const Light &b) { return lighting(a) > lighting(b); });
+    lights.resize(kMostLights);
+}
+
 } // namespace
 
 bool Install()
@@ -1113,17 +1246,7 @@ void Read()
     NoteChoice(before, lights.size());
     if (lights.size() > kMostLights)
     {
-        const std::array<float, 3> eye = Eye();
-        const auto lighting = [&](const Light &light) {
-            const float x = light.place[0] - eye[0];
-            const float y = light.place[1] - eye[1];
-            const float z = light.place[2] - eye[2];
-            const float bright = std::max({light.colour[0], light.colour[1], light.colour[2]});
-            return bright / std::max((x * x) + (y * y) + (z * z), 1.0F);
-        };
-        std::ranges::nth_element(lights, lights.begin() + kMostLights,
-                                 [&](const Light &a, const Light &b) { return lighting(a) > lighting(b); });
-        lights.resize(kMostLights);
+        Choose(lights);
     }
     std::array<float, kRegisterFloats> registers{};
     for (std::size_t i = 0; i < lights.size(); ++i)

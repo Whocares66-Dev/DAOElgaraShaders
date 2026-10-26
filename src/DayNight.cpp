@@ -96,6 +96,7 @@ struct IndoorLight
     float window = 0;                  // the windows' light a square metre, a share of the outdoor light (`window`)
     float windowReach = 0;             // metres (`window_reach`)
     std::vector<std::wstring> windows; // the materials of its windows' models (`windows`)
+    std::vector<std::wstring> beams;   // the starts of its beams' models' names (`beams`)
     // Which its makers lit it as (`baked = day`, else a night), and, for a
     // night's bake, the level whose rooms' fill is its day's colour (`day`)
     // and that colour (ReadIndoorColours).
@@ -1115,6 +1116,11 @@ std::optional<Cycled> IndoorsOf(const std::string &tag, const Keys &keys, const 
     const std::string day = Said(keys, defaults, "day").value_or("");
     indoors.ownIsNight = keys.contains("baked") ? keys.at("baked") != "day" : true;
     indoors.other = Wide(day);
+    std::istringstream beams(Said(keys, defaults, "beams").value_or(""));
+    for (std::string model; beams >> model;)
+    {
+        indoors.beams.push_back(Wide(model));
+    }
     std::istringstream windows(Said(keys, defaults, "windows").value_or(""));
     for (std::string material; windows >> material;)
     {
@@ -1663,6 +1669,21 @@ std::array<float, 4> BakeHue()
 {
     return {g_bakeHue[0].load(std::memory_order_relaxed), g_bakeHue[1].load(std::memory_order_relaxed),
             g_bakeHue[2].load(std::memory_order_relaxed), g_bakeHue[3].load(std::memory_order_relaxed)};
+}
+
+std::vector<std::wstring> BeamModels(std::wstring_view level)
+{
+    const std::wstring name = Lower(std::wstring(level));
+    const std::scoped_lock lock(g_lock);
+    std::vector<std::wstring> starts;
+    for (const Cycled &cycled : g_cycled)
+    {
+        if (cycled.indoors && cycled.own == name)
+        {
+            starts.insert(starts.end(), cycled.indoors->beams.begin(), cycled.indoors->beams.end());
+        }
+    }
+    return starts;
 }
 
 Windows WindowLight()

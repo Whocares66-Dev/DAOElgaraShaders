@@ -197,6 +197,11 @@ bool Indoors(std::wstring_view area);
 // thread, once Install has run.
 std::vector<std::wstring> WindowMaterials(std::wstring_view level);
 
+// The starts of the names of the beams of light a level's interior's file
+// takes for openings (`beams`, defaults.ini's), none where no interior's file
+// names the level. Any thread, once Install has run.
+std::vector<std::wstring> BeamModels(std::wstring_view level);
+
 // An interior's windows' light as of the last Now: a square metre of opening's
 // colour, the area's `window` times the light out of doors (Light's outdoor),
 // and how far it reaches, metres; nothing where the clock is not running

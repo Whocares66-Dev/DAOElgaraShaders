@@ -22,6 +22,7 @@ One file an area, named by its tag (`lot100ar_lothering.ini`), read as the plugi
 | `baked` | (an interior's) `day` where its makers lit it as a day, its night then the light out of doors at midnight's colour; otherwise a night |
 | `day` | (an interior lit as a night) the level its makers lit by day whose rooms' fill is the colour its own takes by day |
 | `windows` | an interior's: the materials of its windows' models, each window a light of the hour aimed into the room |
+| `beams` | an interior's: the starts of the names of its beams of light's effects, each an opening lit as a window is; defaults.ini's |
 | `fill` | an interior's: how much of its makers' light it keeps at night, whole by day (its bake, ambient colour, probes, layouts' lamps that are not fires, figures' fills and key light), 0 to 1; defaults.ini's 0.5 |
 | `window` | an interior's: the light of a square metre of window, a share of the light out of doors at the hour; defaults.ini's |
 | `window_reach` | an interior's: how far a window's light reaches, metres; defaults.ini's |
