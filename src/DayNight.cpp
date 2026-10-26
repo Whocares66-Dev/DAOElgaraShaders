@@ -843,12 +843,15 @@ Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::S
     const float day = 1 - out.nightShare;
     // The other end's colour: a night's bake's day takes its day level's
     // fill (lak303d's gray), a day's bake's night the light out of doors at
-    // midnight, the moon's and the night sky's paled as the night's are. In the
+    // midnight, the moon's and the night sky's, paled again as the night's
+    // fog is (NightColour): taken as it is, the moon's 1 : 1.25 : 1.85, Witch
+    // Hunt's library at midnight was 27.3, 16.8, 36.9 of 255, and 29.8, 16.7,
+    // 29.8 paled (2026-10-25). In the
     // Broken Circle's own deep blue fill (lak503d's rooms', 0.015, 0.045,
     // 0.095), paled as the night's, Witch Hunt's library at midnight was
     // blue-violet (27.1, 19.1, 41.9 of 255, 2026-10-25).
     const std::optional<std::array<float, 3>> otherColour =
-        indoors.ownIsNight ? indoors.dayFill : std::optional(atNight.outdoor);
+        indoors.ownIsNight ? indoors.dayFill : std::optional(Paler(atNight.outdoor, NightColour()));
     Light light;
     light.sun = ownSun;
     light.sky = ownSky;
@@ -874,7 +877,14 @@ Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::S
             std::lerp(1.0F, atDay.outdoor.at(i) > 0 ? out.outdoor.at(i) / atDay.outdoor.at(i) : 1.0F, day);
         light.lit.at(i) = by;
         light.bakeHue.at(i) = indoors.bakeHue.at(i);
-        light.window.at(i) = std::max(g_tryWindow.value_or(indoors.window), 0.0F) * out.outdoor.at(i);
+        // The windows' own light is kept by night as the makers' is: one eye
+        // for the room (the user, 2026-10-25, of Witch Hunt's dormitory: "The
+        // dorm looks very blue"). The Broken Circle's dormitory at midnight
+        // went from 48.6, 22.0, 34.2 of 255 to 37.4, 13.7, 23.1 (vanilla's 48.5,
+        // 21.9, 35.8). Most of that dormitory's blue was Finn's Cleansing Aura,
+        // which his tactics turn back on as the party walks (2026-10-25).
+        light.window.at(i) =
+            std::max(g_tryWindow.value_or(indoors.window), 0.0F) * out.outdoor.at(i) * std::lerp(fill, 1.0F, day);
     }
     // Said as the hour or the tuning moves it by more than a little.
     static std::array<float, 3> said{};
