@@ -335,8 +335,8 @@ constexpr float kDawnHaze = 0.05F;
 // light (0.24, 0.18, 0.10), and the farm's air, whose blue is nearly all its
 // sky light's, went navy at 20:00 (its far mountains 43, 51, 118 of 255). At
 // 0.1 that sun keeps 0.46, 0.38, 0.26 of its light, its disc (1, 0.83, 0.58),
-// and the mountains are 81, 83, 132 (with the glow at 0.5, Outdoors.cpp's
-// kHazeG).
+// and the mountains were 81, 83, 132 (with the plugin's haze of the time,
+// gone on 2026-10-27).
 constexpr float kDuskHaze = 0.1F;
 // outdoors.tune's DawnHaze and DuskHaze, a developer's, to try others live
 // (TryDayHaze). The game thread's.
@@ -496,18 +496,6 @@ std::array<float, 3> FogOver(const std::array<float, 3> &fog, const std::array<f
     return by;
 }
 
-// The air's light that a sun or moon and a sky light make, by FogOver's share.
-Air AirBy(const std::array<float, 3> &by, const std::array<float, 3> &sun, const std::array<float, 3> &skyLight)
-{
-    Air air;
-    for (std::size_t i = 0; i < by.size(); ++i)
-    {
-        air.sun.at(i) = by.at(i) * sun.at(i);
-        air.sky.at(i) = by.at(i) * skyLight.at(i);
-    }
-    return air;
-}
-
 // The area's own level's light: the bake's, and the sun the area has.
 const LevelLight &Own(const Pair &pair)
 {
@@ -640,12 +628,12 @@ void WaterAndSpray(Light &light, const Pair &pair, const dao::core::Sky &daySky,
                    std::lerp(1.0F, NightColour(), light.nightShare)};
 }
 
-// The air's light by the hour (Outdoors.cpp's HazeOf, haze.hlsl): the
-// hour's sun or moon and sky light on the air, by the day level's FogOver
-// and the night level's mixed as the sky is. At the day level's own light the
-// two parts make its own fog color exactly, and at the night level's its
-// night fog as the plugin pales it. The engine's fog color is set to them, so
-// what fogs the vanilla way follows the hour as the haze does.
+// The fog's color by the hour: the hour's sun or moon and sky light on the
+// air, by the day level's FogOver and the night level's mixed as the sky is.
+// At the day level's own light it is its own fog color exactly, and at the
+// night level's its night fog as the plugin pales it. The engine fogs every
+// surface and the sky toward it, so the far landscape follows the hour, warm
+// at dusk and cool at night.
 void LightAir(Light &light, const Pair &pair, const dao::core::Sky &daySky, const dao::core::Sky &nightSky, float day)
 {
     const std::array<float, 3> dayBy = FogOver(FogOf(daySky), Rgb(pair.day.sun.color), pair.day.skyLight);
@@ -660,10 +648,10 @@ void LightAir(Light &light, const Pair &pair, const dao::core::Sky &daySky, cons
         by.at(i) = std::lerp(nightBy.at(i), dayBy.at(i), day);
         skyLight.at(i) = std::lerp(light.nightSky.at(i), pair.day.skyLight.at(i), day);
     }
-    light.air = AirBy(by, Rgb(light.sun.color), skyLight);
-    light.sky.fogRed = light.air.sun[0] + light.air.sky[0];
-    light.sky.fogGreen = light.air.sun[1] + light.air.sky[1];
-    light.sky.fogBlue = light.air.sun[2] + light.air.sky[2];
+    const std::array<float, 3> sun = Rgb(light.sun.color);
+    light.sky.fogRed = by[0] * (sun[0] + skyLight[0]);
+    light.sky.fogGreen = by[1] * (sun[1] + skyLight[1]);
+    light.sky.fogBlue = by[2] * (sun[2] + skyLight[2]);
 }
 
 Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float night, float fill, float haze)
@@ -793,9 +781,6 @@ std::vector<std::wstring> g_fireLights;
 float g_fireStrength = 1; // defaults.ini's `fire_strength`, set once in Install
 std::map<std::wstring, std::shared_ptr<const Pair>> g_pairs;
 std::set<std::wstring> g_asked;
-// Every level opened's own light, by its name: its sun and sky light make its
-// air's light where the clock does not run (OwnAir).
-std::map<std::wstring, LevelLight> g_levels;
 // What the hour's light hands the render thread: the sky light's multiplier,
 // the disc's colour (under g_lock), and the day level's sunlight lamps with
 // what they are multiplied by.
@@ -1100,6 +1085,10 @@ void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &
         std::ranges::copy_if(g_cycled, std::back_inserter(areas),
                              [&](const Cycled &cycled) { return cycled.own == level; });
     }
+    if (areas.empty())
+    {
+        return;
+    }
     const std::filesystem::path env = levelRim.parent_path().parent_path();
     // A level is in its own levels' folder, an add-in's or the game's: an
     // add-in's level borrows the game's night (Awakening's, Redcliffe's).
@@ -1107,16 +1096,9 @@ void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &
         std::error_code error;
         return std::filesystem::exists(env / (name + L".arl"), error) ? env : coreEnv;
     };
-    // The level's own light, every level's: out of doors its air is lit by
-    // its sun and its sky's light whether the clock runs or not (OwnAir).
-    // Some small files (the .arl and the layouts), read as the level is
-    // opened.
+    // The level's own light: some small files (the .arl and the layouts),
+    // read as the level is opened.
     const std::optional<LevelLight> own = ReadLevel(env, level);
-    if (own)
-    {
-        const std::scoped_lock lock(g_lock);
-        g_levels[level] = *own;
-    }
     for (const Cycled &cycled : areas)
     {
         std::optional<LevelLight> other = ReadLevel(folderOf(cycled.other), cycled.other);
@@ -1200,26 +1182,6 @@ std::array<float, 3> EvenLight()
 {
     return {g_even[0].load(std::memory_order_relaxed), g_even[1].load(std::memory_order_relaxed),
             g_even[2].load(std::memory_order_relaxed)};
-}
-
-std::optional<Air> OwnAir(const dao::core::Sunlight &ownSun, const std::array<float, 3> &fog)
-{
-    std::optional<std::array<float, 3>> skyLight;
-    {
-        const std::scoped_lock lock(g_lock);
-        const auto level =
-            std::ranges::find_if(g_levels, [&](const auto &named) { return Same(named.second.sun, ownSun); });
-        if (level != g_levels.end())
-        {
-            skyLight = level->second.skyLight;
-        }
-    }
-    if (!skyLight)
-    {
-        return std::nullopt;
-    }
-    const std::array<float, 3> sun = Rgb(ownSun.color);
-    return AirBy(FogOver(fog, sun, *skyLight), sun, *skyLight);
 }
 
 std::array<float, 3> DaySky()

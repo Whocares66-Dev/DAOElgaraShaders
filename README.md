@@ -7,7 +7,7 @@ Download it from [Nexus Mods](https://www.nexusmods.com/dragonage/mods/7061) or 
 Eight options on the Video tab of the game's options screen:
 
 - **Improved materials**: metal, gilt and polished stone mirror and scatter light as what they are made of, normal maps shape the light in shade and indoors, and bright highlights are rolled off rather than clipped. The game's own materials, its DLC's and Awakening's come with the plugin; a mod's are worked out from the game's own item data as the game starts.
-- **Improved lighting**: one sun out of doors: the level casts its shadows as the sun falls, on characters too (the plugin's own cascaded shadow maps, soft-edged), characters take the sun's light and what the ground gives back, the haze glows toward the sun, and the darkest shade is lifted a little.
+- **Improved lighting**: one sun out of doors: the level casts its shadows as the sun falls, on characters too (the plugin's own cascaded shadow maps, soft-edged), characters take the sun's light and what the ground gives back, and the darkest shade is lifted a little.
 - **SMAA**: smooths the edges the game's own anti-aliasing misses; it works with that or without it.
 - **Exposure** (-0.5 to +0.5, 0 by default): how bright the picture is, in stops.
 - **Ambient occlusion** (Off, Low, Medium, High): shade in corners, creases and under things.

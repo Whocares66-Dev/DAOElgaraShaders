@@ -12,7 +12,7 @@ On the **Video** tab of the options screen.
 | Option | What it does | Default |
 |---|---|---|
 | **Improved materials** | Metal reflects its surroundings; leather, cloth and stone stay matte. | On |
-| **Improved lighting** | More natural sunlight, shadows and haze. | On |
+| **Improved lighting** | More natural sunlight and shadows. | On |
 | **SMAA** | Smooths jagged edges. | On |
 | **Exposure** | How bright the picture is: -0.5 to +0.5. | 0 |
 | **Ambient occlusion** | Shade in corners and creases: Off, Low, Medium or High. | High |

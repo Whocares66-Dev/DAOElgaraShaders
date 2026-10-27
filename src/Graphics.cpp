@@ -190,19 +190,6 @@ constexpr UINT kNightSkyRegister = 215; // night_sky.hlsl's daoNightSky
 // Water's light (water_light.hlsl's daoWaterLight), under the effects' lights':
 // the game's pixel shaders reach c55 at the most (their listings, 2026-10-22).
 constexpr UINT kWaterLightRegister = 159;
-// The air's light every fogged surface, the sky, the clouds and the effects
-// fog toward (outdoors::Haze), in registers of their own below these
-// (look.hlsl's daoHaze): the sky light's part and whether it is ours, the
-// sun's part and how its glow leans toward the sun.
-constexpr UINT kHazeRegister = 218;
-constexpr std::size_t kHazeRegisters = 2;
-std::array<std::atomic<float>, kHazeRegisters * 4> g_hazeLook{};
-// The view each surface's shader reckons its haze by (outdoors::HazeView,
-// haze.hlsl's daoHazeView), under water's light: no shader of the game's
-// reaches past c60.
-constexpr UINT kHazeViewRegister = 150;
-constexpr std::size_t kHazeViewRegisters = 5;
-std::array<std::atomic<float>, kHazeViewRegisters * 4> g_hazeView{};
 // How strong the area's fills are on figures (outdoors::Fills), in a
 // register below those (shaders/fills.hlsl's daoFill). Never other than 1
 // in a portrait or the inventory's figure, which are lit by lights of their
@@ -1293,18 +1280,6 @@ HRESULT __stdcall BeginScene(IDirect3DDevice9 *device)
     }
     values.at(kShareAsked) = ShareAsked() ? 1.0F : 0.0F;
     device->SetPixelShaderConstantF(kLookRegister, values.data(), kLookRegisters);
-    std::array<float, kHazeRegisters * 4> haze{};
-    for (std::size_t i = 0; i < haze.size(); ++i)
-    {
-        haze.at(i) = g_hazeLook.at(i).load(std::memory_order_relaxed);
-    }
-    device->SetPixelShaderConstantF(kHazeRegister, haze.data(), kHazeRegisters);
-    std::array<float, kHazeViewRegisters * 4> view{};
-    for (std::size_t i = 0; i < view.size(); ++i)
-    {
-        view.at(i) = g_hazeView.at(i).load(std::memory_order_relaxed);
-    }
-    device->SetPixelShaderConstantF(kHazeViewRegister, view.data(), kHazeViewRegisters);
     HandFills(device);
     // By the target the scene starts on, not the last one the game set: a
     // scene begun on the frame's picture after a portrait's left the area
@@ -1520,19 +1495,6 @@ void KeepLookRegisters()
     levelshadows::Skip(static_cast<unsigned>(outdoors::Tune("LevelShadowsSkip", 0)));
     outdoors::WantSunlitFigures(lighting);
     outdoors::WantClock(g_dayNight.load(std::memory_order_relaxed));
-    const outdoors::SkyHaze haze = outdoors::Haze();
-    for (std::size_t c = 0; c < 3; ++c)
-    {
-        g_hazeLook.at(c).store(haze.sky.at(c), std::memory_order_relaxed);
-        g_hazeLook.at(4 + c).store(haze.sun.at(c), std::memory_order_relaxed);
-    }
-    g_hazeLook.at(3).store(haze.on ? 1.0F : 0.0F, std::memory_order_relaxed);
-    g_hazeLook.at(7).store(haze.g, std::memory_order_relaxed);
-    const std::array<float, kHazeViewRegisters * 4> view = outdoors::HazeView();
-    for (std::size_t i = 0; i < view.size(); ++i)
-    {
-        g_hazeView.at(i).store(view.at(i), std::memory_order_relaxed);
-    }
     g_fills.store(outdoors::Fills(), std::memory_order_relaxed);
     g_shareWanted.store(g_occlusionStop.load(std::memory_order_relaxed) > 0, std::memory_order_relaxed);
     g_anisotropy.store(kAnisotropyStops.at(static_cast<std::size_t>(g_anisotropyStop.load(std::memory_order_relaxed))),
@@ -1811,7 +1773,7 @@ void AddToOptions()
                       L"light in shade and indoors",
                       "improved materials"),
              Checkbox(g_lighting, kLightingByDefault, L"GraphicsLighting", L"Improved lighting",
-                      L"More natural sunlight, shadows and haze", "improved lighting"),
+                      L"More natural sunlight and shadows", "improved lighting"),
              Checkbox(g_dayNight, kDayNightByDefault, L"GraphicsDayNight", L"Day / night cycle",
                       L"Changing time of day", "day / night cycle"),
              smaa},
