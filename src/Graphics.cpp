@@ -130,7 +130,9 @@ std::atomic<int> g_exposureStop{kExposureByDefault};
 // A test of the day and night (DayNight.h; the user, 2026-10-21: "add a test
 // slider ... so we can control time of day"): Off, the area's own light;
 // Running, the clock going on by itself; or an hour held, every half hour.
-constexpr bool kDayNightByDefault = false; // a test for now, where a level has a day and a night
+// On by default since 0.4.0, when it covered the outdoor areas (the user,
+// 2026-10-27: "set day / night to on by default").
+constexpr bool kDayNightByDefault = true;
 std::atomic<bool> g_dayNight{kDayNightByDefault};
 constexpr int kTimeStops = 48;               // 0:00, 0:30, ... 23:30
 constexpr int kTimeByDefault = 24;           // noon, the sun near its highest (data/areas' noon)

@@ -12,7 +12,7 @@ Eight options on the Video tab of the game's options screen:
 - **Exposure** (-0.5 to +0.5, 0 by default): how bright the picture is, in stops.
 - **Ambient occlusion** (Off, Low, Medium, High): shade in corners, creases and under things.
 - **Anisotropic filtering** (Off to 16x): textures stay sharp where they are seen at a slant.
-- **Day / night cycle** (Off by default) and **Time of day**: the sun crosses the sky and sets, the moon lights the night, a day an hour of play. Redcliffe's village only for now; it needs Improved lighting.
+- **Day / night cycle** (on by default) and **Time of day**: the sun crosses the sky and sets, the moon lights the night, a day an hour of play, in the outdoor areas, the DLC's and Awakening's included (not indoors, and not where the story sets the hour). It needs Improved lighting.
 
 It rebuilds the game's shaders from the installed game at build time. [dev/NOTES.md](dev/NOTES.md) says how the game's lighting works; the history until 2026-10-11 is [issue 1](https://github.com/Whocares66-Dev/DAOElgaraShaders/issues/1).
 
