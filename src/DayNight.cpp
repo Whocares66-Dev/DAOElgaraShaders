@@ -104,12 +104,12 @@ struct Pair
     float noon = 0;                  // the hour the sun is highest (its area's file)
     float nightFill = 0;             // the share of the night sky's light kept by night (its area's file)
     float nightHaze = 0;             // how much of the area's own haze its night's sky has (its area's file)
-    float sprayMoon = 0;             // how much of the moon's light its spray and mist take (its area's file)
-    float overcast = 0;              // how much cloud hides the sun by day, 0 to 1 (its area's file)
-    std::vector<LampMove> lampMoves; // its file's `move_lamp`s
-    std::optional<float> heldHour;   // the hour its light is held at (its file's `hour`), none for the clock's
-    bool heldOwn = false;            // held at the level's own hour (its file's `hour = own`)
-    float ownHour = 0;               // the hour the level's own sun stands where it is
+    float sprayMoon = 0;        // how much of the moon's light its spray and mist take (its area's file)
+    std::vector<std::pair<float dao::core::Sky::*, float>> dayClouds; // its file's `day_clouds` level's clouds
+    std::vector<LampMove> lampMoves;                                  // its file's `move_lamp`s
+    std::optional<float> heldHour; // the hour its light is held at (its file's `hour`), none for the clock's
+    bool heldOwn = false;          // held at the level's own hour (its file's `hour = own`)
+    float ownHour = 0;             // the hour the level's own sun stands where it is
     std::vector<std::pair<std::wstring, std::int32_t>> heldUntil; // plots' flags any of which lets the clock run
 };
 
@@ -410,7 +410,7 @@ struct Cycled
     float nightFill = 0;
     float nightHaze = 0;
     float sprayMoon = 0;
-    float overcast = 0;
+    std::vector<std::pair<float dao::core::Sky::*, float>> dayClouds; // its file's `day_clouds`, data/clouds
     std::vector<LampMove> lampMoves;
     std::optional<float> heldHour; // the hour its light is held at (its file's `hour`), none for the clock's
     bool heldOwn = false;          // held at the level's own hour (its file's `hour = own`)
@@ -679,43 +679,15 @@ void LightAir(Light &light, const Pair &pair, const dao::core::Sky &daySky, cons
     light.sky.fogBlue = by[2] * (sun[2] + skyLight[2]);
 }
 
-// How much of the sun's light the cloud an overcast day takes out of its beam
-// comes down through it as the sky's even light, in grey: an overcast sky's
-// light is a fifth to a third of a clear day's, all of it diffuse.
-constexpr float kOvercastThrough = 0.25F;
-
-// An overcast day (its area's file's `overcast`): the sun's beam and its disc
-// dimmed by the cover, and what the cloud takes out of the beam sent on, in
-// part, as the even light that fills the shade, so the shadows soften (the
-// user, 2026-10-27, of the rain at the unrepaired keep by day: "we should have
-// the sun not be a whole disk, but a diffuse cloud-hidden thing, like haven
-// during daytime").
-void Overcast(Light &light, const std::array<float, 3> &ownSkyLight, float cover, bool sunLights)
-{
-    if (cover <= 0 || !sunLights)
-    {
-        return;
-    }
-    const float beam = (0.2126F * light.sun.color[0]) + (0.7152F * light.sun.color[1]) + (0.0722F * light.sun.color[2]);
-    for (std::size_t i = 0; i < 3; ++i)
-    {
-        light.sun.color.at(i) *= 1 - cover;
-        light.sun.characterColor.at(i) *= 1 - cover;
-        light.sunOverDay.at(i) *= 1 - cover;
-        // On the bake where the bake is the day's, on the even light where
-        // it is a night's (the keep's vgk100d; LightAt's evenShare).
-        // The bake's is a multiplier of the level's own sky light; the even
-        // light is a light.
-        const float diffuse = cover * kOvercastThrough * beam;
-        light.baked.at(i) += ownSkyLight.at(i) > 0 ? diffuse / ownSkyLight.at(i) : 0;
-        light.even.at(i) += diffuse;
-    }
-    light.sky.moonAlpha *= 1 - cover;
-}
-
 Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float night, float fill, float haze)
 {
-    const dao::core::Sky daySky = SkyOf(own, pair.day);
+    dao::core::Sky daySky = SkyOf(own, pair.day);
+    // By day the clouds of the level its file names (`day_clouds`), lit as
+    // that level's makers lit them; the night keeps its own.
+    for (const auto &[member, value] : pair.dayClouds)
+    {
+        daySky.*member = value;
+    }
     dao::core::Sky nightSky = SkyOf(own, pair.night);
     // The night's fog is the moon's light scattered, paled as that light
     // is: its own deep blue was what a mist and a fall's spray fogged to,
@@ -817,7 +789,6 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
         channel = brightest > 0 ? channel / brightest : 1;
     }
     light.sky.moonAlpha = sunLights ? daySky.moonAlpha * SmoothStep(kOver, -kOver, sunHeight) : nightSky.moonAlpha * up;
-    Overcast(light, Own(pair).skyLight, pair.overcast, sunLights);
     WaterAndSpray(light, pair, daySky, nightSky, day, sunLights);
     LightAir(light, pair, daySky, nightSky, day, sunLights);
     return light;
@@ -1006,7 +977,6 @@ std::optional<Cycled> AreaOf(const std::string &tag, const Keys &keys, const Key
     area.nightFill = *nightFill;
     area.nightHaze = std::clamp(*nightHaze, 0.0F, 1.0F);
     area.sprayMoon = std::clamp(*sprayMoon, 0.0F, 1.0F);
-    area.overcast = std::clamp(Number(said("overcast").value_or("0")).value_or(0), 0.0F, 1.0F);
     area.lampMoves = LampMovesOf(keys);
     area.declination = *declination;
     area.noon = *noon;
@@ -1048,6 +1018,57 @@ std::optional<Cycled> AreaOf(const std::string &tag, const Keys &keys, const Key
     return area;
 }
 
+// A sky's clouds by a file of data/clouds (`name`.ini): `density`,
+// `sharpness`, `depth`, `range1`, `range2` and `color`, the engine's cloud
+// fields; none where it has no such file. An area's `day_clouds` names one,
+// for a day of other weather than its borrowed day's: the unrepaired Vigil's
+// Keep rains by day too, under the clear day it borrows (vgk101d, its sun at
+// full strength over scattered clouds), and takes `overcast` (the user,
+// 2026-10-27: "how about not changing the disk and just adding more clouds
+// during the keep day (but not night)", "shouldn't we make clouds its own
+// file?"). The keep's own storm clouds, its night level's, darkened the noon
+// sky to night (29, 37, 45 of 255): their colour is a night's.
+std::vector<std::pair<float dao::core::Sky::*, float>> CloudsOf(const std::filesystem::path &folder,
+                                                                const std::string &name)
+{
+    std::vector<std::pair<float dao::core::Sky::*, float>> clouds;
+    std::error_code error;
+    const std::filesystem::path file = folder / (name + ".ini");
+    if (name.empty() || !std::filesystem::exists(file, error))
+    {
+        return clouds;
+    }
+    const Keys keys = ReadKeys(file);
+    const auto one = [&](const char *key, float dao::core::Sky::*member) {
+        if (const auto value = keys.find(key); value != keys.end())
+        {
+            if (const std::optional<float> number = Number(value->second))
+            {
+                clouds.emplace_back(member, *number);
+            }
+        }
+    };
+    one("density", &dao::core::Sky::cloudDensity);
+    one("sharpness", &dao::core::Sky::cloudSharpness);
+    one("depth", &dao::core::Sky::cloudDepth);
+    one("range1", &dao::core::Sky::cloudRangeMultiplier1);
+    one("range2", &dao::core::Sky::cloudRangeMultiplier2);
+    if (const auto colour = keys.find("color"); colour != keys.end())
+    {
+        std::istringstream rgb(colour->second);
+        float r = 0;
+        float g = 0;
+        float b = 0;
+        if (rgb >> r >> g >> b)
+        {
+            clouds.emplace_back(&dao::core::Sky::cloudRed, r);
+            clouds.emplace_back(&dao::core::Sky::cloudGreen, g);
+            clouds.emplace_back(&dao::core::Sky::cloudBlue, b);
+        }
+    }
+    return clouds;
+}
+
 Table ReadTable(const std::filesystem::path &folder)
 {
     std::vector<std::pair<std::string, Keys>> sections;
@@ -1087,6 +1108,10 @@ Table ReadTable(const std::filesystem::path &folder)
         }
         if (std::optional<Cycled> area = AreaOf(tag, keys, defaults))
         {
+            if (const auto clouds = keys.find("day_clouds"); clouds != keys.end())
+            {
+                area->dayClouds = CloudsOf(folder.parent_path() / "clouds", clouds->second);
+            }
             table.areas.push_back(std::move(*area));
         }
     }
@@ -1190,7 +1215,7 @@ void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &
         pair->nightFill = cycled.nightFill;
         pair->nightHaze = cycled.nightHaze;
         pair->sprayMoon = cycled.sprayMoon;
-        pair->overcast = cycled.overcast;
+        pair->dayClouds = cycled.dayClouds;
         pair->lampMoves = cycled.lampMoves;
         pair->heldHour = cycled.heldHour;
         pair->heldOwn = cycled.heldOwn;
