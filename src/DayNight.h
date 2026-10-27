@@ -164,6 +164,11 @@ void TryMoon(std::optional<float> turn, std::optional<float> height);
 // plugin's. Call on the game's thread, before Now.
 void TryNightColour(std::optional<float> kept);
 
+// A share of the moon's beam for the night's air to take in place of the
+// plugin's (outdoors.tune's FogMoon, a developer's), none for the plugin's.
+// Call on the game's thread, before Now.
+void TryFogMoon(std::optional<float> share);
+
 // The day's haze's depth at dawn and at dusk to try in place of the
 // plugin's (outdoors.tune's DawnHaze and DuskHaze, a developer's), none for
 // the plugin's. Call on the game's thread, before Now.

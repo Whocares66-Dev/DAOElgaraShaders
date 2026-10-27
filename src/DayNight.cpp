@@ -434,6 +434,17 @@ constexpr float kNightColour = 0.5F;
 // outdoors.tune's NightColour, a developer's, to try another share live
 // (TryNightColour). The game thread's.
 std::optional<float> g_tryColour;
+
+// How much of the moon's beam the night's air takes beside the night sky's
+// even light (LightAir): none left the Dalish camp's fog unseen against the
+// dark trees, the whole moon made it a bright cyan sheet (2026-10-27).
+// outdoors.tune's FogMoon tries others live, a developer's (TryFogMoon).
+constexpr float kFogMoon = 0.25F;
+std::optional<float> g_tryFogMoon;
+float FogMoon()
+{
+    return std::clamp(g_tryFogMoon.value_or(kFogMoon), 0.0F, 1.0F);
+}
 float NightColour()
 {
     return std::clamp(g_tryColour.value_or(kNightColour), 0.0F, 1.0F);
@@ -634,7 +645,8 @@ void WaterAndSpray(Light &light, const Pair &pair, const dao::core::Sky &daySky,
 // night level's its night fog as the plugin pales it. The engine fogs every
 // surface and the sky toward it, so the far landscape follows the hour, warm
 // at dusk and cool at night.
-void LightAir(Light &light, const Pair &pair, const dao::core::Sky &daySky, const dao::core::Sky &nightSky, float day)
+void LightAir(Light &light, const Pair &pair, const dao::core::Sky &daySky, const dao::core::Sky &nightSky, float day,
+              bool sunLights)
 {
     const std::array<float, 3> dayBy = FogOver(FogOf(daySky), Rgb(pair.day.sun.color), pair.day.skyLight);
     // The night level's light paled as the night's is (its fog was paled by
@@ -645,10 +657,21 @@ void LightAir(Light &light, const Pair &pair, const dao::core::Sky &daySky, cons
     std::array<float, 3> skyLight{};
     for (std::size_t i = 0; i < by.size(); ++i)
     {
-        by.at(i) = std::lerp(nightBy.at(i), dayBy.at(i), day);
+        // How much of its light the air gives back is the place's own, as
+        // its thickness is (LightAt), at every hour: from the night level
+        // the Dalish camp's thick gold fog took Redcliffe's clear night
+        // air's share and was as dark as the trees behind it by midnight
+        // (the user, 2026-10-27: "fog still seems to disappear at night").
+        by.at(i) = pair.ownIsNight ? nightBy.at(i) : dayBy.at(i);
         skyLight.at(i) = std::lerp(light.nightSky.at(i), pair.day.skyLight.at(i), day);
     }
-    const std::array<float, 3> sun = Rgb(light.sun.color);
+    // By night the air takes the night sky's even light alone, what lights
+    // the shade, and not the moon's beam: lit by the whole moon, the game's
+    // night lit for play at half the day's light, the Dalish camp's fog was a
+    // bright cyan sheet over the dark trees at midnight (the user,
+    // 2026-10-27: "fog is way too bright ... tone it down, don't want it
+    // neon").
+    const std::array<float, 3> sun = sunLights ? Rgb(light.sun.color) : Scaled(Rgb(light.sun.color), FogMoon());
     light.sky.fogRed = by[0] * (sun[0] + skyLight[0]);
     light.sky.fogGreen = by[1] * (sun[1] + skyLight[1]);
     light.sky.fogBlue = by[2] * (sun[2] + skyLight[2]);
@@ -682,6 +705,17 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
     const float day = SmoothStep(kNightFrom, kDayFrom, sunHeight);
     Light light;
     light.sky = dao::core::Blend(nightSky, daySky, day);
+    // How thick the air is, its fog's intensity, cap and zenith, is the
+    // place's own at every hour, its own level's; the hour gives the fog its
+    // colour alone. Blended to the night level's, Haven's thick fog thinned
+    // to Redcliffe's clear night air and went by midnight (the user,
+    // 2026-10-27: "the fog seems to disappear at night?").
+    {
+        const dao::core::Sky &place = pair.ownIsNight ? nightSky : daySky;
+        light.sky.fogIntensity = place.fogIntensity;
+        light.sky.fogCap = place.fogCap;
+        light.sky.fogZenith = place.fogZenith;
+    }
     light.nightShare = 1 - day;
     // At night the moon alone lights what the bake lit by day, from where it
     // is: the bake, a level's probes and its ambient go to the night sky's
@@ -748,7 +782,7 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
     }
     light.sky.moonAlpha = sunLights ? daySky.moonAlpha * SmoothStep(kOver, -kOver, sunHeight) : nightSky.moonAlpha * up;
     WaterAndSpray(light, pair, daySky, nightSky, day, sunLights);
-    LightAir(light, pair, daySky, nightSky, day);
+    LightAir(light, pair, daySky, nightSky, day, sunLights);
     return light;
 }
 
@@ -1213,6 +1247,11 @@ std::optional<Borrowed> BorrowedBy(std::wstring_view level)
     const auto cycled = std::ranges::find(g_cycled, level, &Cycled::own);
     return cycled != g_cycled.end() ? std::optional<Borrowed>(Borrowed{cycled->other, cycled->ownIsNight})
                                     : std::nullopt;
+}
+
+void TryFogMoon(std::optional<float> share)
+{
+    g_tryFogMoon = share;
 }
 
 void TryNightColour(std::optional<float> kept)

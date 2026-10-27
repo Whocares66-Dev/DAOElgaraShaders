@@ -443,6 +443,7 @@ void KeepHour()
     const bool had = g_hourLight.has_value();
     daynight::TryMoon(Tuned("MoonTurn"), Tuned("MoonHeight"));
     daynight::TryNightColour(Tuned("NightColour"));
+    daynight::TryFogMoon(Tuned("FogMoon"));
     daynight::TryDayHaze(Tuned("DawnHaze"), Tuned("DuskHaze"));
     g_hourLight = sun && sky ? daynight::Now(AreaTag(), *sun, *sky, running, Tuned("DayMinutes").value_or(kDayMinutes),
                                              Tuned("Night").value_or(kNight), Tuned("NightFill"), Tuned("NightHaze"))
