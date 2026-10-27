@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0
+
+- Day / night cycle in the outdoor areas: Lothering, Redcliffe's village and castle, the Brecilian Forest and the Dalish camp, Haven and its mountain top, the Frostback pass, Denerim's streets, the world map's encounters, the Circle's docks, Awakening's outdoors and the DLC's (Honnleath, Soldier's Peak, Return to Ostagar, Flemeth's hut). On by default. Places the story sets the hour for keep it: the prologue, the sieges, the climax, Leliana's Song, the Darkspawn Chronicles; Redcliffe stays day until the siege, Soldier's Peak and the Circle's docks night until their quests are done.
+- Sunsets redder and sunrises paler; the sky and the air take the hour's light, and a place's fog stays its own at night, moonlit.
+- The plugin's own haze is gone: the game's fog is drawn as the game draws it, with its color by the hour. The haze's teal and green patches, its white glow toward a low sun and its banding are gone with it, with the game's anti-aliasing on or off.
+- Fires, torches and lamps light their surroundings by night, with shadows; lava glows.
+- Water and mist take the hour's light: the docks' lake by day, a rainy keep's rain by night.
+- Fixes: black walls and statues in the Ruined Temple at some angles (#55), white hair at some angles (#56), portraits lit by the area's lights (#51).
+- Needs DAOLib 0.7.0 or newer.
+
 ## 0.3.0
 
 - Day / night cycle: a new option on the Video tab, with a Time of day slider. The sun and moon cross the sky, a day an hour; at night the moon casts the shadows, fires are lit, and water and its spray are a dimmer white, mirroring the night sky. Redcliffe only for now; needs Improved lighting. Off by default.
