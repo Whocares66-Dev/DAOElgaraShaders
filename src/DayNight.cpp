@@ -104,7 +104,7 @@ struct Pair
     float noon = 0;                  // the hour the sun is highest (its area's file)
     float nightFill = 0;             // the share of the night sky's light kept by night (its area's file)
     float nightHaze = 0;             // how much of the area's own haze its night's sky has (its area's file)
-    float sprayMoon = 0;        // how much of the moon's light its spray and mist take (its area's file)
+    float effectsMoonlit = 0;        // how much of the moon's light its spray and mist take (its area's file)
     std::vector<std::pair<float dao::core::Sky::*, float>> dayClouds; // its file's `day_clouds` level's clouds
     std::vector<LampMove> lampMoves;                                  // its file's `move_lamp`s
     std::optional<float> heldHour; // the hour its light is held at (its file's `hour`), none for the clock's
@@ -409,7 +409,7 @@ struct Cycled
     float noon = 0;
     float nightFill = 0;
     float nightHaze = 0;
-    float sprayMoon = 0;
+    float effectsMoonlit = 0;
     std::vector<std::pair<float dao::core::Sky::*, float>> dayClouds; // its file's `day_clouds`, data/clouds
     std::vector<LampMove> lampMoves;
     std::optional<float> heldHour; // the hour its light is held at (its file's `hour`), none for the clock's
@@ -622,7 +622,7 @@ void WaterAndSpray(Light &light, const Pair &pair, const dao::core::Sky &daySky,
     }
     const std::array<float, 3> &ownSkyLight = Own(pair).skyLight;
     // By night, as much of the moon as the area's spray stands in (its file's
-    // `spray_moon`): the plugin shadows the moon on surfaces, not on a
+    // `effects_moonlit`): the plugin shadows the moon on surfaces, not on a
     // particle, and under the West Brecilian Forest's canopy its falls took
     // the whole moon, 0.56 of their noon brightness at midnight beside ground
     // all but black (2026-10-24).
@@ -631,7 +631,7 @@ void WaterAndSpray(Light &light, const Pair &pair, const dao::core::Sky &daySky,
     // for a day takes the evening's warmth and the moon's pale blue as the
     // ground beside it does (2026-10-24; its colour once turned the falls ink
     // blue, 2026-10-22, before the night's colour was paled).
-    const float sprayBy = sunLights ? 1 : pair.sprayMoon;
+    const float sprayBy = sunLights ? 1 : pair.effectsMoonlit;
     for (std::size_t i = 0; i < light.lit.size(); ++i)
     {
         const float own = Own(pair).sun.color.at(i) + ownSkyLight.at(i);
@@ -965,9 +965,9 @@ std::optional<Cycled> AreaOf(const std::string &tag, const Keys &keys, const Key
     const std::optional<float> noon = Number(said("noon").value_or(""));
     const std::optional<float> nightFill = Number(said("night_fill").value_or(""));
     const std::optional<float> nightHaze = Number(said("night_haze").value_or(""));
-    const std::optional<float> sprayMoon = Number(said("spray_moon").value_or(""));
+    const std::optional<float> effectsMoonlit = Number(said("effects_moonlit").value_or(""));
     if (area.own.empty() || area.other.empty() || (!borrowedNight.empty() && !borrowedDay.empty()) || !declination ||
-        !noon || !nightFill || !nightHaze || !sprayMoon)
+        !noon || !nightFill || !nightHaze || !effectsMoonlit)
     {
         spdlog::warn("day and night: areas/{}.ini lacks its level, one of its night or its day, the declination, "
                      "noon, the night's fill or its haze",
@@ -976,7 +976,7 @@ std::optional<Cycled> AreaOf(const std::string &tag, const Keys &keys, const Key
     }
     area.nightFill = *nightFill;
     area.nightHaze = std::clamp(*nightHaze, 0.0F, 1.0F);
-    area.sprayMoon = std::clamp(*sprayMoon, 0.0F, 1.0F);
+    area.effectsMoonlit = std::clamp(*effectsMoonlit, 0.0F, 1.0F);
     area.lampMoves = LampMovesOf(keys);
     area.declination = *declination;
     area.noon = *noon;
@@ -1214,7 +1214,7 @@ void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &
         pair->noon = cycled.noon;
         pair->nightFill = cycled.nightFill;
         pair->nightHaze = cycled.nightHaze;
-        pair->sprayMoon = cycled.sprayMoon;
+        pair->effectsMoonlit = cycled.effectsMoonlit;
         pair->dayClouds = cycled.dayClouds;
         pair->lampMoves = cycled.lampMoves;
         pair->heldHour = cycled.heldHour;
