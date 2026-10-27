@@ -105,6 +105,7 @@ struct Pair
     float nightFill = 0;             // the share of the night sky's light kept by night (its area's file)
     float nightHaze = 0;             // how much of the area's own haze its night's sky has (its area's file)
     float sprayMoon = 0;             // how much of the moon's light its spray and mist take (its area's file)
+    float overcast = 0;              // how much cloud hides the sun by day, 0 to 1 (its area's file)
     std::vector<LampMove> lampMoves; // its file's `move_lamp`s
     std::optional<float> heldHour;   // the hour its light is held at (its file's `hour`), none for the clock's
     bool heldOwn = false;            // held at the level's own hour (its file's `hour = own`)
@@ -409,6 +410,7 @@ struct Cycled
     float nightFill = 0;
     float nightHaze = 0;
     float sprayMoon = 0;
+    float overcast = 0;
     std::vector<LampMove> lampMoves;
     std::optional<float> heldHour; // the hour its light is held at (its file's `hour`), none for the clock's
     bool heldOwn = false;          // held at the level's own hour (its file's `hour = own`)
@@ -677,6 +679,40 @@ void LightAir(Light &light, const Pair &pair, const dao::core::Sky &daySky, cons
     light.sky.fogBlue = by[2] * (sun[2] + skyLight[2]);
 }
 
+// How much of the sun's light the cloud an overcast day takes out of its beam
+// comes down through it as the sky's even light, in grey: an overcast sky's
+// light is a fifth to a third of a clear day's, all of it diffuse.
+constexpr float kOvercastThrough = 0.25F;
+
+// An overcast day (its area's file's `overcast`): the sun's beam and its disc
+// dimmed by the cover, and what the cloud takes out of the beam sent on, in
+// part, as the even light that fills the shade, so the shadows soften (the
+// user, 2026-10-27, of the rain at the unrepaired keep by day: "we should have
+// the sun not be a whole disk, but a diffuse cloud-hidden thing, like haven
+// during daytime").
+void Overcast(Light &light, const std::array<float, 3> &ownSkyLight, float cover, bool sunLights)
+{
+    if (cover <= 0 || !sunLights)
+    {
+        return;
+    }
+    const float beam = (0.2126F * light.sun.color[0]) + (0.7152F * light.sun.color[1]) + (0.0722F * light.sun.color[2]);
+    for (std::size_t i = 0; i < 3; ++i)
+    {
+        light.sun.color.at(i) *= 1 - cover;
+        light.sun.characterColor.at(i) *= 1 - cover;
+        light.sunOverDay.at(i) *= 1 - cover;
+        // On the bake where the bake is the day's, on the even light where
+        // it is a night's (the keep's vgk100d; LightAt's evenShare).
+        // The bake's is a multiplier of the level's own sky light; the even
+        // light is a light.
+        const float diffuse = cover * kOvercastThrough * beam;
+        light.baked.at(i) += ownSkyLight.at(i) > 0 ? diffuse / ownSkyLight.at(i) : 0;
+        light.even.at(i) += diffuse;
+    }
+    light.sky.moonAlpha *= 1 - cover;
+}
+
 Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float night, float fill, float haze)
 {
     const dao::core::Sky daySky = SkyOf(own, pair.day);
@@ -781,6 +817,7 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
         channel = brightest > 0 ? channel / brightest : 1;
     }
     light.sky.moonAlpha = sunLights ? daySky.moonAlpha * SmoothStep(kOver, -kOver, sunHeight) : nightSky.moonAlpha * up;
+    Overcast(light, Own(pair).skyLight, pair.overcast, sunLights);
     WaterAndSpray(light, pair, daySky, nightSky, day, sunLights);
     LightAir(light, pair, daySky, nightSky, day, sunLights);
     return light;
@@ -969,6 +1006,7 @@ std::optional<Cycled> AreaOf(const std::string &tag, const Keys &keys, const Key
     area.nightFill = *nightFill;
     area.nightHaze = std::clamp(*nightHaze, 0.0F, 1.0F);
     area.sprayMoon = std::clamp(*sprayMoon, 0.0F, 1.0F);
+    area.overcast = std::clamp(Number(said("overcast").value_or("0")).value_or(0), 0.0F, 1.0F);
     area.lampMoves = LampMovesOf(keys);
     area.declination = *declination;
     area.noon = *noon;
@@ -1152,6 +1190,7 @@ void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &
         pair->nightFill = cycled.nightFill;
         pair->nightHaze = cycled.nightHaze;
         pair->sprayMoon = cycled.sprayMoon;
+        pair->overcast = cycled.overcast;
         pair->lampMoves = cycled.lampMoves;
         pair->heldHour = cycled.heldHour;
         pair->heldOwn = cycled.heldOwn;

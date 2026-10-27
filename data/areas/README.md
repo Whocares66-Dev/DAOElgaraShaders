@@ -16,6 +16,7 @@ One file an area, named by its tag (`lot100ar_lothering.ini`), read as the plugi
 | `night_haze` | how hazy the night sky is, 0 to 1: 0 the night level's clear air (Redcliffe's deep blue), 1 the area's own haze and clouds as by day, between them a mix; the sky is as dark at any value, and the moon and the night's light are the night level's (outdoors.tune's `NightHaze` tries one live) |
 | `hour` | the hour the area's light is held at, the story's, in place of the clock's; `own` for the level's own hour, its makers' light |
 | `hour_until` | `<plot> <flag>`, several by commas: with `hour`, the clock runs there once the party has any of these flags (a plot by its resource name, `arl100pt_siege`) |
+| `overcast` | how much cloud hides the sun by day, 0 to 1: its beam and its disc dimmed by it, a share of what the cloud takes sent on as the even light that fills the shade; the sky as it is (the night level's storm clouds by day darkened the keep's sky to night, 2026-10-27); default 0 |
 | `spray_moon` | how much of the moon's light the area's spray and mist (effects.ini's `lit`) take by night, 0 to 1, beside the night sky's: 0 for spray under trees, 1 for spray in the open moon |
 | `move_lamp` | `x y z > x y z`: a lamp named as a fire that the level puts at the first place (to a tenth of a metre) lit at the second, where its lantern or fire is; a flame there is then lit by the lamp alone. Several keys may start `move_lamp` |
 | `fire_strength` | (`defaults.ini` only) how bright the plugin lights fires and lamps, a share of their own light |
