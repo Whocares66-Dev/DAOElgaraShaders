@@ -2,10 +2,12 @@
 
 ## 0.4.1
 
-- Faster indoors and underground: the plugin lights the level's fires, torches and lamps itself only in the areas Day and night runs in, and leaves them to the game elsewhere, as 0.3.0 did. Orzammar's Commons went from about 7.1 ms a frame to 4.3, as in 0.3.0 (#61).
-- Faster sun and moon shadows when the light is low or the area is large: the soft shadows no longer search metres around each pixel for what shades it. Redcliffe at 21:00 went from about 9.4 ms a frame to 5.7, the Dalish camp at noon from 15.4 to 8.5, Haven from 13.9 to 12.5 (#61).
-- Shadows are right from the moment an area loads: the shadow maps' depth was worked out before the level was measured, and left so until the sun moved or the camera did (#61).
-- Vigil's Keep's overcast day is back: 0.4.0's download was missing its clouds (#61).
+Performance: 0.4.0 was slower than 0.3.0 indoors, and its shadows were slow under a low sun or moon (#61).
+
+- Faster indoors and underground, as fast as 0.3.0: the plugin lights fires, torches and lamps itself only in the areas Day and night runs in, where the hour changes the level's light. Elsewhere they are lit as the game lights them, as in 0.3.0; spells and flaming weapons still light everything around them. Orzammar's Commons went from about 7.0 ms a frame to 4.2.
+- Faster sun and moon shadows when the light is low or the shade is wide: the soft shadows no longer search metres around each point for what shades it. Redcliffe at 21:00 went from about 9.5 ms a frame to 5.7, the Dalish camp at noon from 15.4 to 8.5, Haven at 21:00 from 10.7 to 9.1; the shadows look the same.
+- Shadows are right from the moment an area loads: their depth was worked out before the level had been measured, and left so until the sun or the camera moved.
+- Vigil's Keep's overcast day is back: 0.4.0's download was missing its clouds.
 - Needs DAOLib 0.7.0 or newer.
 
 ## 0.4.0
