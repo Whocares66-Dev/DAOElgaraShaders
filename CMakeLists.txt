@@ -125,6 +125,7 @@ add_daolib_plugin(
         src/Outdoors.cpp
         src/DayNight.cpp
         src/NightCubes.cpp
+        src/SkyBodies.cpp
         src/ProbeBaker.cpp
         src/Probes.cpp
         src/EffectLights.cpp

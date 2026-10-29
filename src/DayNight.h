@@ -67,6 +67,7 @@ struct Light
     std::array<float, 3> baked{1, 1, 1};
     std::array<float, 3> sunOverDay{1, 1, 1};
     std::array<float, 3> disc{1, 1, 1}; // the sun's hue through the air, the moon's white
+    bool moon = false;                  // the disc is the moon's: the engine's sun is the moon (SkyBodies.h)
     float nightShare = 0;               // how far the hour is from the day's bake to the night sky's light
     std::array<float, 3> nightSky{};    // the night sky's light, as the lightmaps keep light (night_sky.hlsl)
     std::array<float, 2> water{1, 1};   // water's light over the level's own, and its colour kept (Water)
@@ -208,6 +209,10 @@ std::array<float, 2> Water();
 // The colour the sky's disc is drawn in (Light's disc), or none where the
 // clock is not running. Any thread.
 std::optional<std::array<float, 3>> Disc();
+
+// Whether the sky's disc is the moon, as of the last Now; false where the
+// clock is not running. Any thread.
+bool DiscIsMoon();
 
 // How much the air of a sky scatters, each channel, per metre: its molecules
 // (Rayleigh's (6.95, 11.8, 24.4) per million metres times the sky's rayleigh

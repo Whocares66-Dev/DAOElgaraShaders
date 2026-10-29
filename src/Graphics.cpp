@@ -50,6 +50,7 @@
 #include "Probes.h"
 #include "ResourceDump.h"
 #include "ShaderCode.h"
+#include "SkyBodies.h"
 
 #include "dao/Addresses.h"
 #include "dao/Camera.h"
@@ -792,6 +793,7 @@ HRESULT __stdcall CreatePixelShader(IDirect3DDevice9 *device, const DWORD *code,
         }
         levelshadows::CreatedPixel(code, static_cast<IDirect3DPixelShader9 *>(*shader));
         const std::vector<std::byte> bytes = shadercode::CodeOf(code);
+        skybodies::CreatedPixel(bytes, static_cast<IDirect3DPixelShader9 *>(*shader));
         g_hair.erase(*shader);
         if (shadercode::RegisterOf(bytes, "smpHairTexture"))
         {
@@ -1079,7 +1081,9 @@ HRESULT __stdcall Draw(IDirect3DDevice9 *device, D3DPRIMITIVETYPE type, UINT fir
         LogDraw(device, count);
     }
     levelshadows::DrawingPlain(device, g_drawsPicture);
+    skybodies::Drawing(device);
     const HRESULT result = g_draw.Original()(device, type, first, count);
+    skybodies::Drawn(device);
     levelshadows::Drawn(device);
     return result;
 }
@@ -1099,7 +1103,9 @@ HRESULT __stdcall DrawIndexed(IDirect3DDevice9 *device, D3DPRIMITIVETYPE type, I
         DrawExtraPasses(device, type, base, least, vertices, first, count);
     }
     HoldHairBack(device);
+    skybodies::Drawing(device);
     const HRESULT result = g_drawIndexed.Original()(device, type, base, least, vertices, first, count);
+    skybodies::Drawn(device);
     GiveHairBack(device);
     levelshadows::Drawn(device);
     return result;
@@ -1872,6 +1878,7 @@ extern "C" __declspec(dllexport) bool __cdecl DAOLib_Load(const dao::LoaderInfo 
     dao::OnFrame(&KeepLens);
     dao::OnFrame(&ApplyOptions);
     dao::OnFrame(&resourcedump::Poll);
+    dao::OnFrame(&skybodies::Poll);
     dao::OnFrame(&materialpatch::LogCounts);
     dao::OnFrame(&materiallearn::Poll);
     dao::OnFrame(&outdoors::Poll);
