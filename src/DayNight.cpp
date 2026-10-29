@@ -105,6 +105,7 @@ struct Pair
     float nightFill = 0;             // the share of the night sky's light kept by night (its area's file)
     float nightHaze = 0;             // how much of the area's own haze its night's sky has (its area's file)
     float effectsMoonlit = 0;        // how much of the moon's light its spray and mist take (its area's file)
+    float waterMoonlit = 1;          // how much of the moon's light its water takes (its area's file)
     std::vector<std::pair<float dao::core::Sky::*, float>> dayClouds; // its file's `day_clouds` level's clouds
     std::vector<LampMove> lampMoves;                                  // its file's `move_lamp`s
     std::optional<float> heldHour; // the hour its light is held at (its file's `hour`), none for the clock's
@@ -410,6 +411,7 @@ struct Cycled
     float nightFill = 0;
     float nightHaze = 0;
     float effectsMoonlit = 0;
+    float waterMoonlit = 1;
     std::vector<std::pair<float dao::core::Sky::*, float>> dayClouds; // its file's `day_clouds`, data/clouds
     std::vector<LampMove> lampMoves;
     std::optional<float> heldHour; // the hour its light is held at (its file's `hour`), none for the clock's
@@ -446,6 +448,14 @@ std::optional<float> g_tryFogMoon;
 float FogMoon()
 {
     return std::clamp(g_tryFogMoon.value_or(kFogMoon), 0.0F, 1.0F);
+}
+
+// outdoors.tune's WaterMoonlit, in place of the area's file's
+// `water_moonlit`, a developer's (TryWaterMoonlit). The game thread's.
+std::optional<float> g_tryWaterMoonlit;
+float WaterMoonlit(const Pair &pair)
+{
+    return std::clamp(g_tryWaterMoonlit.value_or(pair.waterMoonlit), 0.0F, 1.0F);
 }
 float NightColour()
 {
@@ -631,13 +641,39 @@ void WaterAndSpray(Light &light, const Pair &pair, const dao::core::Sky &daySky,
     // for a day takes the evening's warmth and the moon's pale blue as the
     // ground beside it does (2026-10-24; its colour once turned the falls ink
     // blue, 2026-10-22, before the night's colour was paled).
+    // By night over the own level's light's grey rather than each colour,
+    // and the night's light's brightness without its colour: white water by
+    // the moon is a dimmer white (the user, 2026-10-22: "we want it to be a
+    // less bright white, not blue"). A spray drawn white under the Brecilian
+    // forests' gold day light (0.61, 0.40, 0.28) took the night's light over
+    // that in each colour and went deep blue, 20, 57, 127 of 255 at the West
+    // forest's falls at midnight; 34, 54, 70 now, beside rock at 36, 63, 66
+    // (#63). Water keeps its light's colour: without it (its sky's sun's,
+    // warm) the stream went bluer, 89, 101, 119 to 80, 103, 128. A night the
+    // own level (the Circle's docks) keeps its own.
     const float sprayBy = sunLights ? 1 : pair.effectsMoonlit;
+    const std::array<float, 3> ownLight{Own(pair).sun.color[0] + ownSkyLight[0],
+                                        Own(pair).sun.color[1] + ownSkyLight[1],
+                                        Own(pair).sun.color[2] + ownSkyLight[2]};
+    const float ownGrey = grey(ownLight[0], ownLight[1], ownLight[2]);
+    const float toGrey = pair.ownIsNight ? 0 : light.nightShare;
     for (std::size_t i = 0; i < light.lit.size(); ++i)
     {
-        const float own = Own(pair).sun.color.at(i) + ownSkyLight.at(i);
+        const float own = std::lerp(ownLight.at(i), ownGrey, toGrey);
         light.lit.at(i) = own > 0 ? ((light.sun.color.at(i) * sprayBy) + sky.at(i)) / own : 1;
     }
-    light.water = {skySun > 0 && daySun > 0 ? (sun / daySun) * (daySkySun / skySun) : 1,
+    light.lit = Paler(light.lit, 1 - toGrey);
+    // By night, the share of the moon's and the sky's light that reaches the
+    // area's water (its file's `water_moonlit`): as with its spray, the moon
+    // the plugin shadows on the ground lit the water under the canopy whole,
+    // and the West Brecilian Forest's stream ran white past moss all but
+    // black at midnight (#63).
+    const float waterBy = sunLights ? 1 : WaterMoonlit(pair);
+    const float reaches =
+        grey(light.sun.color[0], light.sun.color[1], light.sun.color[2]) + grey(sky[0], sky[1], sky[2]);
+    const float reached = (sun * waterBy) + grey(sky[0], sky[1], sky[2]);
+    light.water = {(skySun > 0 && daySun > 0 ? (sun / daySun) * (daySkySun / skySun) : 1) *
+                       (reaches > 0 ? reached / reaches : 1),
                    std::lerp(1.0F, NightColour(), light.nightShare)};
 }
 
@@ -969,17 +1005,19 @@ std::optional<Cycled> AreaOf(const std::string &tag, const Keys &keys, const Key
     const std::optional<float> nightFill = Number(said("night_fill").value_or(""));
     const std::optional<float> nightHaze = Number(said("night_haze").value_or(""));
     const std::optional<float> effectsMoonlit = Number(said("effects_moonlit").value_or(""));
+    const std::optional<float> waterMoonlit = Number(said("water_moonlit").value_or(""));
     if (area.own.empty() || area.other.empty() || (!borrowedNight.empty() && !borrowedDay.empty()) || !declination ||
-        !noon || !nightFill || !nightHaze || !effectsMoonlit)
+        !noon || !nightFill || !nightHaze || !effectsMoonlit || !waterMoonlit)
     {
         spdlog::warn("day and night: areas/{}.ini lacks its level, one of its night or its day, the declination, "
-                     "noon, the night's fill or its haze",
+                     "noon, the night's fill, its haze or its effects' or water's moonlight",
                      tag);
         return std::nullopt;
     }
     area.nightFill = *nightFill;
     area.nightHaze = std::clamp(*nightHaze, 0.0F, 1.0F);
     area.effectsMoonlit = std::clamp(*effectsMoonlit, 0.0F, 1.0F);
+    area.waterMoonlit = std::clamp(*waterMoonlit, 0.0F, 1.0F);
     area.lampMoves = LampMovesOf(keys);
     area.declination = *declination;
     area.noon = *noon;
@@ -1218,6 +1256,7 @@ void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &
         pair->nightFill = cycled.nightFill;
         pair->nightHaze = cycled.nightHaze;
         pair->effectsMoonlit = cycled.effectsMoonlit;
+        pair->waterMoonlit = cycled.waterMoonlit;
         pair->dayClouds = cycled.dayClouds;
         pair->lampMoves = cycled.lampMoves;
         pair->heldHour = cycled.heldHour;
@@ -1319,6 +1358,11 @@ std::optional<Borrowed> BorrowedBy(std::wstring_view level)
 void TryFogMoon(std::optional<float> share)
 {
     g_tryFogMoon = share;
+}
+
+void TryWaterMoonlit(std::optional<float> share)
+{
+    g_tryWaterMoonlit = share;
 }
 
 void TryNightColour(std::optional<float> kept)

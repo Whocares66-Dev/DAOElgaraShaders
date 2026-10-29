@@ -18,6 +18,7 @@ One file an area, named by its tag (`lot100ar_lothering.ini`), read as the plugi
 | `hour_until` | `<plot> <flag>`, several by commas: with `hour`, the clock runs there once the party has any of these flags (a plot by its resource name, `arl100pt_siege`) |
 | `day_clouds` | a file of `data/clouds` whose clouds its sky has by day (their density, shape, reach and color); the night keeps its own. For a day of other weather than its borrowed day's |
 | `effects_moonlit` | how much moonlight the area's light-catching effects (spray, mist, smoke, rain: effects.ini's `lit`) get at night, 0 to 1: 0 for effects under trees, where the moon doesn't reach, 1 for effects out in the open; default 0 |
+| `water_moonlit` | how much moonlight the area's water (the water shaders' lakes, rivers and falls) gets at night, 0 to 1: 0 for water under trees, where the moon doesn't reach, 1 for water out in the open; default 1 |
 | `move_lamp` | `x y z > x y z`: a lamp named as a fire that the level puts at the first place (to a tenth of a metre) lit at the second, where its lantern or fire is; a flame there is then lit by the lamp alone. Several keys may start `move_lamp` |
 | `fire_strength` | (`defaults.ini` only) how bright the plugin lights fires and lamps, a share of their own light |
 | `fires` | (`defaults.ini` only) the starts of the names of layouts' lights that are fires, which keep their light by night; every other layout light goes with the sun |

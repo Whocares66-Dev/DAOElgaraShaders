@@ -170,6 +170,11 @@ void TryNightColour(std::optional<float> kept);
 // Call on the game's thread, before Now.
 void TryFogMoon(std::optional<float> share);
 
+// A share of the moon's light for the area's water to take by night in place
+// of its file's `water_moonlit` (outdoors.tune's WaterMoonlit, a
+// developer's), none for the file's. Call on the game's thread, before Now.
+void TryWaterMoonlit(std::optional<float> share);
+
 // The day's haze's depth at dawn and at dusk to try in place of the
 // plugin's (outdoors.tune's DawnHaze and DuskHaze, a developer's), none for
 // the plugin's. Call on the game's thread, before Now.
