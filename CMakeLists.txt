@@ -118,6 +118,7 @@ add_daolib_plugin(
     SOURCES
         src/Graphics.cpp
         src/Glowing.cpp
+        src/GpuTimer.cpp
         src/MaterialPatch.cpp
         src/MaterialLearn.cpp
         src/ResourceDump.cpp

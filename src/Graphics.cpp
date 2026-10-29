@@ -40,6 +40,7 @@
 #include "DayNight.h"
 #include "EffectLights.h"
 #include "GameFolder.h"
+#include "GpuTimer.h"
 #include "KeptState.h"
 #include "LevelShadows.h"
 #include "MaterialLearn.h"
@@ -547,6 +548,7 @@ HRESULT __stdcall Reset(IDirect3DDevice9 *device, D3DPRESENT_PARAMETERS *paramet
 {
     const auto start = std::chrono::steady_clock::now();
     levelshadows::Release();
+    gputimer::Release();
     DropScene();
     const auto released = std::chrono::steady_clock::now();
     const HRESULT result = g_reset.Original()(device, parameters);
@@ -598,6 +600,8 @@ std::string Described(IDirect3DDevice9 *device, IDirect3DSurface9 *surface)
 // line, written by build/scratch/cost-test.py) is drawn K times more, depth
 // tested and writing nothing, which is the work of drawing the level into K
 // shadow maps; and the frame's mean time is logged every kCostFrames frames.
+// Kept in the release: tools/perf_compare.py times each release against the
+// last with it (dev/RELEASING.md, 2026-10-28), reading this log line.
 constexpr std::string_view kShadowCostFile = "shadow-cost";
 constexpr std::string_view kLevelShadersFile = "level-shaders";
 constexpr int kCostFrames = 300;
@@ -888,7 +892,10 @@ void FramePresented(std::string_view by)
 
 HRESULT __stdcall Present(IDirect3DDevice9 *device, const RECT *from, const RECT *to, HWND window, const RGNDATA *dirty)
 {
+    gputimer::Begin(device, "show scene");
     ShowScene(device);
+    gputimer::End(device);
+    gputimer::Presented(device);
     FramePresented("the device");
     return g_present.Original()(device, from, to, window, dirty);
 }
@@ -905,7 +912,10 @@ HRESULT __stdcall ChainPresent(IDirect3DSwapChain9 *chain, const RECT *from, con
 {
     if (g_device != nullptr)
     {
+        gputimer::Begin(g_device, "show scene");
         ShowScene(g_device);
+        gputimer::End(g_device);
+        gputimer::Presented(g_device);
     }
     FramePresented("the swap chain");
     return g_chainPresent.Original()(chain, from, to, window, dirty, flags);
@@ -1042,6 +1052,10 @@ HRESULT __stdcall SetRenderTarget(IDirect3DDevice9 *device, DWORD index, IDirect
         LogDraws();
         spdlog::info("  target {}: [{}]", index, Described(device, target));
     }
+    if (index == 0 && gputimer::On())
+    {
+        gputimer::Mark(device, Described(device, target));
+    }
     return g_setRenderTarget.Original()(device, index, target);
 }
 
@@ -1059,6 +1073,7 @@ HRESULT __stdcall Clear(IDirect3DDevice9 *device, DWORD count, const D3DRECT *re
 HRESULT __stdcall Draw(IDirect3DDevice9 *device, D3DPRIMITIVETYPE type, UINT first, UINT count)
 {
     g_draws += g_tracing ? 1 : 0;
+    gputimer::Drawn();
     if (g_tracing)
     {
         LogDraw(device, count);
@@ -1073,6 +1088,7 @@ HRESULT __stdcall DrawIndexed(IDirect3DDevice9 *device, D3DPRIMITIVETYPE type, I
                               UINT first, UINT count)
 {
     g_draws += g_tracing ? 1 : 0;
+    gputimer::Drawn();
     if (g_tracing)
     {
         LogDraw(device, count);
@@ -1832,6 +1848,7 @@ extern "C" __declspec(dllexport) bool __cdecl DAOLib_Load(const dao::LoaderInfo 
         spdlog::error("not the loader or the game this was built for");
         return false;
     }
+    gputimer::Start();
     ReadChosen(dao::Module::OwnFolder());
     materiallearn::Start(dao::Module::OwnFolder());
     materialpatch::Start(dao::Module::OwnFolder());

@@ -1,4 +1,5 @@
 #include "LevelShadows.h"
+#include "GpuTimer.h"
 #include "KeptState.h"
 
 #include "Cascades.h"
@@ -1542,7 +1543,9 @@ static void Receiving(IDirect3DDevice9 *device)
             {
                 g_atlasDrawn = true;
                 const Timed timed(kSunPart);
+                gputimer::Begin(device, "sun atlas");
                 g_atlasReady = DrawAtlas(device);
+                gputimer::End(device);
                 SetReceivers(device);
             }
             if (g_atlasReady)
@@ -2706,7 +2709,9 @@ static void EffectsDrawing(IDirect3DDevice9 *device)
         g_effectsDrawn = true;
         g_lightsMost = std::max(g_lightsMost, effectlights::Handed().size());
         const Timed timed(kEffectsPart);
+        gputimer::Begin(device, "effects' shadows");
         g_effectsReady = DrawEffectShadows(device);
+        gputimer::End(device);
     }
     if (g_effectsReady)
     {
