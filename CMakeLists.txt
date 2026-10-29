@@ -124,6 +124,7 @@ add_daolib_plugin(
         src/ResourceDump.cpp
         src/Outdoors.cpp
         src/DayNight.cpp
+        src/DrawDistance.cpp
         src/NightCubes.cpp
         src/SkyBodies.cpp
         src/ProbeBaker.cpp
