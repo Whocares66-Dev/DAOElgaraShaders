@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.1
+
+- Faster indoors and underground: the plugin lights the level's fires, torches and lamps itself only in the areas Day and night runs in, and leaves them to the game elsewhere, as 0.3.0 did. Orzammar's Commons went from about 7.1 ms a frame to 4.3, as in 0.3.0 (#61).
+- Faster sun and moon shadows when the light is low or the area is large: the soft shadows no longer search metres around each pixel for what shades it. Redcliffe at 21:00 went from about 9.4 ms a frame to 5.7, the Dalish camp at noon from 15.4 to 8.5, Haven from 13.9 to 12.5 (#61).
+- Shadows are right from the moment an area loads: the shadow maps' depth was worked out before the level was measured, and left so until the sun moved or the camera did (#61).
+- Vigil's Keep's overcast day is back: 0.4.0's download was missing its clouds (#61).
+- Needs DAOLib 0.7.0 or newer.
+
 ## 0.4.0
 
 - Day / night cycle in the outdoor areas: Lothering, Redcliffe's village and castle, the Brecilian Forest and the Dalish camp, Haven and its mountain top, the Frostback pass, Denerim's streets, the world map's encounters, the Circle's docks, Awakening's outdoors and the DLC's (Honnleath, Soldier's Peak, Return to Ostagar, Flemeth's hut). On by default. Places the story sets the hour for keep it: the prologue, the sieges, the climax, Leliana's Song, the Darkspawn Chronicles; Redcliffe stays day until the siege, Soldier's Peak and the Circle's docks night until their quests are done.
