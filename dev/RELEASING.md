@@ -16,16 +16,17 @@ A release holds `extern\DAOLib` at one of DAOLib's own release tags, and `releas
 
 ## What the zip holds
 
-The plugin's folder, `bin_ship\daolib\plugins\elgarashaders\`, as the release build makes it:
+The plugin's folder, `bin_ship\daolib\plugins\elgarashaders\`, as the release build makes it, whole (`tools/package.ps1` copies every file in it, not files by name: 0.4.0's zip named its folders one by one and left out `clouds\`, #61):
 
 - `elgarashaders.dll` and `elgarashaders.pdb`: the PDB lets a crash log name the plugin's frames.
 - `materials.answers` and `materials.names`: what each of the game's materials is given, and the tables a mod's are classed by.
 - `override\`: the game's shaders rebuilt from the installed game, SMAA's lookup textures, and the metal maps.
+- every other file the build copies from `data\` (`effects.ini`, `glowing.ini`, `areas\`, `clouds\`, ...), at its place there. A file in the build's folder that the build makes from nothing and `data\` no longer has (a branch's leftover) stops the zip until it is deleted, and so does a folder of `data\` the build did not copy whole.
 - `README.md`, `LICENSE.txt`, `SMAA-LICENSE.txt` and `VERSION.txt`: the release, and the DAOLib it was built on with its plugin API.
 
 **The add-ins' materials come from a dump outside git**: `build/addins`, which `tools/dump_addins.py` writes from a running game (the add-ins' archives are enciphered). The materials step reads it at `<checkout>/build/addins`, and in a checkout without it (a new worktree) the build silently leaves out the add-ins' answers and metal maps: 89 answers and 21 maps fewer than 0.1.1's, the Blood Dragon armor among them (seen 2026-10-16). Release from a checkout that has it, or copy it in: `release.ps1` refuses without it, and the materials step reruns when the dump's files change.
 
-Not `graphics.chosen`: the options are the player's, kept across an update. Nothing in the zip may name the user's folder; `package.ps1` refuses one that does.
+Never `graphics.chosen` (the options are the player's, kept across an update), a developer's files (`outdoors.tune`, `gpu-timing`, `level-shaders`, `shadow-cost`, `dump-shadow-maps`) or the build's bookkeeping (`override\materials.made`). Nothing in the zip may name the user's folder; `package.ps1` refuses one that does.
 
 ## Steps
 

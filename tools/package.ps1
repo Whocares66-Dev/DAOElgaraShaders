@@ -5,18 +5,25 @@
 .DESCRIPTION
     After `.\tools\build.ps1 -Preset release`, writes dist\DAOElgaraShaders-<version>.zip,
     laid out as the game's install folder, so it is extracted there (beside bin_ship) as
-    DAOLib's own zip is. It holds the plugin's folder and nothing else:
+    DAOLib's own zip is. It holds the plugin's folder as the build made it, whole, and
+    nothing else, with README.md, LICENSE.txt, SMAA-LICENSE.txt and VERSION.txt beside:
 
-        bin_ship\daolib\plugins\elgarashaders\elgarashaders.dll
-        bin_ship\daolib\plugins\elgarashaders\elgarashaders.pdb   so a crash log names the mod's frames
-        bin_ship\daolib\plugins\elgarashaders\materials.answers   what each of the game's materials is given
-        bin_ship\daolib\plugins\elgarashaders\materials.names     the names' tables a mod's are classed by
-        bin_ship\daolib\plugins\elgarashaders\override\           the game's shaders rebuilt, and the metal maps
-        bin_ship\daolib\plugins\elgarashaders\README.md, LICENSE.txt, SMAA-LICENSE.txt, VERSION.txt
+        elgarashaders.dll, elgarashaders.pdb   the plugin, and its symbols for a crash log
+        materials.answers, materials.names     the materials' table's tool's
+        override\                              the game's shaders rebuilt, and the metal maps
+        every other file                        a file of data\ the build copied, at its place there
 
-    No loader and no address files: those are DAOLib's zip, which a game has first. Not
-    graphics.chosen: the options are the player's, kept across an update. DAOTurnBased's
-    tools\package.ps1, copied 2026-10-16, with this plugin's files.
+    The whole folder, not files by name: 0.4.0's zip named its folders one by one and left
+    out clouds\, and Vigil's Keep's overcast day with it (#61). So a file the build puts in
+    the folder is given out with nothing here changed, and a file the build did not make is
+    refused, not given: a file of data\ is given where data\ still has it, and one it has not
+    (a branch's, left in the build tree: daynight.ini) stops the zip until it is deleted;
+    and each of data\'s folders of .ini files must be there whole. Never given: what is the
+    player's or a developer's (graphics.chosen, outdoors.tune, the timers' and dumps' files)
+    and the build's own bookkeeping (override\materials.made).
+
+    No loader and no address files: those are DAOLib's zip, which a game has first.
+    DAOTurnBased's tools\package.ps1, copied 2026-10-16, with this plugin's files.
 
     The override folder is as the build made it (the shaders, SMAA's two lookup textures,
     the metal maps), and this refuses one with no shaders. A session's learned maps are in
@@ -46,10 +53,17 @@ $builtPlugin = Join-Path $built 'elgarashaders.dll'
 if (-not (Test-Path $builtPlugin)) { throw "No $builtPlugin; run .\tools\build.ps1 -Preset $Preset first" }
 $builtPdb = Join-Path $built 'elgarashaders.pdb'
 if (-not (Test-Path $builtPdb)) { throw "No $builtPdb; a crash log names none of the mod's frames without it" }
-$tables = 'materials.answers', 'materials.names', 'effects.ini', 'glowing.ini'
-foreach ($table in $tables) {
-    if (-not (Test-Path (Join-Path $built $table))) { throw "No $table in $built; run .\tools\build.ps1 -Preset $Preset again" }
+# What the build makes in the folder from no file of data\ of the same name.
+$products = 'elgarashaders.dll', 'elgarashaders.pdb', 'materials.answers', 'materials.names'
+foreach ($product in $products) {
+    if (-not (Test-Path (Join-Path $built $product))) { throw "No $product in $built; run .\tools\build.ps1 -Preset $Preset again" }
 }
+# What is never given out: the player's options, a developer's files (outdoors.tune's
+# tuning; the frame and GPU timers' gpu-timing, level-shaders and shadow-cost; the shadow
+# maps' dump's), the build's bookkeeping, and a debug link's leavings.
+$notGiven = 'graphics.chosen', 'outdoors.tune', 'gpu-timing', 'level-shaders', 'shadow-cost', 'dump-shadow-maps',
+    'materials.made'
+$notGivenKinds = '.ilk', '.exp', '.lib', '.log'
 
 # The override folder: the game's shaders as build_shaders.py rebuilt them, and the
 # metal maps the materials' table made (elgarashaders_materials objects).
@@ -78,22 +92,38 @@ else {
     Show-Warn 'extern\DAOLib is at no release''s tag; a release of the mod holds it at one'
 }
 
+# The folder's files, each given or not: a file of data\ only where data\ has it.
+$data = Join-Path $repo 'data'
+$given = @()
+$stale = @()
+foreach ($file in Get-ChildItem $built -Recurse -File) {
+    $relative = $file.FullName.Substring($built.Length + 1)
+    if ($notGiven -contains $file.Name -or $notGivenKinds -contains $file.Extension) { continue }
+    if ($products -contains $relative -or $relative.StartsWith('override\')) { $given += $relative; continue }
+    if (Test-Path -PathType Leaf (Join-Path $data $relative)) { $given += $relative; continue }
+    $stale += $relative
+}
+if ($stale) {
+    throw "In $built, made by no step of this build and no file of data\: $($stale -join ', '). Delete them (a branch's leavings) or add their source to data\ and the build"
+}
+# Each of data\'s folders the build copies is there whole: 0.4.0's zip had no clouds\.
+foreach ($folder in Get-ChildItem $data -Directory) {
+    $sources = @(Get-ChildItem $folder.FullName -File -Filter '*.ini')
+    $copied = @($given | Where-Object { $_.StartsWith("$($folder.Name)\") })
+    if ($sources.Count -ne $copied.Count) {
+        throw "data\$($folder.Name) has $($sources.Count) .ini files and $built $($copied.Count); run .\tools\build.ps1 -Preset $Preset again"
+    }
+}
+
 $out = Join-Path $repo 'dist'
 $stage = Join-Path $out $name
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 $plugin = Join-Path $stage 'bin_ship\daolib\plugins\elgarashaders'
-New-Item -ItemType Directory -Force (Join-Path $plugin 'override') | Out-Null
-
-# By name, not the folder as built: graphics.chosen is a player's, and a debug build
-# leaves the linker's .ilk there.
-Copy-Item -Force $builtPlugin, $builtPdb $plugin
-foreach ($table in $tables) { Copy-Item -Force (Join-Path $built $table) $plugin }
-# The areas the day and night runs in, a file each (data/areas).
-$areas = Join-Path $built 'areas'
-if (-not (Test-Path (Join-Path $areas 'defaults.ini'))) { throw "No areas\defaults.ini in $built; run .	oolsuild.ps1 -Preset $Preset again" }
-New-Item -ItemType Directory -Force (Join-Path $plugin 'areas') | Out-Null
-Copy-Item -Force (Join-Path $areas '*.ini') (Join-Path $plugin 'areas')
-foreach ($file in $overrideFiles) { Copy-Item -Force $file.FullName (Join-Path $plugin 'override') }
+foreach ($relative in $given) {
+    $into = Join-Path $plugin $relative
+    New-Item -ItemType Directory -Force (Split-Path -Parent $into) | Out-Null
+    Copy-Item -Force (Join-Path $built $relative) $into
+}
 Copy-Item -Force (Join-Path $repo 'README.md') $plugin
 Copy-Item -Force (Join-Path $repo 'LICENSE') (Join-Path $plugin 'LICENSE.txt')
 Copy-Item -Force (Join-Path $repo 'shaders\smaa\LICENSE.txt') (Join-Path $plugin 'SMAA-LICENSE.txt')
@@ -133,5 +163,7 @@ $zip = Join-Path $out "$name.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip
 Remove-Item -Recurse -Force $stage
-Show-Info "built on $builtOn, plugin API $pluginApi; $($shaders.Count) shaders and $($maps.Count) maps in override"
+$folders = ($given | Where-Object { $_.Contains('\') } | ForEach-Object { $_.Split('\')[0] } | Group-Object |
+    ForEach-Object { "$($_.Name)\ $($_.Count)" }) -join ', '
+Show-Info "built on $builtOn, plugin API $pluginApi; $($given.Count) files ($($shaders.Count) shaders, $($maps.Count) metal maps); $folders"
 Show-Ok "package -> $zip"
