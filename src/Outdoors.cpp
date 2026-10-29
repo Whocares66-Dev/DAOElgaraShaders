@@ -180,6 +180,9 @@ bool SunlitFigures()
 }
 bool g_outdoors = false;
 bool g_sunlit = false; // out of doors with a sun on the ground (Sunlit)
+// Whether the player's area is one the day and night run in (data/areas):
+// the only places the plugin lights the level's lamps itself (CyclingArea).
+std::atomic<bool> g_cycling{false};
 
 void KeepTune()
 {
@@ -387,6 +390,11 @@ bool Sunlit()
     return g_sunlit;
 }
 
+bool CyclingArea()
+{
+    return g_cycling.load(std::memory_order_relaxed);
+}
+
 void WantClock(bool on)
 {
     g_clockOn = on;
@@ -479,9 +487,11 @@ void Poll()
     KeepSky();
     KeepSun();
     const bool outdoors = OutOfDoors();
-    if (asked || g_seenOutdoors != outdoors)
+    const bool cycling = daynight::Cycles(AreaTag());
+    if (asked || g_seenOutdoors != outdoors || g_cycling.load(std::memory_order_relaxed) != cycling)
     {
         g_seenOutdoors = outdoors;
+        g_cycling.store(cycling, std::memory_order_relaxed);
         g_changes.fetch_add(1, std::memory_order_relaxed);
     }
 }

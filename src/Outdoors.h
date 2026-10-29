@@ -32,6 +32,10 @@ float Fills();
 // black. The game thread's word, as of the last Poll.
 bool Sunlit();
 
+// Whether the player's area is on the day and night's list (data/areas), the
+// option on or off. The game thread's word, as of the last Poll.
+bool CyclingArea();
+
 // Whether the player wants Improved lighting. Call on the game's thread.
 void Want(bool on);
 
