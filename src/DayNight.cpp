@@ -783,6 +783,7 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
     // (the sky's moon alpha, the disc's whole brightness) the day's or the
     // night's own, going as the body crosses the horizon and, for the moon,
     // with twilight.
+    light.moon = !sunLights;
     const float brightest = std::max({light.disc[0], light.disc[1], light.disc[2]});
     for (float &channel : light.disc)
     {
@@ -835,6 +836,7 @@ std::atomic<float> g_evenShare{0};
 std::array<std::atomic<float>, 3> g_even{0.0F, 0.0F, 0.0F};
 std::array<std::atomic<float>, 3> g_daySky{0.0F, 0.0F, 0.0F};
 std::optional<std::array<float, 3>> g_disc;
+std::atomic<bool> g_discIsMoon{false};
 std::vector<LampMove> g_lampMoves;  // the running area's, under g_lock
 std::atomic<bool> g_running{false}; // the clock runs in a level with a night
 std::array<std::atomic<float>, 3> g_layoutLightsBy{1.0F, 1.0F, 1.0F};
@@ -865,6 +867,7 @@ void Stopped()
     g_running.store(false, std::memory_order_relaxed);
     const std::scoped_lock lock(g_lock);
     g_disc.reset();
+    g_discIsMoon.store(false, std::memory_order_relaxed);
     g_lampMoves.clear();
 }
 
@@ -1439,6 +1442,7 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
     g_running.store(true, std::memory_order_relaxed);
     const std::scoped_lock lock(g_lock);
     g_disc = light.disc;
+    g_discIsMoon.store(light.moon, std::memory_order_relaxed);
     g_lampMoves = pair->lampMoves;
     return light;
 }
@@ -1464,6 +1468,11 @@ std::optional<std::array<float, 3>> Disc()
 {
     const std::scoped_lock lock(g_lock);
     return g_disc;
+}
+
+bool DiscIsMoon()
+{
+    return g_discIsMoon.load(std::memory_order_relaxed);
 }
 
 void Install()
