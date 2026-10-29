@@ -35,9 +35,12 @@
 //   sun's shadows are the plugin's own (LevelShadows.h); the engine's maps
 //   are read where its sun is not out of doors.
 // - Anisotropic filtering, which the game has no setting for.
+// - The draw distance: every distance the engine chooses a detail or a
+//   showing by, scaled (DrawDistance.h).
 //
 // What it does goes to elgarashaders.log.
 #include "DayNight.h"
+#include "DrawDistance.h"
 #include "EffectLights.h"
 #include "GameFolder.h"
 #include "GpuTimer.h"
@@ -103,9 +106,10 @@ constexpr std::int32_t kMapSize = 2048; // texels a side, with Improved lighting
 constexpr bool kMaterialsByDefault = true;
 constexpr bool kSmaaByDefault = true;
 constexpr bool kLightingByDefault = true;
-constexpr int kOcclusionByDefault = 3;  // High
-constexpr int kAnisotropyByDefault = 4; // 16x
-constexpr int kExposureByDefault = 2;   // 0 EV
+constexpr int kOcclusionByDefault = 3;    // High
+constexpr int kAnisotropyByDefault = 4;   // 16x
+constexpr int kExposureByDefault = 2;     // 0 EV
+constexpr int kDrawDistanceByDefault = 0; // vanilla's
 std::atomic<bool> g_materials{kMaterialsByDefault};
 // Improved lighting: out of doors one sun lights everything (Outdoors.h, LevelShadows.h, Probes.h)
 std::atomic<bool> g_lighting{kLightingByDefault};
@@ -129,6 +133,16 @@ std::atomic<int> g_anisotropyStop{kAnisotropyByDefault};
 constexpr std::array<float, 5> kExposureStops{-0.5F, -0.25F, 0.0F, 0.25F, 0.5F}; // in EV
 constexpr std::array<const wchar_t *, 5> kExposureNames{L"-0.5", L"-0.25", L"0", L"+0.25", L"+0.5"};
 std::atomic<int> g_exposureStop{kExposureByDefault};
+// How far the world is drawn in detail, as a factor on every distance the
+// engine chooses a detail or a showing by (DrawDistance.h; the user,
+// 2026-10-29: "we can try 2x, 4x, 8x", and "a Max option ... no
+// compromises"). Max is drawdistance::kMax: every tile at its near detail,
+// every tree whole, every creature and object shown at its finest model.
+// 8x was dropped (the user, 2026-10-29: "let's have 1x, 2x, 4x, and Max"):
+// in Redcliffe and Ostagar it drew all that Max does, for 0.5 ms less.
+constexpr std::array<float, 4> kDrawDistanceStops{1.0F, 2.0F, 4.0F, drawdistance::kMax};
+constexpr std::array<const wchar_t *, 4> kDrawDistanceNames{L"1x", L"2x", L"4x", L"Max"};
+std::atomic<int> g_drawDistanceStop{kDrawDistanceByDefault};
 // A test of the day and night (DayNight.h; the user, 2026-10-21: "add a test
 // slider ... so we can control time of day"): Off, the area's own light;
 // Running, the clock going on by itself; or an hour held, every half hour.
@@ -1419,6 +1433,10 @@ void ReadChosen(const std::filesystem::path &folder)
         {
             g_anisotropyStop.store(StopOf(value, kAnisotropyStops.size()), std::memory_order_relaxed);
         }
+        if (key == "DrawDistance")
+        {
+            g_drawDistanceStop.store(StopOf(value, kDrawDistanceStops.size()), std::memory_order_relaxed);
+        }
         if (key == "TimeOfDay")
         {
             g_timeStop.store(StopOf(value, kTimeStops), std::memory_order_relaxed);
@@ -1442,6 +1460,7 @@ void KeepChosen()
         << "\nAmbientOcclusion = " << g_occlusionStop.load(std::memory_order_relaxed)
         << "\nAnisotropicFiltering = " << g_anisotropyStop.load(std::memory_order_relaxed)
         << "\nExposure = " << g_exposureStop.load(std::memory_order_relaxed)
+        << "\nDrawDistance = " << g_drawDistanceStop.load(std::memory_order_relaxed)
         << "\nDayNight = " << said(g_dayNight.load(std::memory_order_relaxed))
         << "\nTimeOfDay = " << g_timeStop.load(std::memory_order_relaxed) << '\n';
     if (!out)
@@ -1528,6 +1547,12 @@ void KeepLookRegisters()
     g_shareWanted.store(g_occlusionStop.load(std::memory_order_relaxed) > 0, std::memory_order_relaxed);
     g_anisotropy.store(kAnisotropyStops.at(static_cast<std::size_t>(g_anisotropyStop.load(std::memory_order_relaxed))),
                        std::memory_order_relaxed);
+    drawdistance::Want(
+        kDrawDistanceStops.at(static_cast<std::size_t>(g_drawDistanceStop.load(std::memory_order_relaxed))));
+    // outdoors.tune's DrawTiles, DrawObjects, DrawTrees and DrawEffects = 0, a
+    // developer's: what each part of the draw distance costs.
+    drawdistance::WantParts(outdoors::Tune("DrawTiles", 1) > 0, outdoors::Tune("DrawObjects", 1) > 0,
+                            outdoors::Tune("DrawTrees", 1) > 0, outdoors::Tune("DrawEffects", 1) > 0);
 }
 
 // The focal length of the picture, in pixels: what makes the angle between
@@ -1707,7 +1732,7 @@ void ApplyOptions()
 
 // The options screen's section, on the Video tab's right column, which holds
 // a heading and twelve rows of 35 px (DAOLib #82), a slider 41 px (#84):
-// three checkboxes and three sliders. Improved materials, SMAA and two sliders
+// four checkboxes and five sliders. Improved materials, SMAA and two sliders
 // are the first release's (issue 23); Improved lighting is the lighting and
 // the sun's shadows, one switch for both (the user, 2026-10-16), in place of
 // the release's Improved shadows.
@@ -1814,6 +1839,11 @@ void AddToOptions()
              StopSlider(g_anisotropyStop, kAnisotropyByDefault, kAnisotropyNames, L"GraphicsAnisotropic",
                         L"Anisotropic filtering", L"Keeps textures sharp where they are seen at a slant",
                         "anisotropic filtering"),
+             StopSlider(g_drawDistanceStop, kDrawDistanceByDefault, kDrawDistanceNames, L"GraphicsDrawDistance",
+                        L"Draw distance",
+                        L"How far the land, trees, creatures and effects are drawn in full detail, as a multiple of "
+                        L"the game's distances",
+                        "draw distance"),
              TimeSlider()},
             dao::options::Column::Right, dao::options::Tab::Video))
     {
@@ -1868,6 +1898,7 @@ extern "C" __declspec(dllexport) bool __cdecl DAOLib_Load(const dao::LoaderInfo 
     daynight::Install();
     nightcubes::Install();
     effectlights::Install();
+    drawdistance::Install();
     if (!g_setPartitions.Attach(dao::addr::kShadowMaps_SetPartitions, &SetPartitions))
     {
         spdlog::warn("the shadow maps keep the game's size: no detour");
@@ -1877,6 +1908,7 @@ extern "C" __declspec(dllexport) bool __cdecl DAOLib_Load(const dao::LoaderInfo 
     dao::OnFrame(&LogOptionsSection);
     dao::OnFrame(&KeepLens);
     dao::OnFrame(&ApplyOptions);
+    dao::OnFrame(&drawdistance::Keep);
     dao::OnFrame(&resourcedump::Poll);
     dao::OnFrame(&skybodies::Poll);
     dao::OnFrame(&materialpatch::LogCounts);
