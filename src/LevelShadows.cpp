@@ -60,6 +60,7 @@ constexpr std::wstring_view kCutVariantPrefix = L"daoshadowcut_";
 constexpr std::wstring_view kCutShader = L"daoshadowcut.psh.fxo";
 constexpr std::wstring_view kCopyVertexShader = L"daoshadowcopy.vsh.fxo";
 constexpr std::wstring_view kCopyPixelShader = L"daoshadowcopy.psh.fxo";
+constexpr std::wstring_view kMinShader = L"daoshadowmin.psh.fxo";
 constexpr UINT kAlphaReferenceRegister = 216; // shadow_cut.hlsl's fDaoAlphaReference
 constexpr std::wstring_view kMeasurePrefix = L"daomeasure_";
 constexpr std::wstring_view kCastShader = L"daoshadow.psh.fxo";
@@ -252,6 +253,13 @@ std::unordered_map<std::uint64_t, int> g_drawnThisFrame; // how often each key's
 // Which kept draws there are, counted up as one is added or all let go: a
 // tree's constants noted again each frame, its wind, do not count.
 std::uint64_t g_seenGeneration = 0;
+// Counted up as kept draws are measured (CollectMeasured): the maps' depth
+// along the light is reckoned from the bounds measured, and reckoned once
+// as a level opened, before any were, it was kept so until the light turned
+// or the map moved. Every map was then as deep as it is wide whatever stood
+// sunward of it, and with the camera still its shadows were not the level's
+// (2026-10-28, #61: "0 of 374 kept draws with bounds").
+std::uint64_t g_boundsGeneration = 0;
 std::vector<const LevelDraw *> g_order; // g_seen's, grouped by what they share
 bool g_seenChanged = false;
 std::atomic<bool> g_forget{false};
@@ -374,6 +382,7 @@ struct Along
     std::array<float, 2> place{};
     cascades::Vector light{};
     std::uint64_t seen = ~std::uint64_t{0};
+    std::uint64_t bounds = ~std::uint64_t{0}; // g_boundsGeneration
 };
 std::array<Along, 4> g_along;
 std::optional<cascades::Vector> g_focus;        // under g_sunLock: Focus's
@@ -390,6 +399,15 @@ constexpr UINT kTile = 2048;
 constexpr D3DFORMAT kMapFormat = D3DFMT_G16R16;
 IDirect3DTexture9 *g_atlas = nullptr;
 IDirect3DSurface9 *g_atlasDepth = nullptr;
+// The atlas's mips are its min-max depth chain (MakeNearest): each texel the
+// nearest the sun of the four above it in red and the farthest in green, down to a tile's single texel at
+// level 11, which the receivers read to bound the soft shadows' search
+// (shadow.hlsl's DaoNearestIn). A level is drawn into the scratch's own and
+// copied across: a texture is not drawn into while it is read.
+constexpr UINT kAtlasLevels = 12;
+IDirect3DTexture9 *g_atlasScratch = nullptr;
+std::vector<std::byte> g_minCode;
+IDirect3DPixelShader9 *g_minPixel = nullptr;
 UINT g_tile = 0;
 bool g_atlasDrawn = false; // asked for this frame
 
@@ -449,8 +467,9 @@ std::unordered_map<IDirect3DPixelShader9 *, DWORD> g_receiversFar; // the engine
 // a texture there: until 2026-10-16 figures' and props' textures were drawn
 // blocky close up and sparkling in motion, and SMAA could not smooth them
 // (the user: "grainy shimmering").
-constexpr std::array<D3DSAMPLERSTATETYPE, 5> kLentStates{D3DSAMP_MINFILTER, D3DSAMP_MAGFILTER, D3DSAMP_MIPFILTER,
-                                                         D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV};
+constexpr std::array<D3DSAMPLERSTATETYPE, 7> kLentStates{D3DSAMP_MINFILTER,    D3DSAMP_MAGFILTER, D3DSAMP_MIPFILTER,
+                                                         D3DSAMP_ADDRESSU,     D3DSAMP_ADDRESSV,  D3DSAMP_MAXMIPLEVEL,
+                                                         D3DSAMP_MIPMAPLODBIAS};
 struct Lent
 {
     bool lent = false;
@@ -873,6 +892,7 @@ void CollectMeasured()
             continue;
         }
         const bool read = !most->empty() && !least->empty();
+        bool measured = false;
         for (std::size_t at = 0; at < slot.keys.size(); ++at)
         {
             const auto found = g_seen.find(slot.keys[at]);
@@ -898,10 +918,12 @@ void CollectMeasured()
                                                    kMeasureOffset - smallest[2], greatest[0] - kMeasureOffset,
                                                    greatest[1] - kMeasureOffset, greatest[2] - kMeasureOffset};
                 ++g_measuredCount;
+                measured = true;
             }
         }
         slot.keys.clear();
         slot.batch = 0;
+        g_boundsGeneration += measured ? 1 : 0;
     }
 }
 
@@ -1248,6 +1270,7 @@ void Start(const std::filesystem::path &override, const std::filesystem::path &g
     g_cutCode = ReadFile(override / kCutShader);
     g_copyVertexCode = ReadFile(override / kCopyVertexShader);
     g_copyPixelCode = ReadFile(override / kCopyPixelShader);
+    g_minCode = ReadFile(override / kMinShader);
     const std::optional<dao::core::erf::Archive> archive =
         dao::core::erf::Archive::Open(game / "packages" / "core" / "data" / "shaders.erf");
     std::error_code error;
@@ -1507,7 +1530,12 @@ static void Lend(IDirect3DDevice9 *device, DWORD sampler, Lent &lent = g_lent, I
     device->SetTexture(sampler, texture);
     SetSampler(device, sampler, D3DSAMP_MINFILTER, D3DTEXF_POINT);
     SetSampler(device, sampler, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
-    SetSampler(device, sampler, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+    // Point between mips too: the atlas's are its min-depth chain, read at a
+    // level of their own (shadow.hlsl's DaoNearestIn); every other read is
+    // at its first.
+    SetSampler(device, sampler, D3DSAMP_MIPFILTER, D3DTEXF_POINT);
+    SetSampler(device, sampler, D3DSAMP_MAXMIPLEVEL, 0);
+    SetSampler(device, sampler, D3DSAMP_MIPMAPLODBIAS, 0);
     SetSampler(device, sampler, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
     SetSampler(device, sampler, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
 }
@@ -2047,7 +2075,8 @@ static std::optional<std::array<float, 2>> DepthAlong(std::size_t map, const cas
 {
     Along &along = g_along.at(map);
     const std::array<float, 2> place{clip[3], clip[7]};
-    if (along.place == place && along.light == light && along.seen == g_seenGeneration)
+    if (along.place == place && along.light == light && along.seen == g_seenGeneration &&
+        along.bounds == g_boundsGeneration)
     {
         return along.span;
     }
@@ -2081,9 +2110,20 @@ static std::optional<std::array<float, 2>> DepthAlong(std::size_t map, const cas
         least = std::min(least, span[4]);
         most = std::max(most, span[5]);
     }
+    if (gputimer::On())
+    {
+        int bounded = 0;
+        for (const auto &[key, draw] : g_seen)
+        {
+            bounded += draw.bounds ? 1 : 0;
+        }
+        spdlog::info("gpu timing: map {}'s depth along the light {:.1f} m ({} of {} kept draws with bounds)", map,
+                     least <= most ? most - least : 0.0F, bounded, g_seen.size());
+    }
     along.place = place;
     along.light = light;
     along.seen = g_seenGeneration;
+    along.bounds = g_boundsGeneration;
     along.span = least <= most ? std::optional<std::array<float, 2>>(std::array<float, 2>{least, most}) : std::nullopt;
     return along.span;
 }
@@ -2147,8 +2187,8 @@ static bool MakeAtlas(IDirect3DDevice9 *device)
     {
         return true;
     }
-    if (FAILED(device->CreateTexture(kTile * 2, kTile * 2, 1, D3DUSAGE_RENDERTARGET, kMapFormat, D3DPOOL_DEFAULT,
-                                     &g_atlas, nullptr)) ||
+    if (FAILED(device->CreateTexture(kTile * 2, kTile * 2, kAtlasLevels, D3DUSAGE_RENDERTARGET, kMapFormat,
+                                     D3DPOOL_DEFAULT, &g_atlas, nullptr)) ||
         FAILED(device->CreateDepthStencilSurface(kTile * 2, kTile * 2, D3DFMT_D24X8, D3DMULTISAMPLE_NONE, 0, TRUE,
                                                  &g_atlasDepth, nullptr)))
     {
@@ -2164,6 +2204,17 @@ static bool MakeAtlas(IDirect3DDevice9 *device)
         return false;
     }
     g_tile = kTile;
+    if (FAILED(device->CreateTexture(kTile * 2, kTile * 2, kAtlasLevels, D3DUSAGE_RENDERTARGET, kMapFormat,
+                                     D3DPOOL_DEFAULT, &g_atlasScratch, nullptr)))
+    {
+        g_atlasScratch = nullptr;
+        spdlog::warn("level shadows: no min-depth chain for the atlas; the soft shadows search as far as before");
+    }
+    if (g_minPixel == nullptr && !g_minCode.empty() &&
+        FAILED(device->CreatePixelShader(reinterpret_cast<const DWORD *>(g_minCode.data()), &g_minPixel)))
+    {
+        g_minPixel = nullptr;
+    }
     return true;
 }
 
@@ -2322,6 +2373,54 @@ static void DrawOldAtlas(IDirect3DDevice9 *device)
     g_fadeShare = std::max(seconds / kFadeSeconds, 1e-3F);
 }
 
+// The atlas's min-depth chain made again from its first level, as drawn
+// this frame: each level drawn from the one above into the scratch's, and
+// copied into the atlas's. Every level is made each frame: the figures are
+// drawn into the atlas each frame, and the chain is some 5.6 M texels of
+// four reads, a small share of the atlas's own drawing.
+static void MakeNearest(IDirect3DDevice9 *device)
+{
+    if (g_atlasScratch == nullptr || g_minPixel == nullptr)
+    {
+        return;
+    }
+    device->SetDepthStencilSurface(nullptr);
+    device->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
+    device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+    device->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
+    SetCopying(device, g_atlas);
+    device->SetPixelShader(g_minPixel);
+    device->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_POINT);
+    device->SetSamplerState(0, D3DSAMP_MAXMIPLEVEL, 0);
+    device->SetSamplerState(0, D3DSAMP_MIPMAPLODBIAS, 0);
+    for (UINT level = 1; level < kAtlasLevels; ++level)
+    {
+        IDirect3DSurface9 *into = nullptr;
+        IDirect3DSurface9 *kept = nullptr;
+        if (FAILED(g_atlasScratch->GetSurfaceLevel(level, &into)) || FAILED(g_atlas->GetSurfaceLevel(level, &kept)))
+        {
+            if (into != nullptr)
+            {
+                into->Release();
+            }
+            return;
+        }
+        const UINT size = (kTile * 2) >> level;
+        device->SetRenderTarget(0, into);
+        const D3DVIEWPORT9 viewport{0, 0, size, size, 0, 1};
+        device->SetViewport(&viewport);
+        const std::array<float, 4> constants{static_cast<float>(level - 1), 1.0F / static_cast<float>(size),
+                                             level == 1 ? 1.0F : 0.0F, 0};
+        device->SetPixelShaderConstantF(0, constants.data(), 1);
+        const std::array<Corner, 4> quad = Quad(size, size, 0);
+        device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad.data(), sizeof(Corner));
+        device->StretchRect(into, nullptr, kept, nullptr, D3DTEXF_POINT);
+        into->Release();
+        kept->Release();
+    }
+    device->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+}
+
 // The atlas drawn for this frame, after the engine's shadow pass: the maps
 // fitted, their caches kept, and each tile given its cache, what moves and
 // the figures. False where there is nothing to draw it by.
@@ -2347,10 +2446,20 @@ static bool DrawAtlas(IDirect3DDevice9 *device)
         {
             DrawTile(device, map, g_cascades.at(map), g_caches.at(map));
         }
+        MakeNearest(device);
         std::error_code error;
         if (!g_dumpAsked.empty() && std::filesystem::exists(g_dumpAsked, error))
         {
             DumpMap(device, atlas, "atlas");
+            for (const UINT level : {3U, 6U})
+            {
+                IDirect3DSurface9 *mip = nullptr;
+                if (SUCCEEDED(g_atlas->GetSurfaceLevel(level, &mip)))
+                {
+                    DumpMap(device, mip, "atlas-level" + std::to_string(level));
+                    mip->Release();
+                }
+            }
             std::filesystem::remove(g_dumpAsked, error);
         }
         atlas->Release();
@@ -2966,6 +3075,7 @@ void Release()
     g_figureKeys.clear();
     Drop(g_atlas);
     Drop(g_atlasDepth);
+    Drop(g_atlasScratch);
     Drop(g_oldAtlas);
     g_oldCascades = {};
     g_fittedAxes.reset();

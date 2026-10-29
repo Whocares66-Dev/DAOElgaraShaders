@@ -1817,6 +1817,7 @@ OURS = [
     ("shadow_cut.hlsl", "daoshadowcut.psh.fxo"),
     ("shadow_copy_vertex.hlsl", "daoshadowcopy.vsh.fxo"),
     ("shadow_copy.hlsl", "daoshadowcopy.psh.fxo"),
+    ("shadow_min.hlsl", "daoshadowmin.psh.fxo"),
 ]
 
 

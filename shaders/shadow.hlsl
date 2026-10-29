@@ -230,6 +230,36 @@ struct DaoInMap
     float deep;
 };
 
+// The nearest the sun (x) and the farthest (y) anything is within `search`
+// of `at` in the tile at `origin` (both in the tile's 0 to 1), from the
+// atlas's min-max depth chain (LevelShadows.cpp's MakeNearest): the four
+// texels of the first level whose texel is as wide as the search's disc,
+// which hold the disc whole. Kept to the tile, whose texels are whole at
+// every level to its own single one. The first level has its depth in red
+// alone.
+float2 DaoDepthsIn(float2 origin, float2 at, float search)
+{
+    const float across = 2 * search * kDaoAtlasTile; // the disc's width in the first level's texels
+    const float level = clamp(ceil(log2(max(across, 1))), 0, 11);
+    const float size = 2 * kDaoAtlasTile / exp2(level); // the atlas's texels a side at that level
+    const float2 low = origin * size;
+    const float2 high = low + 0.5 * size - 1;
+    const float2 first = clamp(floor((origin + 0.5 * at) * size - 0.5), low, high);
+    const float2 second = min(first + 1, high);
+    float2 a = tex2Dlod(smpShadowPartition1, float4((first + 0.5) / size, 0, level)).xy;
+    float2 b = tex2Dlod(smpShadowPartition1, float4((float2(second.x, first.y) + 0.5) / size, 0, level)).xy;
+    float2 c = tex2Dlod(smpShadowPartition1, float4((float2(first.x, second.y) + 0.5) / size, 0, level)).xy;
+    float2 d = tex2Dlod(smpShadowPartition1, float4((second + 0.5) / size, 0, level)).xy;
+    if (level < 1)
+    {
+        a.y = a.x;
+        b.y = b.x;
+        c.y = c.x;
+        d.y = d.x;
+    }
+    return float2(min(min(a.x, b.x), min(c.x, d.x)), max(max(a.y, b.y), max(c.y, d.y)));
+}
+
 // The lit part at `placed` in map `tile` of the atlas, its edge as soft as the
 // sun makes it there: what may shade the point is looked for as far round it
 // as the sun's disc reaches from the map's sunward side, and the point is
@@ -252,7 +282,32 @@ float DaoAtlasShadow(int tile, DaoInMap placed, float2 turn)
     const float4 m2 = daoShadowData[tile * 3 + 2];
     const float2 slope = DaoSlope(float3(dot(m0.xyz, daoWorldDx), dot(m1.xyz, daoWorldDx), dot(m2.xyz, daoWorldDx)),
                                   float3(dot(m0.xyz, daoWorldDy), dot(m1.xyz, daoWorldDy), dot(m2.xyz, daoWorldDy)));
-    const float search = max(kDaoSunRadius * (placed.at.z / placed.deep) * placed.across, placed.radius);
+    // As far round as the sun's disc reaches from the map's sunward end at
+    // most, and then, twice, no further than it reaches from the nearest
+    // thing within that: the map's end is the farthest caster's, up to 2 km
+    // away along a low sun, and the search was metres wide on a map of six,
+    // its sixteen taps strewn over the tile, thirty-two on most pixels
+    // (2026-10-28, #61: 2.9 ms a frame at Redcliffe at 21:00). Nothing
+    // within reach nearer the sun than the point less the bias and the
+    // slope's allowance, and it is lit; everything within it nearer the sun
+    // by more than those, and every tap of the filter, whose disc is no
+    // wider than the search, is shaded: it is in the umbra (under a low sun,
+    // most of a valley in a far hill's shade).
+    float search = max(kDaoSunRadius * (placed.at.z / placed.deep) * placed.across, placed.radius);
+    for (int round = 0; round < 2; round++)
+    {
+        const float2 depths = DaoDepthsIn(origin, placed.at.xy, search);
+        if (depths.x >= placed.at.z + 2 * search - placed.bias)
+        {
+            return 1;
+        }
+        if (depths.y < placed.at.z - 2 * search - placed.bias)
+        {
+            return 0;
+        }
+        search = max(min(search, kDaoSunRadius * (max(placed.at.z - depths.x, 0) / placed.deep) * placed.across),
+                     placed.radius);
+    }
     const float2 blocker =
         DaoBlocker(smpShadowPartition1, placed.at, placed.oldAt, share, slope, turn, search, placed.bias, origin, 0.5);
     if (blocker.y <= 0)
