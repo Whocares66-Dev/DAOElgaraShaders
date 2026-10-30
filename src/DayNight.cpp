@@ -941,9 +941,15 @@ Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::S
     // night floors (the user, 2026-10-30: "The witch one version doesn't
     // really look blue at night compared to the vanilla game. It also looks a
     // lot brighter").
+    // Paled as the night's fog is: in the night bake's own mean colour, laid
+    // on every texel alike, Witch Hunt's hall was a deep, saturated blue where
+    // the Broken Circle's own night, its texels each their own, is not (the
+    // user, 2026-10-30: "wh night is really blue ... prefer bc's not too
+    // saturated blue").
     const std::optional<std::array<float, 3>> otherColour =
-        indoors.ownIsNight ? indoors.dayFill
-                           : std::optional(indoors.nightBake.value_or(Paler(atNight.outdoor, NightColour())));
+        indoors.ownIsNight
+            ? indoors.dayFill
+            : std::optional(Paler(indoors.nightBake.value_or(atNight.outdoor), NightColour()));
     const float nightBright = !indoors.ownIsNight && indoors.nightBake && indoors.bakeLuminance > 0
                                   ? Luminance(*indoors.nightBake) / indoors.bakeLuminance
                                   : 1.0F;

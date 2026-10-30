@@ -1958,6 +1958,14 @@ void PlaceFlames(Level &level, Scene &scene, const Options &options, const std::
     for (const Flame &flame : options.flames)
     {
         const std::vector<core::Point> flames = FlamesOf(level, scene, flame, ids, sources, hints);
+        if (!flames.empty())
+        {
+            spdlog::info("relight: {} flames of {} found, before those an earlier kind lit", flames.size(), std::filesystem::path(flame.named).string());
+            for (const core::Point &at : flames)
+            {
+                spdlog::debug("relight:   {} at {:.1f} {:.1f} {:.1f}", std::filesystem::path(flame.named).string(), at[0], at[1], at[2]);
+            }
+        }
         // What an earlier rule lit is this rule's "already lit": a lantern's
         // rule before the candles' keeps the candle inside it from counting twice.
         AddFlames(scene, flames, flame, scene.lamps.size());
