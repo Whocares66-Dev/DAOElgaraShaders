@@ -3,7 +3,8 @@
     Bake the interiors' night lightmaps and probes into a build's plugin folder.
 
 .DESCRIPTION
-    Each level with a section in data\relight_night.ini is lit by its own lamps and candles
+    Each interior the areas' files name (data\areas: a file with `outside` and `level`), and each
+    level with a section of its own in data\relight_night.ini, is lit by its own lamps and candles
     alone with the 64-bit relighter (build\bake64\elgarashaders_relight.exe, tools\build-bake.ps1),
     at the size of the game's own lightmaps, and its lightmaps are packed as DXT1
     (elgarashaders_ddspack, the build's) into build\<preset>\daolib\plugins\elgarashaders\night,
@@ -44,9 +45,18 @@ if (-not (Test-Path $relight)) {
 if (-not (Test-Path $pack)) { throw "bake-night: no $pack; build the preset first" }
 if (-not (Test-Path (Join-Path $Game 'packages\core\env'))) { throw "bake-night: no game at $Game" }
 
-# The levels the recipe has a section for, [default] aside.
-$levels = Select-String -Path $recipe -Pattern '^\[(\w+)\]\s*$' |
+# The interiors' levels, from the areas' files (an interior's names its `outside`), and any the
+# recipe has a section of its own for: adding an interior is its area's file alone.
+$interiors = Get-ChildItem (Join-Path $repo 'data\areas') -Filter '*.ini' | ForEach-Object {
+    $text = Get-Content $_.FullName
+    if ($text -match '^\s*outside\s*=') {
+        ($text | Select-String -Pattern '^\s*level\s*=\s*(\w+)').Matches | Select-Object -First 1 |
+            ForEach-Object { $_.Groups[1].Value }
+    }
+}
+$sections = Select-String -Path $recipe -Pattern '^\[(\w+)\]\s*$' |
     ForEach-Object { $_.Matches[0].Groups[1].Value } | Where-Object { $_ -ne 'default' }
+$levels = @($interiors) + @($sections) | Where-Object { $_ } | Sort-Object -Unique
 $inputs = @($recipe, $relight, $pack) | ForEach-Object { (Get-Item $_).LastWriteTimeUtc }
 $newest = ($inputs | Measure-Object -Maximum).Maximum
 New-Item -ItemType Directory -Force $out | Out-Null

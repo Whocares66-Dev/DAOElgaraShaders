@@ -266,7 +266,10 @@ std::string Trimmed(const std::string &text)
 }
 
 // Takes a file's values for a level: [default]'s, then the level's own.
-// @return whether the file has a section for the level
+// @return whether the file has a section for the level or a [default]: an
+//  interior's night (data/relight_night.ini) is baked by [default] alone
+//  unless it has values of its own, and a level that cannot be read is
+//  said by Relight
 bool TakeFile(relighter::Options &options, const std::filesystem::path &file, const std::string &level)
 {
     bool has = false;
@@ -280,7 +283,7 @@ bool TakeFile(relighter::Options &options, const std::filesystem::path &file, co
             if (line.size() > 2 && line.front() == '[' && line.back() == ']')
             {
                 section = line.substr(1, line.size() - 2);
-                has = has || section == level;
+                has = has || section == level || section == "default";
                 continue;
             }
             const std::size_t equals = line.find('=');
