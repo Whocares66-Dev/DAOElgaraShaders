@@ -978,12 +978,14 @@ Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::S
         light.bakeWindow.at(i) =
             std::lerp(1.0F, atDay.outdoor.at(i) > 0 ? out.outdoor.at(i) / atDay.outdoor.at(i) : 1.0F, day);
         // A shaft of light its makers placed at a window (effects.ini's `lit`)
-        // is their hour's: a day's sunbeam, a night's moonbeam. It goes as
-        // the hour goes to the other end. By the light out of doors at the
-        // hour, the game's night being lit for play and Redcliffe's moon as
-        // strong as its afternoon sun, Lothering's and Redcliffe's chantries'
-        // sunbeams were half as bright at midnight and blue (seen 2026-10-30).
-        light.lit.at(i) = 1 - other;
+        // is the light out of doors coming in: it goes by that light at the
+        // hour against its makers' hour's, a day's sunbeam a moonbeam by
+        // night, paled as the night's colours are. Faded out with the makers'
+        // hour, the chantries' shafts were gone at midnight (the user,
+        // 2026-10-30: "Light shafts seem to disappear at night for the
+        // chantry?").
+        const Light &atOwn = indoors.ownIsNight ? atNight : atDay;
+        light.lit.at(i) = atOwn.outdoor.at(i) > 0 ? out.outdoor.at(i) / atOwn.outdoor.at(i) : 1.0F;
         light.bakeHue.at(i) = indoors.bakeHue.at(i);
         // The windows' own light is kept by night as the makers' is: one eye
         // for the room (the user, 2026-10-25, of Witch Hunt's dormitory: "The
@@ -994,6 +996,16 @@ Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::S
         light.window.at(i) =
             std::max(g_tryWindow.value_or(indoors.window), 0.0F) * out.outdoor.at(i) * std::lerp(fill, 1.0F, bright);
     }
+    // The shafts and the panes in the moon's colour paled as the night's
+    // fog is (NightColour), whole by day.
+    light.lit = Paler(light.lit, std::lerp(1.0F, NightColour(), 1 - day));
+    // No shaft brighter than its makers made it: the Broken Circle's
+    // moonbeams by the noon light over midnight's were 2.28 times theirs.
+    if (const float most = Luminance(light.lit); most > 1)
+    {
+        light.lit = Scaled(light.lit, 1 / most);
+    }
+    light.glass = Paler(light.glass, std::lerp(1.0F, NightColour(), 1 - day));
     // Said as the hour or the tuning moves it by more than a little.
     static std::array<float, 3> said{};
     if (std::abs(light.lit[0] - said[0]) + std::abs(light.lit[1] - said[1]) + std::abs(light.lit[2] - said[2]) > 0.05F)
