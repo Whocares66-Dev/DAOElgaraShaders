@@ -2,6 +2,7 @@
 
 #include "dao/Lights.h"
 #include "dao/Module.h"
+#include "dao/Resources.h"
 #include "dao/core/Erf.h"
 #include "dao/core/Gff4.h"
 #include "dao/generated/ScriptApi.h"
@@ -16,7 +17,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
@@ -120,19 +120,6 @@ std::wstring Lower(std::wstring text)
     return text;
 }
 
-std::optional<std::vector<std::byte>> FileBytes(const std::filesystem::path &file)
-{
-    std::ifstream in(file, std::ios::binary);
-    if (!in)
-    {
-        return std::nullopt;
-    }
-    std::vector<char> chars((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    std::vector<std::byte> bytes(chars.size());
-    std::memcpy(bytes.data(), chars.data(), chars.size());
-    return bytes;
-}
-
 void Put(std::vector<std::pair<float dao::core::Sky::*, float>> &sky, const gff4::Struct &in, std::uint32_t label,
          std::initializer_list<float dao::core::Sky::*> members)
 {
@@ -147,10 +134,12 @@ void Put(std::vector<std::pair<float dao::core::Sky::*, float>> &sky, const gff4
     }
 }
 
-// A level's sun and sky, from its .arl.
-bool ReadArl(const std::filesystem::path &arl, LevelLight &light)
+// A level's sun and sky, from its .arl: the copy the game takes, a mod's
+// where one has it (Dragon Age Evolved's lak200d.arl in the player's
+// override, #66). The game thread's.
+bool ReadArl(const std::wstring &level, LevelLight &light)
 {
-    const std::optional<std::vector<std::byte>> bytes = FileBytes(arl);
+    const std::optional<std::vector<std::byte>> bytes = dao::resources::Read(level + L".arl");
     const std::optional<gff4::File> file = bytes ? gff4::File::Parse(*bytes) : std::nullopt;
     const std::optional<gff4::Struct> root = file ? file->Root() : std::nullopt;
     if (!root)
@@ -258,10 +247,12 @@ bool ReadLayouts(const std::filesystem::path &rim, const std::wstring &level, Le
     return true;
 }
 
-std::optional<LevelLight> ReadLevel(const std::filesystem::path &env, const std::wstring &level)
+// A level's light: its .arl's and its archive of rooms' (`rim`). The game
+// thread's.
+std::optional<LevelLight> ReadLevel(const std::filesystem::path &rim, const std::wstring &level)
 {
     LevelLight light;
-    if (!ReadArl(env / (level + L".arl"), light) || !ReadLayouts(env / level / (level + L".rim"), level, light))
+    if (!ReadArl(level, light) || !ReadLayouts(rim, level, light))
     {
         return std::nullopt;
     }
@@ -860,6 +851,9 @@ std::vector<std::wstring> g_fireLights;
 float g_fireStrength = 1; // defaults.ini's `fire_strength`, set once in Install
 std::map<std::wstring, std::shared_ptr<const Pair>> g_pairs;
 std::set<std::wstring> g_asked;
+// The levels opened whose pairs are yet to be read (Opened's): each its
+// archive of rooms and the game's levels' folder.
+std::vector<std::pair<std::filesystem::path, std::filesystem::path>> g_opened;
 // What the hour's light hands the render thread: the sky light's multiplier,
 // the disc's colour (under g_lock), and the day level's sunlight lamps with
 // what they are multiplied by.
@@ -1204,42 +1198,51 @@ Scattered Scattering(const dao::core::Sky &sky)
 void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &coreEnv)
 {
     const std::wstring level = Lower(levelRim.stem().wstring());
-    {
-        const std::scoped_lock lock(g_lock);
-        if (g_asked.contains(level))
-        {
-            return;
-        }
-    }
     // A level with a day and a night is two, named alike but for the last
     // letter: d for the day's, n for the night's (lak100d and lak100n). The
     // clock runs in the areas data/areas names alone: a night level is the
     // story's night, and the other places are left until the story's times
     // are known.
-    std::vector<Cycled> areas;
-    {
-        const std::scoped_lock lock(g_lock);
-        g_asked.insert(level);
-        std::ranges::copy_if(g_cycled, std::back_inserter(areas),
-                             [&](const Cycled &cycled) { return cycled.own == level; });
-    }
-    if (areas.empty())
+    const std::scoped_lock lock(g_lock);
+    if (!g_asked.insert(level).second ||
+        std::ranges::none_of(g_cycled, [&](const Cycled &cycled) { return cycled.own == level; }))
     {
         return;
     }
+    // Read at the next Now: the engine is opening an archive here, and its
+    // files are read through it (ReadArl).
+    g_opened.push_back({levelRim, coreEnv});
+}
+
+namespace
+{
+
+// The pairs of a level opened (Opened's): its areas' days and nights, read
+// from some small files (the .arl and the layouts). The game thread's.
+void ReadPairs(const std::filesystem::path &levelRim, const std::filesystem::path &coreEnv)
+{
+    const std::wstring level = Lower(levelRim.stem().wstring());
+    std::vector<Cycled> areas;
+    {
+        const std::scoped_lock lock(g_lock);
+        std::ranges::copy_if(g_cycled, std::back_inserter(areas),
+                             [&](const Cycled &cycled) { return cycled.own == level; });
+    }
+    // A level's archive of rooms is in its folder in its own levels' folder:
+    // an add-in's, a mod's (Dragon Age Evolved's in an override folder) or
+    // the game's. Another level is looked for beside it, then in the game's:
+    // an add-in's or a mod's level borrows the game's night (Awakening's,
+    // Redcliffe's).
     const std::filesystem::path env = levelRim.parent_path().parent_path();
-    // A level is in its own levels' folder, an add-in's or the game's: an
-    // add-in's level borrows the game's night (Awakening's, Redcliffe's).
-    const auto folderOf = [&](const std::wstring &name) {
+    const auto rimOf = [&](const std::wstring &name) {
         std::error_code error;
-        return std::filesystem::exists(env / (name + L".arl"), error) ? env : coreEnv;
+        const std::filesystem::path beside = env / name / (name + L".rim");
+        return std::filesystem::exists(beside, error) ? beside : coreEnv / name / (name + L".rim");
     };
-    // The level's own light: some small files (the .arl and the layouts),
-    // read as the level is opened.
-    const std::optional<LevelLight> own = ReadLevel(env, level);
+    const std::optional<LevelLight> own = ReadLevel(levelRim, level);
     for (const Cycled &cycled : areas)
     {
-        std::optional<LevelLight> other = ReadLevel(folderOf(cycled.other), cycled.other);
+        std::optional<LevelLight> other = ReadLevel(rimOf(cycled.other), cycled.other);
         if (!own || !other)
         {
             spdlog::warn("day and night: {} or {} could not be read", std::filesystem::path(level).string(),
@@ -1272,8 +1275,7 @@ void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &
             const std::wstring &dayLevel = cycled.ownIsNight ? cycled.other : level;
             const std::wstring &latitudeOf = cycled.latitudeOf.empty() ? dayLevel : cycled.latitudeOf;
             const dao::core::Sunlight &by =
-                latitudeOf == dayLevel || !ReadArl(folderOf(latitudeOf) / (latitudeOf + L".arl"), of) ? pair->day.sun
-                                                                                                      : of.sun;
+                latitudeOf == dayLevel || !ReadArl(latitudeOf, of) ? pair->day.sun : of.sun;
             pair->latitude = cycled.latitude ? *cycled.latitude * kDegree
                                              : (std::numbers::pi_v<float> / 2) -
                                                    Height({-by.direction[0], -by.direction[1], -by.direction[2]});
@@ -1296,6 +1298,8 @@ void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &
         g_pairs[cycled.area] = std::move(pair);
     }
 }
+
+} // namespace
 
 float NightShare()
 {
@@ -1429,6 +1433,15 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
                          bool running, float dayMinutes, float night, std::optional<float> fill,
                          std::optional<float> haze)
 {
+    std::vector<std::pair<std::filesystem::path, std::filesystem::path>> opened;
+    {
+        const std::scoped_lock lock(g_lock);
+        opened.swap(g_opened);
+    }
+    for (const auto &[levelRim, coreEnv] : opened)
+    {
+        ReadPairs(levelRim, coreEnv);
+    }
     std::shared_ptr<const Pair> pair;
     {
         const std::scoped_lock lock(g_lock);
