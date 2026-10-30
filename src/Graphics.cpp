@@ -896,6 +896,7 @@ void FramePresented(std::string_view by)
     ++g_presented;
     levelshadows::Presented();
     nightcubes::Presented();
+    nightlightmaps::Presented();
     if (!g_levelHashes.empty())
     {
         NoteCostFrame();
@@ -1540,7 +1541,14 @@ void KeepLookRegisters()
     effectlights::WantCulled(outdoors::Tune("LightCull", 1) > 0);
     // How bright the plugin lights fires (data/areas/defaults.ini's
     // fire_strength); outdoors.tune's FireStrength, a developer's, to try one.
-    effectlights::FireStrength(outdoors::Tune("FireStrength", daynight::FireStrength()));
+    // Where the level's lamps are baked into its night lightmaps and their
+    // probes (NightLightmaps.h), the plugin's lights of its flames go as those
+    // come: by night the lamps were lit three times over, the bake, the
+    // makers' fire lights and these, white pillars by a candle (the user,
+    // 2026-10-30: "lights are really bright ... are we maybe double-counting").
+    const float baked = nightlightmaps::Baked() ? daynight::RelitNight()[0] : 0.0F;
+    daynight::LampsBaked(baked);
+    effectlights::FireStrength(outdoors::Tune("FireStrength", daynight::FireStrength()) * (1 - baked));
     // outdoors.tune's EffectShadows = 0, a developer's: their cost without them
     // (issue 30).
     levelshadows::WantEffectShadows(lighting && outdoors::Tune("EffectShadows", 1) > 0);

@@ -11,6 +11,7 @@
 #include <spdlog/spdlog.h>
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -75,6 +76,10 @@ struct Samplers
     UINT night = 0;
 };
 std::map<IDirect3DPixelShader9 *, Samplers> g_shaders;
+// Whether a night lightmap was bound in the frame being drawn, and in the last
+// one drawn (Baked).
+bool g_boundNow = false;
+std::atomic<bool> g_bound{false};
 
 // A night lightmap as a texture of 8 bits a channel, its picture as the file
 // has it (the relighter writes the root of the light's share of eight
@@ -245,9 +250,21 @@ void Drawing(IDirect3DDevice9 *device, bool picture)
             device->GetSamplerState(found->second.lightmap, D3DSAMP_SRGBTEXTURE, &srgb);
             device->SetSamplerState(sampler, D3DSAMP_SRGBTEXTURE, srgb);
             relit = hour;
+            g_boundNow = true;
         }
     }
     device->SetPixelShaderConstantF(kRelitNightRegister, relit.data(), 1);
+}
+
+void Presented()
+{
+    g_bound.store(g_boundNow, std::memory_order_relaxed);
+    g_boundNow = false;
+}
+
+bool Baked()
+{
+    return g_bound.load(std::memory_order_relaxed);
 }
 
 } // namespace nightlightmaps

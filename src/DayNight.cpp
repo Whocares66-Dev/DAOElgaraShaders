@@ -104,6 +104,12 @@ struct IndoorLight
     std::wstring other;
     std::optional<std::array<float, 3>> dayFill;
     std::array<float, 3> bakeHue{1, 1, 1}; // its bake's mean colour at a luminance of 1 (ReadIndoorColours)
+    float bakeLuminance = 0;               // its bake's mean luminance (ReadIndoorColours)
+    // For a day's bake, the level its makers lit the same rooms by night
+    // (`night`), and its bake's mean colour (ReadIndoorColours): its night's
+    // colour and brightness.
+    std::wstring night;
+    std::optional<std::array<float, 3>> nightBake;
 };
 
 struct Pair
@@ -925,8 +931,19 @@ Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::S
     // Broken Circle's own deep blue fill (lak503d's rooms', 0.015, 0.045,
     // 0.095), paled as the night's, Witch Hunt's library at midnight was
     // blue-violet (27.1, 19.1, 41.9 of 255, 2026-10-25).
+    // A day's bake with its rooms' night bake named (`night`) takes that
+    // bake's colour by night, and its brightness against its own: the makers'
+    // night. Witch Hunt's tower, a day's bake, in the light out of doors at
+    // midnight paled, was brighter and less blue than the Broken Circle's
+    // night floors (the user, 2026-10-30: "The witch one version doesn't
+    // really look blue at night compared to the vanilla game. It also looks a
+    // lot brighter").
     const std::optional<std::array<float, 3>> otherColour =
-        indoors.ownIsNight ? indoors.dayFill : std::optional(Paler(atNight.outdoor, NightColour()));
+        indoors.ownIsNight ? indoors.dayFill
+                           : std::optional(indoors.nightBake.value_or(Paler(atNight.outdoor, NightColour())));
+    const float nightBright = !indoors.ownIsNight && indoors.nightBake && indoors.bakeLuminance > 0
+                                  ? Luminance(*indoors.nightBake) / indoors.bakeLuminance
+                                  : 1.0F;
     Light light;
     light.sun = ownSun;
     light.sky = ownSky;
@@ -942,7 +959,7 @@ Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::S
         const float tint = otherColour && Luminance(*otherColour) > 0 && indoors.bakeHue.at(i) > 0
                                ? (otherColour->at(i) / Luminance(*otherColour)) / indoors.bakeHue.at(i)
                                : 1;
-        const float kept = std::lerp(fill, 1.0F, bright) * std::lerp(1.0F, tint, other);
+        const float kept = std::lerp(fill, 1.0F, bright) * std::lerp(1.0F, tint * nightBright, other);
         light.sun.characterColor.at(i) *= kept;
         light.baked.at(i) = kept;
         light.sunOverDay.at(i) = kept;
@@ -1034,6 +1051,7 @@ std::array<std::atomic<float>, 4> g_bakeHue{1.0F, 1.0F, 1.0F, 0.0F};
 std::array<std::atomic<float>, 3> g_bakeWindow{1.0F, 1.0F, 1.0F};
 std::atomic<float> g_relitNight{0};
 std::atomic<float> g_relitStrength{1};
+std::atomic<float> g_lampsBaked{0};
 
 // The clock: the hour, and when it was last moved on.
 float g_hour = 12;
@@ -1208,6 +1226,7 @@ std::optional<Cycled> IndoorsOf(const std::string &tag, const Keys &keys, const 
     const std::string day = Said(keys, defaults, "day").value_or("");
     indoors.ownIsNight = keys.contains("baked") ? keys.at("baked") != "day" : true;
     indoors.other = Wide(day);
+    indoors.night = Wide(Said(keys, defaults, "night").value_or(""));
     std::istringstream beams(Said(keys, defaults, "beams").value_or(""));
     for (std::string model; beams >> model;)
     {
@@ -1590,6 +1609,15 @@ void ReadIndoorColours(IndoorLight &indoors, const std::filesystem::path &folder
     {
         indoors.bakeHue.at(c) = bake->at(c) / Luminance(*bake);
     }
+    indoors.bakeLuminance = Luminance(*bake);
+    if (const std::optional<std::array<float, 3>> night =
+            indoors.night.empty() ? std::nullopt : BakeColour(folderOf(indoors.night), indoors.night);
+        night && Luminance(*night) > 0)
+    {
+        indoors.nightBake = *night;
+        spdlog::info("day and night: {}'s night as {}'s bake, {:.3f} {:.3f} {:.3f}", std::filesystem::path(own).string(),
+                     std::filesystem::path(indoors.night).string(), night->at(0), night->at(1), night->at(2));
+    }
     const std::wstring &day = indoors.other;
     if (const std::optional<std::array<float, 3>> fill =
             day.empty() ? std::nullopt : RoomsAmbient(folderOf(day), day);
@@ -1802,6 +1830,11 @@ std::array<float, 3> BakeWindow()
 {
     return {g_bakeWindow[0].load(std::memory_order_relaxed), g_bakeWindow[1].load(std::memory_order_relaxed),
             g_bakeWindow[2].load(std::memory_order_relaxed)};
+}
+
+void LampsBaked(float share)
+{
+    g_lampsBaked.store(share, std::memory_order_relaxed);
 }
 
 std::array<float, 4> RelitNight()
@@ -2112,6 +2145,15 @@ void Install()
             for (std::size_t i = 0; i < 3; ++i)
             {
                 light.color.at(i) *= g_layoutLightsBy.at(i).load(std::memory_order_relaxed);
+            }
+        }
+        else if (fitting)
+        {
+            // Its light in the night lightmaps and their probes by night.
+            const float kept = 1 - g_lampsBaked.load(std::memory_order_relaxed);
+            for (std::size_t i = 0; i < 3; ++i)
+            {
+                light.color.at(i) *= kept;
             }
         }
         else if (endsWith(L"_lc"))

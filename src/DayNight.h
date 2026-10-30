@@ -223,6 +223,12 @@ std::array<float, 3> BakeWindow();
 // Any thread.
 std::array<float, 4> RelitNight();
 
+// How far an interior's lamps are in its night lightmaps now (RelitNight's
+// share where the level is drawn with them, else 0): its makers' fire lights,
+// kept whole indoors, go by 1 less it. The drawing thread's word, a frame
+// behind (NightLightmaps.h's Baked).
+void LampsBaked(float share);
+
 // An interior's share of its makers' light, its windows' light and their
 // reach to try in place of its file's `fill`, `window` and `window_reach`
 // (outdoors.tune's Fill, Window and WindowReach, a developer's), none for the
