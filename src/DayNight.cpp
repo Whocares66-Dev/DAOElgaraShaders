@@ -896,12 +896,9 @@ Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::S
 {
     const float fill = std::max(g_tryFill.value_or(indoors.fill), 0.0F);
     const Light out = LightAt(pair, ownSky, hour, night, nightFill, haze);
-    // The light out of doors at midnight and at the day level's own hour; the
-    // makers' own hour, which their beams of light were made for, is the one
-    // they baked.
+    // The light out of doors at midnight and at the day level's own hour.
     const Light atNight = LightAt(pair, ownSky, 0, night, nightFill, haze);
     const Light atDay = LightAt(pair, ownSky, pair.ownHour, night, nightFill, haze);
-    const Light &midnight = indoors.ownIsNight ? atNight : atDay;
     // How far the hour is from night to day, as the sky and the bake out of
     // doors go (LightAt's: from the sun 12 degrees under to 6 up). By the
     // light out of doors' brightness between midnight's and the day's it was
@@ -968,7 +965,6 @@ Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::S
     }
     for (std::size_t i = 0; i < 3; ++i)
     {
-        const float by = midnight.outdoor.at(i) > 0 ? out.outdoor.at(i) / midnight.outdoor.at(i) : 1;
         const float tint = otherColour && Luminance(*otherColour) > 0 && indoors.bakeHue.at(i) > 0
                                ? (otherColour->at(i) / Luminance(*otherColour)) / indoors.bakeHue.at(i)
                                : 1;
@@ -981,7 +977,13 @@ Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::S
         // doors against the day's own, the sun's colour by dusk.
         light.bakeWindow.at(i) =
             std::lerp(1.0F, atDay.outdoor.at(i) > 0 ? out.outdoor.at(i) / atDay.outdoor.at(i) : 1.0F, day);
-        light.lit.at(i) = by;
+        // A shaft of light its makers placed at a window (effects.ini's `lit`)
+        // is their hour's: a day's sunbeam, a night's moonbeam. It goes as
+        // the hour goes to the other end. By the light out of doors at the
+        // hour, the game's night being lit for play and Redcliffe's moon as
+        // strong as its afternoon sun, Lothering's and Redcliffe's chantries'
+        // sunbeams were half as bright at midnight and blue (seen 2026-10-30).
+        light.lit.at(i) = 1 - other;
         light.bakeHue.at(i) = indoors.bakeHue.at(i);
         // The windows' own light is kept by night as the makers' is: one eye
         // for the room (the user, 2026-10-25, of Witch Hunt's dormitory: "The
@@ -997,10 +999,9 @@ Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::S
     if (std::abs(light.lit[0] - said[0]) + std::abs(light.lit[1] - said[1]) + std::abs(light.lit[2] - said[2]) > 0.05F)
     {
         said = light.lit;
-        spdlog::info("day and night: indoors at {:.2f}, the light out of doors {:.3f} {:.3f} {:.3f}, {:.2f} {:.2f} "
-                     "{:.2f} times its makers' hour's, the daylight {:.2f} of noon's; their light kept at {:.3f} "
-                     "{:.3f} {:.3f}",
-                     hour, out.outdoor[0], out.outdoor[1], out.outdoor[2], light.lit[0], light.lit[1], light.lit[2],
+        spdlog::info("day and night: indoors at {:.2f}, the light out of doors {:.3f} {:.3f} {:.3f}, its makers' beams at "
+                     "{:.2f}, the daylight {:.2f} of noon's; their light kept at {:.3f} {:.3f} {:.3f}",
+                     hour, out.outdoor[0], out.outdoor[1], out.outdoor[2], light.lit[0],
                      bright, light.baked[0], light.baked[1], light.baked[2]);
     }
     return light;
