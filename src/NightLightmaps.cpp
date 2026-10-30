@@ -89,6 +89,24 @@ struct Samplers
 };
 std::map<IDirect3DPixelShader9 *, Samplers> g_shaders;
 
+// The sampler a draw was lent the night lightmap on, and what it held, given
+// back after the draw (Drawn), as LevelShadows.cpp lends its atlas. The
+// engine keeps what it last bound to each sampler and does not bind it again:
+// left on a sampler a weapon's shader reads its own texture on, the night
+// lightmap was that texture, the party's sheathed weapons a glowing gold
+// patchwork as the camera turned (the user, 2026-10-30: "there's weird glowing
+// on the weapons at certain angles").
+constexpr std::array<D3DSAMPLERSTATETYPE, 6> kLentStates{D3DSAMP_MINFILTER, D3DSAMP_MAGFILTER, D3DSAMP_MIPFILTER,
+                                                        D3DSAMP_ADDRESSU,  D3DSAMP_ADDRESSV,  D3DSAMP_SRGBTEXTURE};
+struct Lent
+{
+    bool lent = false;
+    UINT sampler = 0;
+    IDirect3DBaseTexture9 *texture = nullptr; // held, released as it is given back
+    std::array<DWORD, kLentStates.size()> states{};
+};
+Lent g_lent; // the drawing thread's
+
 // A packed night lightmap (DXT1 or DXT5, DdsPackTool.cpp) as a texture of
 // its own format, its largest picture copied as the file has it: unpacked, a
 // map of the makers' 1024 a side was 4 MB of video memory.
@@ -329,6 +347,13 @@ void Drawing(IDirect3DDevice9 *device, bool picture)
         if (night != nullptr)
         {
             const UINT sampler = found->second.night;
+            g_lent.lent = true;
+            g_lent.sampler = sampler;
+            device->GetTexture(sampler, &g_lent.texture);
+            for (std::size_t at = 0; at < kLentStates.size(); ++at)
+            {
+                device->GetSamplerState(sampler, kLentStates.at(at), &g_lent.states.at(at));
+            }
             device->SetTexture(sampler, night);
             device->SetSamplerState(sampler, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
             device->SetSamplerState(sampler, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
@@ -346,5 +371,24 @@ void Drawing(IDirect3DDevice9 *device, bool picture)
     device->SetPixelShaderConstantF(kRelitNightRegister, relit.data(), 1);
 }
 
+
+void Drawn(IDirect3DDevice9 *device)
+{
+    if (!g_lent.lent)
+    {
+        return;
+    }
+    g_lent.lent = false;
+    device->SetTexture(g_lent.sampler, g_lent.texture);
+    for (std::size_t at = 0; at < kLentStates.size(); ++at)
+    {
+        device->SetSamplerState(g_lent.sampler, kLentStates.at(at), g_lent.states.at(at));
+    }
+    if (g_lent.texture != nullptr)
+    {
+        g_lent.texture->Release();
+        g_lent.texture = nullptr;
+    }
+}
 
 } // namespace nightlightmaps

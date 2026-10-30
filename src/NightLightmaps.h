@@ -46,5 +46,9 @@ void CreatedPixel(const std::vector<std::byte> &code, IDirect3DPixelShader9 *sha
 // not a portrait's). Call before each draw.
 void Drawing(IDirect3DDevice9 *device, bool picture);
 
+// Gives the sampler Drawing lent the night lightmap on back what it held.
+// Call after each draw Drawing was called for.
+void Drawn(IDirect3DDevice9 *device);
+
 
 } // namespace nightlightmaps

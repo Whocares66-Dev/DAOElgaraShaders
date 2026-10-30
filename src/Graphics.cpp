@@ -1134,6 +1134,7 @@ HRESULT __stdcall DrawIndexed(IDirect3DDevice9 *device, D3DPRIMITIVETYPE type, I
     nightlightmaps::Drawing(device, g_drawsPicture);
     skybodies::Drawing(device);
     const HRESULT result = g_drawIndexed.Original()(device, type, base, least, vertices, first, count);
+    nightlightmaps::Drawn(device);
     skybodies::Drawn(device);
     GiveHairBack(device);
     levelshadows::Drawn(device);
