@@ -858,6 +858,7 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
 std::optional<float> g_tryFill;
 std::optional<float> g_tryWindow;
 std::optional<float> g_tryReach;
+std::optional<float> g_tryRelit;
 
 // An interior's light by the hour (its file's `outside`): its level is lit
 // by its makers as a night (the Broken Circle's tower floors) or as a day (the
@@ -934,6 +935,7 @@ Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::S
     // How far the hour is from the makers' own end to the other.
     const float other = indoors.ownIsNight ? day : 1 - day;
     light.bakeHue[3] = other;
+    light.relitNight = 1 - bright;
     for (std::size_t i = 0; i < 3; ++i)
     {
         const float by = midnight.outdoor.at(i) > 0 ? out.outdoor.at(i) / midnight.outdoor.at(i) : 1;
@@ -1030,6 +1032,8 @@ std::atomic<float> g_windowReach{0};
 // and where a window sees it (BakeWindow).
 std::array<std::atomic<float>, 4> g_bakeHue{1.0F, 1.0F, 1.0F, 0.0F};
 std::array<std::atomic<float>, 3> g_bakeWindow{1.0F, 1.0F, 1.0F};
+std::atomic<float> g_relitNight{0};
+std::atomic<float> g_relitStrength{1};
 
 // The clock: the hour, and when it was last moved on.
 float g_hour = 12;
@@ -1062,6 +1066,7 @@ void Stopped()
     }
     g_windowReach.store(0, std::memory_order_relaxed);
     g_bakeHue[3].store(0, std::memory_order_relaxed);
+    g_relitNight.store(0, std::memory_order_relaxed);
     for (std::atomic<float> &value : g_bakeWindow)
     {
         value.store(1, std::memory_order_relaxed);
@@ -1799,6 +1804,11 @@ std::array<float, 3> BakeWindow()
             g_bakeWindow[2].load(std::memory_order_relaxed)};
 }
 
+std::array<float, 4> RelitNight()
+{
+    return {g_relitNight.load(std::memory_order_relaxed), g_relitStrength.load(std::memory_order_relaxed), 0, 0};
+}
+
 std::array<float, 4> BakeHue()
 {
     return {g_bakeHue[0].load(std::memory_order_relaxed), g_bakeHue[1].load(std::memory_order_relaxed),
@@ -1827,11 +1837,13 @@ Windows WindowLight()
             g_windowReach.load(std::memory_order_relaxed)};
 }
 
-void TryIndoors(std::optional<float> fill, std::optional<float> window, std::optional<float> reach)
+void TryIndoors(std::optional<float> fill, std::optional<float> window, std::optional<float> reach,
+                std::optional<float> relit)
 {
     g_tryFill = fill;
     g_tryWindow = window;
     g_tryReach = reach;
+    g_tryRelit = relit;
 }
 
 std::optional<Borrowed> BorrowedBy(std::wstring_view level)
@@ -1998,6 +2010,8 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
     {
         g_bakeWindow.at(i).store(light.bakeWindow.at(i), std::memory_order_relaxed);
     }
+    g_relitNight.store(light.relitNight, std::memory_order_relaxed);
+    g_relitStrength.store(std::max(g_tryRelit.value_or(1.0F), 0.0F), std::memory_order_relaxed);
     g_windowReach.store(pair->indoors ? std::max(g_tryReach.value_or(pair->indoors->windowReach), 0.0F) : 0.0F,
                         std::memory_order_relaxed);
     g_indoors.store(pair->indoors.has_value(), std::memory_order_relaxed);

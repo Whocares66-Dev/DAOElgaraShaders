@@ -78,6 +78,7 @@ struct Light
     std::array<float, 3> window{};            // an interior's: its windows' light a square metre (WindowLight)
     std::array<float, 4> bakeHue{1, 1, 1, 0}; // an interior's: its bake's hue, and how far each texel takes it
     std::array<float, 3> bakeWindow{1, 1, 1}; // an interior's: its bake where a window sees it, over the rest
+    float relitNight = 0;                     // an interior's: how far its bake goes to its night lightmaps
 };
 
 // Reads data/areas (a file for each area the clock runs in, from the plugin's
@@ -215,11 +216,19 @@ std::array<float, 4> BakeHue();
 // at night 1. 1 where the clock is not running indoors. Any thread.
 std::array<float, 3> BakeWindow();
 
+// An interior's night by its lamps (NightLightmaps.h, relit_night.hlsl): x
+// how far its bake goes to the night lightmaps of the plugin's, as the
+// daylight goes (1 less the daylight against noon's, IndoorsAt); y what their
+// light is multiplied by. x 0 where the clock is not running indoors.
+// Any thread.
+std::array<float, 4> RelitNight();
+
 // An interior's share of its makers' light, its windows' light and their
 // reach to try in place of its file's `fill`, `window` and `window_reach`
 // (outdoors.tune's Fill, Window and WindowReach, a developer's), none for the
-// file's. Call on the game's thread, before Now.
-void TryIndoors(std::optional<float> fill, std::optional<float> window, std::optional<float> reach);
+// file's; and the night lightmaps' strength (RelitNight), none for 1. Call on the game's thread, before Now.
+void TryIndoors(std::optional<float> fill, std::optional<float> window, std::optional<float> reach,
+                std::optional<float> relit = std::nullopt);
 
 // A moon to try in place of the area's file's (outdoors.tune's MoonTurn and
 // MoonHeight, a developer's): its turn and its height in degrees, none for the

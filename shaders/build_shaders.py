@@ -2045,6 +2045,44 @@ def with_baked_light(shader, windows=False):
     )
 
 
+def with_relit_night(shader):
+    """An interior's night by its own lamps (relit_night.hlsl): beside the
+    makers' lightmap the relighter's of the same room, read at the same place
+    before the makers' read (whose result may take the register the place is
+    in), and the night lamps added by the night's share (DaoWithRelitNight) after the
+    hour's light has been put on the makers'. Run between with_shaped_bake and
+    with_baked_light: each puts its line straight after the read, so the
+    hour's light comes first, then this, then the relief."""
+    lightmap = shader.parameters["smpLightmap"]
+    read = shader.find(rf"^texld\w* r\d+, .*, s{lightmap.base}$")
+    found = re.match(r"texld\w* (r\d+), (\w+)", shader.statements[read].asm)
+    register, place = found.group(1), found.group(2)
+    shader.insert(
+        read,
+        [
+            f"{register}.xyz = DaoWithRelitNight({register}.xyz, daoNightStored.xyz);"
+        ],
+    )
+    shader.insert(
+        read - 1, [f"float4 daoNightStored = tex2D(smpDaoNightLightmap, {place}.xy);"]
+    )
+
+
+def relit_night_room(listing, preamble):
+    """Whether a level's shader has a sampler left for the night lightmap:
+    the game's own and those our changes add, sixteen at the most. Where none
+    is, the shader keeps the makers' bake at night (RELIT_NIGHT_NONE counts)."""
+    used = {int(n) for n in re.findall(r"^//\s+\w+\s+s(\d+)\s+\d+", listing, re.M)}
+    added = len(re.findall(r"^sampler2D \w+;$", preamble, re.M))
+    if len(used) + added >= 16:
+        RELIT_NIGHT_NONE.append(1)
+        return False
+    return True
+
+
+RELIT_NIGHT_NONE = []
+
+
 # The water shaders, each with the input its light comes in by: the sky's sun
 # scattered (the vertex shader's TEXCOORD2, from mml_vSkyParams), which they
 # light it by in place of the sun's own colour, as N.L times it and, in
@@ -2799,14 +2837,18 @@ def changes_for(stem, listing, show):
     if takes_baked_light(listing):
         # A window's daylight in the bake, by the effects' window lights
         # (effect_lights.hlsl, which every such shader takes below).
+        relit = relit_night_room(listing, preamble)
         changes += [
             with_shaped_bake,
+            *([with_relit_night] if relit else []),
             lambda s: with_baked_light(s, windows=True),
             without_cut,
         ]
         if "DaoShapedBake" not in preamble:
             preamble += ours("look.hlsl") + ours("bake.hlsl")
         preamble += ours("night_sky.hlsl")
+        if relit:
+            preamble += ours("relit_night.hlsl")
     # The level's farther versions lay a lightmap too, with no engine lights
     # (bakedlowlod, vista3, static2, static3, terrain3): left out of the
     # hour's light, the hills behind Redcliffe's lake stayed day-lit at night
@@ -3126,6 +3168,8 @@ def main(argv):
             print(f"build_shaders: {name}: {e}", file=sys.stderr)
     print(f"build_shaders: {built} shaders in {out}, {failed} failed")
     print(f"build_shaders: the fills' strength in {len(FILLS_KEPT)} shaders")
+    if RELIT_NIGHT_NONE:
+        print(f"build_shaders: no sampler left for the night lightmap in {len(RELIT_NIGHT_NONE)} shaders")
     by_light = collections.Counter(place for place, _, _ in EFFECT_LIT)
     print(
         f"build_shaders: effects' lights in {len(EFFECT_LIT)} shaders, by the reckoning of light "

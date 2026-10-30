@@ -451,7 +451,7 @@ void KeepHour()
     const bool running = sun && sky && g_wanted && (g_outdoors || daynight::Indoors(area)) && g_clockOn;
     const bool had = g_hourLight.has_value();
     daynight::TryMoon(Tuned("MoonTurn"), Tuned("MoonHeight"));
-    daynight::TryIndoors(Tuned("Fill"), Tuned("Window"), Tuned("WindowReach"));
+    daynight::TryIndoors(Tuned("Fill"), Tuned("Window"), Tuned("WindowReach"), Tuned("RelitNight"));
     daynight::TryNightColour(Tuned("NightColour"));
     daynight::TryFogMoon(Tuned("FogMoon"));
     daynight::TryWaterMoonlit(Tuned("WaterMoonlit"));

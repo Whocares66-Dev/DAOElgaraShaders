@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -101,6 +102,10 @@ std::vector<dao::core::Point> PlacesOn(std::span<const levelfiles::Geometry *con
 // @param stamp what says which lightmaps of our own it was baked from, 0 for the level's
 // @param source what says which copy of the level it was baked from (levelfiles::LevelStamp)
 std::vector<std::byte> Write(const std::vector<Room> &rooms, std::uint64_t stamp = 0, std::uint64_t source = 0);
+
+// Returns the rooms of a table's file made elsewhere (a relighter's <level>.elgp,
+// Relighter.cpp), indexed for Nearest, or nothing for bytes that are not one.
+std::optional<std::vector<Room>> ReadTable(std::span<const std::byte> file);
 
 // Returns every room there are probes for now. The answer is whole and
 // never changes; ask again for the rooms baked since.

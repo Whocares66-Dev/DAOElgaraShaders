@@ -11,6 +11,7 @@
 #include "dao/Hook.h"
 #include "dao/Lights.h"
 #include "dao/Log.h"
+#include "dao/Module.h"
 #include "dao/Resources.h"
 #include "dao/core/LightProbes.h"
 #include "dao/core/Msvc8.h"
@@ -28,9 +29,12 @@
 #include <cstring>
 #include <cwctype>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -108,12 +112,26 @@ std::mutex g_blendsLock;
 struct Blend
 {
     Irradiance light{};
+    // The night's: the mix of the relighter's probes of an interior's lamps
+    // (g_nightRooms), none where the level has none.
+    std::optional<Irradiance> night;
     std::array<float, 3> place{};
     Irradiance bounce{};
     std::uint64_t bounceOf = ~std::uint64_t{0};
     std::array<float, 3> bounceSent{};
+    bool day = false; // whether `light` is a mix of the baked probes
 };
 std::unordered_map<void *, Blend> g_blends; // by light state, under g_blendsLock
+
+// The relighter's probes of the interiors that have a night by their lamps
+// (data/night's <level>.elgp, beside their lightmaps: NightLightmaps.h), every
+// such level's, read as the plugin loads; a figure at night takes their light
+// on top of its level's probe, as a surface takes the night lightmaps' (the
+// user, 2026-10-30: "do we need new light probes? ... the characters look dark
+// even when in light"). Made by the same lamps as the lightmaps, each probe
+// holds the light falling on it from each side, the lamps' own with what the
+// walls send on (Relighter.cpp).
+probebaker::Rooms g_nightRooms;
 
 float Distance(const float *a, const float *b)
 {
@@ -177,6 +195,23 @@ std::uintptr_t __fastcall ProbeScore(void *node, int unused, const float *place,
     return result;
 }
 
+// The nearest probes of `rooms` to a figure at `place`, of each room of the
+// level's own probes that scored for it, mixed; none where none are.
+std::optional<Irradiance> MixOf(const probebaker::Rooms &rooms, const std::vector<ScoredProbe> &scored,
+                                const float *place)
+{
+    thread_local std::vector<dao::core::probes::Near> lights;
+    lights.clear();
+    for (const ScoredProbe &probe : scored)
+    {
+        if (const probebaker::Room *room = RoomOf(rooms, probe.node); room != nullptr && !room->probes.empty())
+        {
+            probebaker::Nearest(*room, place, lights);
+        }
+    }
+    return lights.empty() ? std::nullopt : std::optional(dao::core::probes::Mix(lights));
+}
+
 // Keeps the mix for the light state whose probes were just chosen into
 // `group`, for a figure at `place`: the nearest baked probes of each room of
 // the level's own probes that scored for it, mixed. With none scored and a
@@ -191,26 +226,19 @@ void KeepBlend(void *group, const std::vector<ScoredProbe> &scored, const float 
     {
         return;
     }
-    thread_local std::vector<dao::core::probes::Near> lights;
-    lights.clear();
     // The rooms as they are now, held while their probes' light is pointed at.
-    const std::shared_ptr<const probebaker::Rooms> rooms = probebaker::AllRooms();
-    if (rooms)
-    {
-        for (const ScoredProbe &probe : scored)
-        {
-            if (const probebaker::Room *room = RoomOf(*rooms, probe.node); room != nullptr && !room->probes.empty())
-            {
-                probebaker::Nearest(*room, place, lights);
-            }
-        }
-    }
-    const std::optional<Irradiance> mix = lights.empty() ? std::nullopt : dao::core::probes::Mix(lights);
+    const std::shared_ptr<const probebaker::Rooms> rooms =
+        g_wanted.load(std::memory_order_relaxed) ? probebaker::AllRooms() : nullptr;
+    const std::optional<Irradiance> mix = rooms ? MixOf(*rooms, scored, place) : std::nullopt;
+    const std::optional<Irradiance> night = MixOf(g_nightRooms, scored, place);
     void *state = static_cast<std::byte *>(group) - kStateProbes;
     const std::scoped_lock lock(g_blendsLock);
-    if (mix)
+    if (mix || night)
     {
-        g_blends[state] = Blend{.light = *mix, .place = {place[0], place[1], place[2]}};
+        g_blends[state] = Blend{.light = mix.value_or(Irradiance{}),
+                                .night = night,
+                                .place = {place[0], place[1], place[2]},
+                                .day = mix.has_value()};
     }
     else
     {
@@ -233,7 +261,7 @@ std::uintptr_t __fastcall ChooseFromList(void *list, int unused, void *place, fl
 {
     const bool probes = t_figuresManager != nullptr &&
                         list == static_cast<std::byte *>(t_figuresManager) + kLightsProbes &&
-                        g_wanted.load(std::memory_order_relaxed);
+                        (g_wanted.load(std::memory_order_relaxed) || !g_nightRooms.empty());
     thread_local std::vector<ScoredProbe> scored;
     if (probes)
     {
@@ -334,7 +362,7 @@ void OnProbe(dao::lights::ProbeLight &probe)
     const float night = levels ? daynight::EvenShare() : 0;
     const std::scoped_lock lock(g_blendsLock);
     const auto found = g_blends.find(reinterpret_cast<void *>(probe.state));
-    if (found != g_blends.end() && g_wanted.load(std::memory_order_relaxed))
+    if (found != g_blends.end() && found->second.day && g_wanted.load(std::memory_order_relaxed))
     {
         KeepBounce(found->second);
         std::ranges::copy(found->second.light, probe.irradiance.begin());
@@ -343,9 +371,21 @@ void OnProbe(dao::lights::ProbeLight &probe)
         {
             probe.irradiance[at] += found->second.bounce.at(at); // the sun's, not the bake's
         }
-        return;
     }
-    ByTheHour(probe.irradiance, times, night);
+    else
+    {
+        ByTheHour(probe.irradiance, times, night);
+    }
+    // An interior's lamps by night, by the same share as its surfaces take
+    // theirs (relit_night.hlsl), on a level's probe alone.
+    const std::array<float, 4> relit = daynight::RelitNight();
+    if (levels && found != g_blends.end() && found->second.night && relit[0] > 0)
+    {
+        for (std::size_t at = 0; at < probe.irradiance.size(); ++at)
+        {
+            probe.irradiance[at] += found->second.night->at(at) * relit[0] * relit[1];
+        }
+    }
 }
 
 // The file a level's own archive is, by the name the engine opens it by: an
@@ -409,6 +449,31 @@ bool Install()
         return false;
     }
     dao::lights::OnProbe(&OnProbe);
+    std::error_code error;
+    for (const std::filesystem::directory_entry &file :
+         std::filesystem::directory_iterator(dao::Module::OwnFolder() / "night", error))
+    {
+        if (file.path().extension() != L".elgp")
+        {
+            continue;
+        }
+        std::ifstream in(file.path(), std::ios::binary);
+        const std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        std::optional<std::vector<probebaker::Room>> rooms =
+            probebaker::ReadTable(std::as_bytes(std::span(bytes.data(), bytes.size())));
+        if (!rooms)
+        {
+            spdlog::warn("light probes: {} could not be read", file.path().filename().string());
+            continue;
+        }
+        spdlog::info("light probes: {}, {} rooms of an interior's lamps by night", file.path().filename().string(),
+                     rooms->size());
+        for (probebaker::Room &room : *rooms)
+        {
+            room.level = file.path().stem().string();
+            g_nightRooms.push_back(std::make_shared<const probebaker::Room>(std::move(room)));
+        }
+    }
     probebaker::Start(dao::LogDirectory() / "elgarashaders" / "probes", GameFolder(), {});
     return true;
 }

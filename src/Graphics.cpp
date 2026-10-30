@@ -53,6 +53,7 @@
 #include "Probes.h"
 #include "ResourceDump.h"
 #include "ShaderCode.h"
+#include "NightLightmaps.h"
 #include "SkyBodies.h"
 
 #include "dao/Addresses.h"
@@ -810,6 +811,7 @@ HRESULT __stdcall CreatePixelShader(IDirect3DDevice9 *device, const DWORD *code,
         levelshadows::CreatedPixel(code, static_cast<IDirect3DPixelShader9 *>(*shader));
         const std::vector<std::byte> bytes = shadercode::CodeOf(code);
         skybodies::CreatedPixel(bytes, static_cast<IDirect3DPixelShader9 *>(*shader));
+        nightlightmaps::CreatedPixel(bytes, static_cast<IDirect3DPixelShader9 *>(*shader));
         g_hair.erase(*shader);
         if (shadercode::RegisterOf(bytes, "smpHairTexture"))
         {
@@ -1125,6 +1127,7 @@ HRESULT __stdcall DrawIndexed(IDirect3DDevice9 *device, D3DPRIMITIVETYPE type, I
         DrawExtraPasses(device, type, base, least, vertices, first, count);
     }
     HoldHairBack(device);
+    nightlightmaps::Drawing(device, g_drawsPicture);
     skybodies::Drawing(device);
     const HRESULT result = g_drawIndexed.Original()(device, type, base, least, vertices, first, count);
     skybodies::Drawn(device);
@@ -1905,6 +1908,7 @@ extern "C" __declspec(dllexport) bool __cdecl DAOLib_Load(const dao::LoaderInfo 
     probes::Install();
     daynight::Install();
     nightcubes::Install();
+    nightlightmaps::Install();
     effectlights::Install();
     drawdistance::Install();
     if (!g_setPartitions.Attach(dao::addr::kShadowMaps_SetPartitions, &SetPartitions))

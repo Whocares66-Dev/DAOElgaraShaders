@@ -126,6 +126,7 @@ add_daolib_plugin(
         src/DayNight.cpp
         src/DrawDistance.cpp
         src/NightCubes.cpp
+        src/NightLightmaps.cpp
         src/SkyBodies.cpp
         src/ProbeBaker.cpp
         src/Probes.cpp
@@ -142,13 +143,16 @@ dao_apply_warnings(elgarashaders)
 # the lights it gives fires that have none and the effects it dims at night;
 # data/glowing.ini, the terrain palettes' layers that glow (lava);
 # data/areas, a file for each area the day and night runs in, how its sun and
-# moon go; data/clouds, the clouds an area's sky may take by day. Steps with the tables for their input: copied after the DLL's
+# moon go; data/clouds, the clouds an area's sky may take by day; data/night, an
+# interior's lightmaps and probes by its own lamps (NightLightmaps.h, Probes.cpp). Steps with the tables for their input: copied after the DLL's
 # link, a change to a table alone never reached the build (2026-10-23).
 file(
     GLOB ELGARA_AREAS
     CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/data/areas/*.ini"
     "${CMAKE_CURRENT_SOURCE_DIR}/data/clouds/*.ini"
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/night/*.dds"
+    "${CMAKE_CURRENT_SOURCE_DIR}/data/night/*.elgp"
 )
 set(ELGARA_TABLES
     "${CMAKE_CURRENT_SOURCE_DIR}/data/effects.ini"
