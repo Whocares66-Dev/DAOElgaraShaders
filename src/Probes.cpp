@@ -11,6 +11,7 @@
 #include "dao/Hook.h"
 #include "dao/Lights.h"
 #include "dao/Log.h"
+#include "dao/Resources.h"
 #include "dao/core/LightProbes.h"
 #include "dao/core/Msvc8.h"
 
@@ -347,38 +348,27 @@ void OnProbe(dao::lights::ProbeLight &probe)
     ByTheHour(probe.irradiance, times, night);
 }
 
-// The file a level's own archive is, by the name the engine opens it by:
-// a level's folder's archive of the folder's name, the game's levels' (ENV:)
-// or an add-in's (BUILD_ADDINS:<add-in>\core\env\), or none.
+// The file a level's own archive is, by the name the engine opens it by: an
+// archive of the level's folder with the folder's name, wherever the folder
+// is (the game's levels', ENV:; an add-in's, BUILD_ADDINS:<add-in>\core\env\;
+// a mod's in an override folder, WRITE_OVERRIDE:<mod's folders>\, #66), or
+// none. The name is looked at before the engine's alias table is asked
+// (dao::resources::PathOf, the game thread's): a level's own archive is
+// opened on the game thread, its others (.gpu.rim) on a loader's too.
 std::optional<std::filesystem::path> LevelRimOf(std::wstring_view name)
 {
-    constexpr std::wstring_view kLevels = L"ENV:";
-    constexpr std::wstring_view kAddins = L"BUILD_ADDINS:";
-    std::filesystem::path file;
-    if (name.starts_with(kLevels))
-    {
-        file = GameFolder() / "packages" / "core" / "env" / std::filesystem::path(name.substr(kLevels.size()));
-    }
-    else if (name.starts_with(kAddins))
-    {
-        file = GameFolder() / "Addins" / std::filesystem::path(name.substr(kAddins.size()));
-        if (_wcsicmp(file.parent_path().parent_path().filename().c_str(), L"env") != 0)
-        {
-            return std::nullopt;
-        }
-    }
-    else
+    const std::size_t colon = name.find(L':');
+    if (colon == std::wstring_view::npos)
     {
         return std::nullopt;
     }
-    std::wstring extension = file.extension().wstring();
-    std::ranges::transform(extension, extension.begin(),
-                           [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
-    if (extension != L".rim" || _wcsicmp(file.stem().c_str(), file.parent_path().filename().c_str()) != 0)
+    const std::filesystem::path file(name.substr(colon + 1));
+    if (_wcsicmp(file.extension().c_str(), L".rim") != 0 ||
+        _wcsicmp(file.stem().c_str(), file.parent_path().filename().c_str()) != 0)
     {
         return std::nullopt;
     }
-    return file;
+    return dao::resources::PathOf(name);
 }
 
 std::uintptr_t __fastcall OpenArchive(void *self, int unused, const dao::core::WStringRep *path, std::uintptr_t a2,
@@ -388,8 +378,11 @@ std::uintptr_t __fastcall OpenArchive(void *self, int unused, const dao::core::W
     // The engine names a level's archives by its own name for the levels'
     // folder: ENV:lak303d\lak303d.rim (logged 2026-10-11), and an add-in's
     // by its folder: BUILD_ADDINS:DAO_PRC_EP_1\core\env\amn100d\amn100d.rim
-    // (Awakening's Amaranthine, logged 2026-10-24). A level's rooms are in the
-    // archive of its folder that has the folder's name.
+    // (Awakening's Amaranthine, logged 2026-10-24), and a mod's in an override
+    // folder by that folder: WRITE_OVERRIDE:zzz_Dragon Age Evolved\6. Map
+    // Layouts\Layouts\lak200d\lak200d.rim (Dragon Age Evolved, logged
+    // 2026-10-29, #66). A level's rooms are in the archive of its folder that
+    // has the folder's name.
     if (path != nullptr && path->size > 0 && path->size < 1024)
     {
         if (const std::optional<std::filesystem::path> rim = LevelRimOf(path->View()))

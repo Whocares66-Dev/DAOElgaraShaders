@@ -35,11 +35,15 @@
 //   sun's shadows are the plugin's own (LevelShadows.h); the engine's maps
 //   are read where its sun is not out of doors.
 // - Anisotropic filtering, which the game has no setting for.
+// - The draw distance: every distance the engine chooses a detail or a
+//   showing by, scaled (DrawDistance.h).
 //
 // What it does goes to elgarashaders.log.
 #include "DayNight.h"
+#include "DrawDistance.h"
 #include "EffectLights.h"
 #include "GameFolder.h"
+#include "GpuTimer.h"
 #include "KeptState.h"
 #include "LevelShadows.h"
 #include "MaterialLearn.h"
@@ -49,6 +53,7 @@
 #include "Probes.h"
 #include "ResourceDump.h"
 #include "ShaderCode.h"
+#include "SkyBodies.h"
 
 #include "dao/Addresses.h"
 #include "dao/Camera.h"
@@ -101,9 +106,10 @@ constexpr std::int32_t kMapSize = 2048; // texels a side, with Improved lighting
 constexpr bool kMaterialsByDefault = true;
 constexpr bool kSmaaByDefault = true;
 constexpr bool kLightingByDefault = true;
-constexpr int kOcclusionByDefault = 3;  // High
-constexpr int kAnisotropyByDefault = 4; // 16x
-constexpr int kExposureByDefault = 2;   // 0 EV
+constexpr int kOcclusionByDefault = 3;    // High
+constexpr int kAnisotropyByDefault = 4;   // 16x
+constexpr int kExposureByDefault = 2;     // 0 EV
+constexpr int kDrawDistanceByDefault = 0; // vanilla's
 std::atomic<bool> g_materials{kMaterialsByDefault};
 // Improved lighting: out of doors one sun lights everything (Outdoors.h, LevelShadows.h, Probes.h)
 std::atomic<bool> g_lighting{kLightingByDefault};
@@ -127,10 +133,22 @@ std::atomic<int> g_anisotropyStop{kAnisotropyByDefault};
 constexpr std::array<float, 5> kExposureStops{-0.5F, -0.25F, 0.0F, 0.25F, 0.5F}; // in EV
 constexpr std::array<const wchar_t *, 5> kExposureNames{L"-0.5", L"-0.25", L"0", L"+0.25", L"+0.5"};
 std::atomic<int> g_exposureStop{kExposureByDefault};
+// How far the world is drawn in detail, as a factor on every distance the
+// engine chooses a detail or a showing by (DrawDistance.h; the user,
+// 2026-10-29: "we can try 2x, 4x, 8x", and "a Max option ... no
+// compromises"). Max is drawdistance::kMax: every tile at its near detail,
+// every tree whole, every creature and object shown at its finest model.
+// 8x was dropped (the user, 2026-10-29: "let's have 1x, 2x, 4x, and Max"):
+// in Redcliffe and Ostagar it drew all that Max does, for 0.5 ms less.
+constexpr std::array<float, 4> kDrawDistanceStops{1.0F, 2.0F, 4.0F, drawdistance::kMax};
+constexpr std::array<const wchar_t *, 4> kDrawDistanceNames{L"1x", L"2x", L"4x", L"Max"};
+std::atomic<int> g_drawDistanceStop{kDrawDistanceByDefault};
 // A test of the day and night (DayNight.h; the user, 2026-10-21: "add a test
 // slider ... so we can control time of day"): Off, the area's own light;
 // Running, the clock going on by itself; or an hour held, every half hour.
-constexpr bool kDayNightByDefault = false; // a test for now, where a level has a day and a night
+// On by default since 0.4.0, when it covered the outdoor areas (the user,
+// 2026-10-27: "set day / night to on by default").
+constexpr bool kDayNightByDefault = true;
 std::atomic<bool> g_dayNight{kDayNightByDefault};
 constexpr int kTimeStops = 48;               // 0:00, 0:30, ... 23:30
 constexpr int kTimeByDefault = 24;           // noon, the sun near its highest (data/areas' noon)
@@ -192,19 +210,6 @@ constexpr UINT kBakeWindowRegister = 156; // night_sky.hlsl's daoBakeWindow
 // Water's light (water_light.hlsl's daoWaterLight), under the effects' lights':
 // the game's pixel shaders reach c55 at the most (their listings, 2026-10-22).
 constexpr UINT kWaterLightRegister = 159;
-// The air's light every fogged surface, the sky, the clouds and the effects
-// fog toward (outdoors::Haze), in registers of their own below these
-// (look.hlsl's daoHaze): the sky light's part and whether it is ours, the
-// sun's part and how its glow leans toward the sun.
-constexpr UINT kHazeRegister = 218;
-constexpr std::size_t kHazeRegisters = 2;
-std::array<std::atomic<float>, kHazeRegisters * 4> g_hazeLook{};
-// The view each surface's shader reckons its haze by (outdoors::HazeView,
-// haze.hlsl's daoHazeView), under water's light: no shader of the game's
-// reaches past c60.
-constexpr UINT kHazeViewRegister = 150;
-constexpr std::size_t kHazeViewRegisters = 5;
-std::array<std::atomic<float>, kHazeViewRegisters * 4> g_hazeView{};
 // How strong the area's fills are on figures (outdoors::Fills), in a
 // register below those (shaders/fills.hlsl's daoFill). Never other than 1
 // in a portrait or the inventory's figure, which are lit by lights of their
@@ -560,6 +565,7 @@ HRESULT __stdcall Reset(IDirect3DDevice9 *device, D3DPRESENT_PARAMETERS *paramet
 {
     const auto start = std::chrono::steady_clock::now();
     levelshadows::Release();
+    gputimer::Release();
     DropScene();
     const auto released = std::chrono::steady_clock::now();
     const HRESULT result = g_reset.Original()(device, parameters);
@@ -611,6 +617,8 @@ std::string Described(IDirect3DDevice9 *device, IDirect3DSurface9 *surface)
 // line, written by build/scratch/cost-test.py) is drawn K times more, depth
 // tested and writing nothing, which is the work of drawing the level into K
 // shadow maps; and the frame's mean time is logged every kCostFrames frames.
+// Kept in the release: tools/perf_compare.py times each release against the
+// last with it (dev/RELEASING.md, 2026-10-28), reading this log line.
 constexpr std::string_view kShadowCostFile = "shadow-cost";
 constexpr std::string_view kLevelShadersFile = "level-shaders";
 constexpr int kCostFrames = 300;
@@ -801,6 +809,7 @@ HRESULT __stdcall CreatePixelShader(IDirect3DDevice9 *device, const DWORD *code,
         }
         levelshadows::CreatedPixel(code, static_cast<IDirect3DPixelShader9 *>(*shader));
         const std::vector<std::byte> bytes = shadercode::CodeOf(code);
+        skybodies::CreatedPixel(bytes, static_cast<IDirect3DPixelShader9 *>(*shader));
         g_hair.erase(*shader);
         if (shadercode::RegisterOf(bytes, "smpHairTexture"))
         {
@@ -901,7 +910,10 @@ void FramePresented(std::string_view by)
 
 HRESULT __stdcall Present(IDirect3DDevice9 *device, const RECT *from, const RECT *to, HWND window, const RGNDATA *dirty)
 {
+    gputimer::Begin(device, "show scene");
     ShowScene(device);
+    gputimer::End(device);
+    gputimer::Presented(device);
     FramePresented("the device");
     return g_present.Original()(device, from, to, window, dirty);
 }
@@ -918,7 +930,10 @@ HRESULT __stdcall ChainPresent(IDirect3DSwapChain9 *chain, const RECT *from, con
 {
     if (g_device != nullptr)
     {
+        gputimer::Begin(g_device, "show scene");
         ShowScene(g_device);
+        gputimer::End(g_device);
+        gputimer::Presented(g_device);
     }
     FramePresented("the swap chain");
     return g_chainPresent.Original()(chain, from, to, window, dirty, flags);
@@ -1061,6 +1076,10 @@ HRESULT __stdcall SetRenderTarget(IDirect3DDevice9 *device, DWORD index, IDirect
         LogDraws();
         spdlog::info("  target {}: [{}]", index, Described(device, target));
     }
+    if (index == 0 && gputimer::On())
+    {
+        gputimer::Mark(device, Described(device, target));
+    }
     return g_setRenderTarget.Original()(device, index, target);
 }
 
@@ -1078,12 +1097,15 @@ HRESULT __stdcall Clear(IDirect3DDevice9 *device, DWORD count, const D3DRECT *re
 HRESULT __stdcall Draw(IDirect3DDevice9 *device, D3DPRIMITIVETYPE type, UINT first, UINT count)
 {
     g_draws += g_tracing ? 1 : 0;
+    gputimer::Drawn();
     if (g_tracing)
     {
         LogDraw(device, count);
     }
     levelshadows::DrawingPlain(device, g_drawsPicture);
+    skybodies::Drawing(device);
     const HRESULT result = g_draw.Original()(device, type, first, count);
+    skybodies::Drawn(device);
     levelshadows::Drawn(device);
     return result;
 }
@@ -1092,6 +1114,7 @@ HRESULT __stdcall DrawIndexed(IDirect3DDevice9 *device, D3DPRIMITIVETYPE type, I
                               UINT first, UINT count)
 {
     g_draws += g_tracing ? 1 : 0;
+    gputimer::Drawn();
     if (g_tracing)
     {
         LogDraw(device, count);
@@ -1102,7 +1125,9 @@ HRESULT __stdcall DrawIndexed(IDirect3DDevice9 *device, D3DPRIMITIVETYPE type, I
         DrawExtraPasses(device, type, base, least, vertices, first, count);
     }
     HoldHairBack(device);
+    skybodies::Drawing(device);
     const HRESULT result = g_drawIndexed.Original()(device, type, base, least, vertices, first, count);
+    skybodies::Drawn(device);
     GiveHairBack(device);
     levelshadows::Drawn(device);
     return result;
@@ -1301,18 +1326,6 @@ HRESULT __stdcall BeginScene(IDirect3DDevice9 *device)
     }
     values.at(kShareAsked) = ShareAsked() ? 1.0F : 0.0F;
     device->SetPixelShaderConstantF(kLookRegister, values.data(), kLookRegisters);
-    std::array<float, kHazeRegisters * 4> haze{};
-    for (std::size_t i = 0; i < haze.size(); ++i)
-    {
-        haze.at(i) = g_hazeLook.at(i).load(std::memory_order_relaxed);
-    }
-    device->SetPixelShaderConstantF(kHazeRegister, haze.data(), kHazeRegisters);
-    std::array<float, kHazeViewRegisters * 4> view{};
-    for (std::size_t i = 0; i < view.size(); ++i)
-    {
-        view.at(i) = g_hazeView.at(i).load(std::memory_order_relaxed);
-    }
-    device->SetPixelShaderConstantF(kHazeViewRegister, view.data(), kHazeViewRegisters);
     HandFills(device);
     // By the target the scene starts on, not the last one the game set: a
     // scene begun on the frame's picture after a portrait's left the area
@@ -1428,6 +1441,10 @@ void ReadChosen(const std::filesystem::path &folder)
         {
             g_anisotropyStop.store(StopOf(value, kAnisotropyStops.size()), std::memory_order_relaxed);
         }
+        if (key == "DrawDistance")
+        {
+            g_drawDistanceStop.store(StopOf(value, kDrawDistanceStops.size()), std::memory_order_relaxed);
+        }
         if (key == "TimeOfDay")
         {
             g_timeStop.store(StopOf(value, kTimeStops), std::memory_order_relaxed);
@@ -1451,6 +1468,7 @@ void KeepChosen()
         << "\nAmbientOcclusion = " << g_occlusionStop.load(std::memory_order_relaxed)
         << "\nAnisotropicFiltering = " << g_anisotropyStop.load(std::memory_order_relaxed)
         << "\nExposure = " << g_exposureStop.load(std::memory_order_relaxed)
+        << "\nDrawDistance = " << g_drawDistanceStop.load(std::memory_order_relaxed)
         << "\nDayNight = " << said(g_dayNight.load(std::memory_order_relaxed))
         << "\nTimeOfDay = " << g_timeStop.load(std::memory_order_relaxed) << '\n';
     if (!out)
@@ -1510,7 +1528,12 @@ void KeepLookRegisters()
     effectlights::Want(lighting);
     // The level's lamps named as fires lit by the plugin (EffectLights.cpp);
     // outdoors.tune's FireLamps = 0, a developer's, leaves them the engine's.
-    effectlights::WantLamps(lighting && outdoors::Tune("FireLamps", 1) > 0);
+    // Only in the areas the day and night run in (data/areas): elsewhere the
+    // hour never changes the makers' bake, which already holds the lamps'
+    // light, and the engine's lamps are left as vanilla has them. Lit
+    // everywhere in 0.4.0, Orzammar's Commons took 7.0 ms a frame against
+    // 0.3.0's 4.3, its twelve lamps and their shadows on every pixel (#61).
+    effectlights::WantLamps(lighting && outdoors::CyclingArea() && outdoors::Tune("FireLamps", 1) > 0);
     effectlights::WantCulled(outdoors::Tune("LightCull", 1) > 0);
     // How bright the plugin lights fires (data/areas/defaults.ini's
     // fire_strength); outdoors.tune's FireStrength, a developer's, to try one.
@@ -1528,23 +1551,16 @@ void KeepLookRegisters()
     levelshadows::Skip(static_cast<unsigned>(outdoors::Tune("LevelShadowsSkip", 0)));
     outdoors::WantSunlitFigures(lighting);
     outdoors::WantClock(g_dayNight.load(std::memory_order_relaxed));
-    const outdoors::SkyHaze haze = outdoors::Haze();
-    for (std::size_t c = 0; c < 3; ++c)
-    {
-        g_hazeLook.at(c).store(haze.sky.at(c), std::memory_order_relaxed);
-        g_hazeLook.at(4 + c).store(haze.sun.at(c), std::memory_order_relaxed);
-    }
-    g_hazeLook.at(3).store(haze.on ? 1.0F : 0.0F, std::memory_order_relaxed);
-    g_hazeLook.at(7).store(haze.g, std::memory_order_relaxed);
-    const std::array<float, kHazeViewRegisters * 4> view = outdoors::HazeView();
-    for (std::size_t i = 0; i < view.size(); ++i)
-    {
-        g_hazeView.at(i).store(view.at(i), std::memory_order_relaxed);
-    }
     g_fills.store(outdoors::Fills(), std::memory_order_relaxed);
     g_shareWanted.store(g_occlusionStop.load(std::memory_order_relaxed) > 0, std::memory_order_relaxed);
     g_anisotropy.store(kAnisotropyStops.at(static_cast<std::size_t>(g_anisotropyStop.load(std::memory_order_relaxed))),
                        std::memory_order_relaxed);
+    drawdistance::Want(
+        kDrawDistanceStops.at(static_cast<std::size_t>(g_drawDistanceStop.load(std::memory_order_relaxed))));
+    // outdoors.tune's DrawTiles, DrawObjects, DrawTrees and DrawEffects = 0, a
+    // developer's: what each part of the draw distance costs.
+    drawdistance::WantParts(outdoors::Tune("DrawTiles", 1) > 0, outdoors::Tune("DrawObjects", 1) > 0,
+                            outdoors::Tune("DrawTrees", 1) > 0, outdoors::Tune("DrawEffects", 1) > 0);
 }
 
 // The focal length of the picture, in pixels: what makes the angle between
@@ -1724,7 +1740,7 @@ void ApplyOptions()
 
 // The options screen's section, on the Video tab's right column, which holds
 // a heading and twelve rows of 35 px (DAOLib #82), a slider 41 px (#84):
-// three checkboxes and three sliders. Improved materials, SMAA and two sliders
+// four checkboxes and five sliders. Improved materials, SMAA and two sliders
 // are the first release's (issue 23); Improved lighting is the lighting and
 // the sun's shadows, one switch for both (the user, 2026-10-16), in place of
 // the release's Improved shadows.
@@ -1819,7 +1835,7 @@ void AddToOptions()
                       L"light in shade and indoors",
                       "improved materials"),
              Checkbox(g_lighting, kLightingByDefault, L"GraphicsLighting", L"Improved lighting",
-                      L"More natural sunlight, shadows and haze", "improved lighting"),
+                      L"More natural sunlight and shadows", "improved lighting"),
              Checkbox(g_dayNight, kDayNightByDefault, L"GraphicsDayNight", L"Day / night cycle",
                       L"Changing time of day", "day / night cycle"),
              smaa},
@@ -1831,6 +1847,11 @@ void AddToOptions()
              StopSlider(g_anisotropyStop, kAnisotropyByDefault, kAnisotropyNames, L"GraphicsAnisotropic",
                         L"Anisotropic filtering", L"Keeps textures sharp where they are seen at a slant",
                         "anisotropic filtering"),
+             StopSlider(g_drawDistanceStop, kDrawDistanceByDefault, kDrawDistanceNames, L"GraphicsDrawDistance",
+                        L"Draw distance",
+                        L"How far the land, trees, creatures and effects are drawn in full detail, as a multiple of "
+                        L"the game's distances",
+                        "draw distance"),
              TimeSlider()},
             dao::options::Column::Right, dao::options::Tab::Video))
     {
@@ -1876,6 +1897,7 @@ extern "C" __declspec(dllexport) bool __cdecl DAOLib_Load(const dao::LoaderInfo 
         spdlog::error("not the loader or the game this was built for");
         return false;
     }
+    gputimer::Start();
     ReadChosen(dao::Module::OwnFolder());
     materiallearn::Start(dao::Module::OwnFolder());
     materialpatch::Start(dao::Module::OwnFolder());
@@ -1884,6 +1906,7 @@ extern "C" __declspec(dllexport) bool __cdecl DAOLib_Load(const dao::LoaderInfo 
     daynight::Install();
     nightcubes::Install();
     effectlights::Install();
+    drawdistance::Install();
     if (!g_setPartitions.Attach(dao::addr::kShadowMaps_SetPartitions, &SetPartitions))
     {
         spdlog::warn("the shadow maps keep the game's size: no detour");
@@ -1893,7 +1916,9 @@ extern "C" __declspec(dllexport) bool __cdecl DAOLib_Load(const dao::LoaderInfo 
     dao::OnFrame(&LogOptionsSection);
     dao::OnFrame(&KeepLens);
     dao::OnFrame(&ApplyOptions);
+    dao::OnFrame(&drawdistance::Keep);
     dao::OnFrame(&resourcedump::Poll);
+    dao::OnFrame(&skybodies::Poll);
     dao::OnFrame(&materialpatch::LogCounts);
     dao::OnFrame(&materiallearn::Poll);
     dao::OnFrame(&outdoors::Poll);

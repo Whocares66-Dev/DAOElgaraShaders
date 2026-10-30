@@ -927,7 +927,12 @@ void AddWindows(std::vector<Light> &lights)
 // `engines`: how many of `lights` are the engine's, before the level's own.
 void AddFires(std::vector<Light> &lights, std::size_t engines)
 {
-    if (g_fires.empty())
+    // Only where the level's lamps are lit by the plugin (WantLamps: the
+    // areas the day and night run in). Elsewhere a placed fire is the makers'
+    // bake, as in 0.3.0: in Orzammar's Commons 0.4.0's torches given a light
+    // (fxe_fire_small_p, fxe_fire_medium_p) were two lights with shadows
+    // 0.3.0 did not have, about 0.45 ms a frame (#61, 2026-10-28).
+    if (g_fires.empty() || !g_lampsWanted.load(std::memory_order_relaxed))
     {
         return;
     }

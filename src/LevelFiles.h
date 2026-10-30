@@ -384,19 +384,19 @@ inline void ProbesUnder(const core::gff4::Struct &node, std::size_t deep, std::v
     }
 }
 
-// What says which lightmaps of our own a level has in a folder (the plugin's
-// override folder, where the relighter's are put): a number made of their
-// names, sizes and times, 0 for none. A table of probes baked from them is
-// good for as long as it is the same.
-inline std::uint64_t RelitStamp(const std::filesystem::path &folder, const std::wstring &levelName)
+// What says which files of a folder whose names start and end so it has: a
+// number made of their names, sizes and times, 0 for none. What is made of
+// them is good for as long as it is the same.
+inline std::uint64_t FilesStamp(const std::filesystem::path &folder, const std::wstring &starts,
+                                const std::wstring &ends)
 {
     std::uint64_t stamp = 0;
     std::error_code error;
-    const std::wstring stem = Lower(levelName) + L"_";
+    const std::wstring stem = Lower(starts);
     for (const auto &entry : std::filesystem::directory_iterator(folder, error))
     {
         const std::wstring name = Lower(entry.path().filename().wstring());
-        if (!name.starts_with(stem) || !name.ends_with(L".dds"))
+        if (!name.starts_with(stem) || !name.ends_with(ends))
         {
             continue;
         }
@@ -410,6 +410,21 @@ inline std::uint64_t RelitStamp(const std::filesystem::path &folder, const std::
         stamp += one | 1; // a sum, so the order they are met in does not count
     }
     return stamp;
+}
+
+// What says which lightmaps of our own a level has in a folder (the plugin's
+// override folder, where the relighter's are put), 0 for none.
+inline std::uint64_t RelitStamp(const std::filesystem::path &folder, const std::wstring &levelName)
+{
+    return FilesStamp(folder, levelName + L"_", L".dds");
+}
+
+// What says which copy of a level's archives is the one opened: those of the
+// folder of its archive of rooms (`levelRim`), the game's or a mod's. A mod's
+// lak200d is another level of the same name (Dragon Age Evolved's, #66).
+inline std::uint64_t LevelStamp(const std::filesystem::path &levelRim)
+{
+    return FilesStamp(levelRim.parent_path(), levelRim.stem().wstring(), L".rim");
 }
 
 // The materials of a model's mesh nodes, by the chunk each draws.

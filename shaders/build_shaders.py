@@ -1737,10 +1737,9 @@ CHAIN_RESOURCES = """
         <float id="DaoAcross" value="0.0" range="0.0 1.0" />
         <float id="DaoDown" value="1.0" range="0.0 1.0" />"""
 
-# The first pass, before the anti-aliasing's: the depth in metres. The air's
-# light is laid on by each surface's own shader (haze.hlsl); the pass that took
-# the sun's shadows in the air away from the finished picture went on
-# 2026-10-25 (dev/NOTES.md).
+# The first pass, before the anti-aliasing's: the depth in metres. The pass
+# that took the sun's shadows in the air away from the finished picture went
+# on 2026-10-25, and the plugin's own haze on 2026-10-27 (dev/NOTES.md).
 FIRST_FILTERS = """<filter id="Dao Depth" library="DAEffects" material="HSLMatrix">
                 SceneDepth  = SceneDepthTexture
                 fFocalPlane = focalplane
@@ -1819,6 +1818,7 @@ OURS = [
     ("shadow_cut.hlsl", "daoshadowcut.psh.fxo"),
     ("shadow_copy_vertex.hlsl", "daoshadowcopy.vsh.fxo"),
     ("shadow_copy.hlsl", "daoshadowcopy.psh.fxo"),
+    ("shadow_min.hlsl", "daoshadowmin.psh.fxo"),
 ]
 
 
@@ -2407,42 +2407,6 @@ def ours(name):
 SKIES = ("sky", "clouds", "fadesky", "fadeclouds")
 
 
-def with_lit_sky_fog(shader):
-    """The sky's fog colour made haze.hlsl's DaoSkyFog, the air's light seen
-    the way the pixel looks. Each of the four fogs towards
-    mml_vFogParams[0] and has the way it is seen in, from the eye, in its
-    TEXCOORD1 (sky.psh's dome, clouds.psh's layer: read 2026-10-16), and the
-    sun's in g_vLightParams[2], as its own sun's glow reads it."""
-    way = next(
-        (
-            register
-            for _, _, semantic, register, _ in shader.inputs
-            if semantic == "TEXCOORD1"
-        ),
-        None,
-    )
-    fogged = [s for s in shader.statements if "mml_vFogParams[0]" in s.hlsl]
-    if way is None or not fogged or "g_vLightParams" not in shader.parameters:
-        raise shader_hlsl.ShaderError("a sky with no fog colour, way or sun to read")
-    for statement in fogged:
-        statement.hlsl = statement.hlsl.replace("mml_vFogParams[0]", "daoSkyFog")
-    # The sky is cut at white as it is written (sky.psh's mad_sat): a bright
-    # sky with the sun's glow in its haze was a white hole (Ostagar's through
-    # an arch, 2026-10-16). With the haze ours it is left to the picture's
-    # roll-off, which keeps its hue (grade.hlsl's DaoShoulder).
-    for statement in shader.statements:
-        if statement.hlsl.startswith("oC0.xyz = saturate("):
-            statement.hlsl = statement.hlsl.replace(
-                "oC0.xyz = saturate(", "oC0.xyz = DaoSkyCut(", 1
-            )
-    shader.insert(
-        -1,
-        [
-            f"const float4 daoSkyFog = DaoSkyFog({way}.xyz, g_vLightParams[2].xyz, mml_vFogParams[0]);"
-        ],
-    )
-
-
 # The sky's disc's colour and whether it is ours (Graphics.cpp's kDiscRegister).
 DISC = "float4 daoDisc : register(c214);\n"
 
@@ -2471,50 +2435,6 @@ def with_one_disc(shader):
             f"{register} *= dot(normalize({way}.xyz), -g_vLightParams[2].xyz) > 0 ? 1 : 0;",
             f"{register}.xyz *= daoDisc.w > 0 ? daoDisc.xyz : 1;",
         ],
-    )
-
-
-def keeps_fog(stem, listing):
-    """Whether a shader fogs what it draws and writes the distance beside it:
-    every surface's but the sky's and the toolset's (85 of shaders.erf's,
-    counted 2026-10-16). The toolset's water fogs otherwise and is not the
-    game's."""
-    return (
-        stem not in SKIES
-        and not stem.endswith("toolset")
-        and "mml_vFogParams" in listing
-        and re.search(r"\boC1\b", listing) is not None
-        and "ps_3_0" in listing
-    )
-
-
-def fogs_unseen(stem, listing):
-    """Whether a shader fogs what it draws and writes no distance beside it:
-    the effects (vfx0, vfx0_atm, the chunky ones), hair, blended props
-    (propalpha1). These have no distance of their own beside the picture and
-    fog toward the air's light along the pixel's ray (DaoRayFog)."""
-    return (
-        stem not in SKIES
-        and not stem.endswith("toolset")
-        and "mml_vFogParams" in listing
-        and re.search(r"\boC1\b", listing) is None
-        and "ps_3_0" in listing
-    )
-
-
-def with_ray_haze_fog(shader):
-    """The fog colour made haze.hlsl's DaoRayFog: the air's light seen the
-    way the pixel looks, for what writes no distance. With the area's fog
-    colour black, a mist's cards over Redcliffe's hill and windmill faded to
-    black where the game had them fade to its fog (seen 2026-10-16)."""
-    fogged = [s for s in shader.statements if "mml_vFogParams[0]" in s.hlsl]
-    if not fogged:
-        raise shader_hlsl.ShaderError("no fog colour read")
-    for statement in fogged:
-        statement.hlsl = statement.hlsl.replace("mml_vFogParams[0]", "daoRayFog")
-    shader.add_input("pixel", "float2", "VPOS")
-    shader.insert(
-        -1, ["const float4 daoRayFog = DaoRayFog(input.pixel, mml_vFogParams[0]);"]
     )
 
 
@@ -2585,28 +2505,6 @@ def with_glow(shader):
         [
             f"const float3 daoGlow = {colours}.xyz * DaoGlowShare({masks[0]}, {masks[1]});"
         ],
-    )
-
-
-def with_surface_haze(shader):
-    """The surface fogged in its own shader towards the air's light seen the
-    way the pixel looks (haze.hlsl's DaoSurfaceHaze), by the fog the engine
-    gave it. Every one of them fogs in one statement, `mad oC0.xyz, <kept>,
-    <colour>, <fog colour>` (read 2026-10-16), the kept part reckoned per
-    vertex and laid across each triangle: a pass reckoning it again from the
-    distance alone had a fog 20 levels of 255 lighter than the engine's on
-    Redcliffe's hill (measured the same day), and a pass reading it from the
-    distance beside the picture had, with the game's anti-aliasing on, only
-    what the game's depth pass draws (issue 57)."""
-    fog = shader.parameters["mml_vFogParams"]
-    index = shader.find(rf"^mad(_pp)? oC0\.xyz, r\d+\.[xyzw], r\d+, c{fog.base}$")
-    kept = re.match(r"mad\w* oC0\.xyz, (r\d+\.[xyzw]),", shader.statements[index].asm)[
-        1
-    ]
-    shader.add_input("pixel", "float2", "VPOS")
-    shader.insert(
-        index,
-        [f"oC0.xyz += DaoSurfaceHaze(input.pixel, {kept}, mml_vFogParams[0].xyz);"],
     )
 
 
@@ -2888,8 +2786,8 @@ def changes_for(stem, listing, show):
         changes.append(with_our_grade)
         preamble += ours("grade.hlsl")
     if stem in SKIES:
-        changes += [with_lit_sky_fog, with_one_disc]
-        preamble += ours("look.hlsl") + ours("haze.hlsl") + DISC
+        changes.append(with_one_disc)
+        preamble += DISC
     if stem in BLOOM_MASKS:
         changes.append(with_bounded_bloom)
         # A shader of model 2, which reaches no register of look.hlsl's: the
@@ -2949,17 +2847,6 @@ def changes_for(stem, listing, show):
     if glows(listing):
         changes.append(with_glow)
         preamble += ours("glow.hlsl")
-    # Each fogged surface fogs itself toward the air's light, after all
-    # else: it is found by the game's own last statement, which no other
-    # change rewrites.
-    if keeps_fog(stem, listing) or fogs_unseen(stem, listing):
-        changes.append(
-            with_surface_haze if keeps_fog(stem, listing) else with_ray_haze_fog
-        )
-        if "DAO_LOOK_HLSL" not in preamble:
-            preamble += ours("look.hlsl")
-        if "DAO_HAZE_HLSL" not in preamble:
-            preamble += ours("haze.hlsl")
     # How strong the area's fills are on figures and props.
     if "g_vLightParams" in listing and "ps_3_0" in listing:
         changes.append(with_fill_strength)

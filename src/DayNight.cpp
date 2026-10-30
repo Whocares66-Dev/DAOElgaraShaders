@@ -2,6 +2,7 @@
 
 #include "dao/Lights.h"
 #include "dao/Module.h"
+#include "dao/Resources.h"
 #include "dao/core/Dds.h"
 #include "dao/core/Erf.h"
 #include "dao/core/Gff4.h"
@@ -17,7 +18,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
@@ -123,11 +123,13 @@ struct Pair
     float noon = 0;                  // the hour the sun is highest (its area's file)
     float nightFill = 0;             // the share of the night sky's light kept by night (its area's file)
     float nightHaze = 0;             // how much of the area's own haze its night's sky has (its area's file)
-    float sprayMoon = 0;             // how much of the moon's light its spray and mist take (its area's file)
-    std::vector<LampMove> lampMoves; // its file's `move_lamp`s
-    std::optional<float> heldHour;   // the hour its light is held at (its file's `hour`), none for the clock's
-    bool heldOwn = false;            // held at the level's own hour (its file's `hour = own`)
-    float ownHour = 0;               // the hour the level's own sun stands where it is
+    float effectsMoonlit = 0;        // how much of the moon's light its spray and mist take (its area's file)
+    float waterMoonlit = 1;          // how much of the moon's light its water takes (its area's file)
+    std::vector<std::pair<float dao::core::Sky::*, float>> dayClouds; // its file's `day_clouds` level's clouds
+    std::vector<LampMove> lampMoves;                                  // its file's `move_lamp`s
+    std::optional<float> heldHour; // the hour its light is held at (its file's `hour`), none for the clock's
+    bool heldOwn = false;          // held at the level's own hour (its file's `hour = own`)
+    float ownHour = 0;             // the hour the level's own sun stands where it is
     std::vector<std::pair<std::wstring, std::int32_t>> heldUntil; // plots' flags any of which lets the clock run
     // An interior (its file's `outside`): the fields above are the outside
     // area's, whose clock and sky its windows see; its own light is its
@@ -139,19 +141,6 @@ std::wstring Lower(std::wstring text)
 {
     std::ranges::transform(text, text.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
     return text;
-}
-
-std::optional<std::vector<std::byte>> FileBytes(const std::filesystem::path &file)
-{
-    std::ifstream in(file, std::ios::binary);
-    if (!in)
-    {
-        return std::nullopt;
-    }
-    std::vector<char> chars((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    std::vector<std::byte> bytes(chars.size());
-    std::memcpy(bytes.data(), chars.data(), chars.size());
-    return bytes;
 }
 
 void Put(std::vector<std::pair<float dao::core::Sky::*, float>> &sky, const gff4::Struct &in, std::uint32_t label,
@@ -168,10 +157,12 @@ void Put(std::vector<std::pair<float dao::core::Sky::*, float>> &sky, const gff4
     }
 }
 
-// A level's sun and sky, from its .arl.
-bool ReadArl(const std::filesystem::path &arl, LevelLight &light)
+// A level's sun and sky, from its .arl: the copy the game takes, a mod's
+// where one has it (Dragon Age Evolved's lak200d.arl in the player's
+// override, #66). The game thread's.
+bool ReadArl(const std::wstring &level, LevelLight &light)
 {
-    const std::optional<std::vector<std::byte>> bytes = FileBytes(arl);
+    const std::optional<std::vector<std::byte>> bytes = dao::resources::Read(level + L".arl");
     const std::optional<gff4::File> file = bytes ? gff4::File::Parse(*bytes) : std::nullopt;
     const std::optional<gff4::Struct> root = file ? file->Root() : std::nullopt;
     if (!root)
@@ -279,10 +270,12 @@ bool ReadLayouts(const std::filesystem::path &rim, const std::wstring &level, Le
     return true;
 }
 
-std::optional<LevelLight> ReadLevel(const std::filesystem::path &env, const std::wstring &level)
+// A level's light: its .arl's and its archive of rooms' (`rim`). The game
+// thread's.
+std::optional<LevelLight> ReadLevel(const std::filesystem::path &rim, const std::wstring &level)
 {
     LevelLight light;
-    if (!ReadArl(env / (level + L".arl"), light) || !ReadLayouts(env / level / (level + L".rim"), level, light))
+    if (!ReadArl(level, light) || !ReadLayouts(rim, level, light))
     {
         return std::nullopt;
     }
@@ -358,8 +351,8 @@ constexpr float kDawnHaze = 0.05F;
 // light (0.24, 0.18, 0.10), and the farm's air, whose blue is nearly all its
 // sky light's, went navy at 20:00 (its far mountains 43, 51, 118 of 255). At
 // 0.1 that sun keeps 0.46, 0.38, 0.26 of its light, its disc (1, 0.83, 0.58),
-// and the mountains are 81, 83, 132 (with the glow at 0.5, Outdoors.cpp's
-// kHazeG).
+// and the mountains were 81, 83, 132 (with the plugin's haze of the time,
+// gone on 2026-10-27).
 constexpr float kDuskHaze = 0.1F;
 // outdoors.tune's DawnHaze and DuskHaze, a developer's, to try others live
 // (TryDayHaze). The game thread's.
@@ -431,7 +424,9 @@ struct Cycled
     float noon = 0;
     float nightFill = 0;
     float nightHaze = 0;
-    float sprayMoon = 0;
+    float effectsMoonlit = 0;
+    float waterMoonlit = 1;
+    std::vector<std::pair<float dao::core::Sky::*, float>> dayClouds; // its file's `day_clouds`, data/clouds
     std::vector<LampMove> lampMoves;
     std::optional<float> heldHour; // the hour its light is held at (its file's `hour`), none for the clock's
     bool heldOwn = false;          // held at the level's own hour (its file's `hour = own`)
@@ -459,6 +454,25 @@ constexpr float kNightColour = 0.5F;
 // outdoors.tune's NightColour, a developer's, to try another share live
 // (TryNightColour). The game thread's.
 std::optional<float> g_tryColour;
+
+// How much of the moon's beam the night's air takes beside the night sky's
+// even light (LightAir): none left the Dalish camp's fog unseen against the
+// dark trees, the whole moon made it a bright cyan sheet (2026-10-27).
+// outdoors.tune's FogMoon tries others live, a developer's (TryFogMoon).
+constexpr float kFogMoon = 0.25F;
+std::optional<float> g_tryFogMoon;
+float FogMoon()
+{
+    return std::clamp(g_tryFogMoon.value_or(kFogMoon), 0.0F, 1.0F);
+}
+
+// outdoors.tune's WaterMoonlit, in place of the area's file's
+// `water_moonlit`, a developer's (TryWaterMoonlit). The game thread's.
+std::optional<float> g_tryWaterMoonlit;
+float WaterMoonlit(const Pair &pair)
+{
+    return std::clamp(g_tryWaterMoonlit.value_or(pair.waterMoonlit), 0.0F, 1.0F);
+}
 float NightColour()
 {
     return std::clamp(g_tryColour.value_or(kNightColour), 0.0F, 1.0F);
@@ -525,18 +539,6 @@ std::array<float, 3> FogOver(const std::array<float, 3> &fog, const std::array<f
         by.at(i) = light > 0 ? fog.at(i) / light : 0;
     }
     return by;
-}
-
-// The air's light that a sun or moon and a sky light make, by FogOver's share.
-Air AirBy(const std::array<float, 3> &by, const std::array<float, 3> &sun, const std::array<float, 3> &skyLight)
-{
-    Air air;
-    for (std::size_t i = 0; i < by.size(); ++i)
-    {
-        air.sun.at(i) = by.at(i) * sun.at(i);
-        air.sky.at(i) = by.at(i) * skyLight.at(i);
-    }
-    return air;
 }
 
 // The area's own level's light: the bake's, and the sun the area has.
@@ -652,7 +654,7 @@ void WaterAndSpray(Light &light, const Pair &pair, const dao::core::Sky &daySky,
     }
     const std::array<float, 3> &ownSkyLight = Own(pair).skyLight;
     // By night, as much of the moon as the area's spray stands in (its file's
-    // `spray_moon`): the plugin shadows the moon on surfaces, not on a
+    // `effects_moonlit`): the plugin shadows the moon on surfaces, not on a
     // particle, and under the West Brecilian Forest's canopy its falls took
     // the whole moon, 0.56 of their noon brightness at midnight beside ground
     // all but black (2026-10-24).
@@ -661,23 +663,50 @@ void WaterAndSpray(Light &light, const Pair &pair, const dao::core::Sky &daySky,
     // for a day takes the evening's warmth and the moon's pale blue as the
     // ground beside it does (2026-10-24; its colour once turned the falls ink
     // blue, 2026-10-22, before the night's colour was paled).
-    const float sprayBy = sunLights ? 1 : pair.sprayMoon;
+    // By night over the own level's light's grey rather than each colour,
+    // and the night's light's brightness without its colour: white water by
+    // the moon is a dimmer white (the user, 2026-10-22: "we want it to be a
+    // less bright white, not blue"). A spray drawn white under the Brecilian
+    // forests' gold day light (0.61, 0.40, 0.28) took the night's light over
+    // that in each colour and went deep blue, 20, 57, 127 of 255 at the West
+    // forest's falls at midnight; 34, 54, 70 now, beside rock at 36, 63, 66
+    // (#63). Water keeps its light's colour: without it (its sky's sun's,
+    // warm) the stream went bluer, 89, 101, 119 to 80, 103, 128. A night the
+    // own level (the Circle's docks) keeps its own.
+    const float sprayBy = sunLights ? 1 : pair.effectsMoonlit;
+    const std::array<float, 3> ownLight{Own(pair).sun.color[0] + ownSkyLight[0],
+                                        Own(pair).sun.color[1] + ownSkyLight[1],
+                                        Own(pair).sun.color[2] + ownSkyLight[2]};
+    const float ownGrey = grey(ownLight[0], ownLight[1], ownLight[2]);
+    const float toGrey = pair.ownIsNight ? 0 : light.nightShare;
     for (std::size_t i = 0; i < light.lit.size(); ++i)
     {
-        const float own = Own(pair).sun.color.at(i) + ownSkyLight.at(i);
+        const float own = std::lerp(ownLight.at(i), ownGrey, toGrey);
         light.lit.at(i) = own > 0 ? ((light.sun.color.at(i) * sprayBy) + sky.at(i)) / own : 1;
     }
-    light.water = {skySun > 0 && daySun > 0 ? (sun / daySun) * (daySkySun / skySun) : 1,
+    light.lit = Paler(light.lit, 1 - toGrey);
+    // By night, the share of the moon's and the sky's light that reaches the
+    // area's water (its file's `water_moonlit`): as with its spray, the moon
+    // the plugin shadows on the ground lit the water under the canopy whole,
+    // and the West Brecilian Forest's stream ran white past moss all but
+    // black at midnight (#63).
+    const float waterBy = sunLights ? 1 : WaterMoonlit(pair);
+    const float reaches =
+        grey(light.sun.color[0], light.sun.color[1], light.sun.color[2]) + grey(sky[0], sky[1], sky[2]);
+    const float reached = (sun * waterBy) + grey(sky[0], sky[1], sky[2]);
+    light.water = {(skySun > 0 && daySun > 0 ? (sun / daySun) * (daySkySun / skySun) : 1) *
+                       (reaches > 0 ? reached / reaches : 1),
                    std::lerp(1.0F, NightColour(), light.nightShare)};
 }
 
-// The air's light by the hour (Outdoors.cpp's HazeOf, haze.hlsl): the
-// hour's sun or moon and sky light on the air, by the day level's FogOver
-// and the night level's mixed as the sky is. At the day level's own light the
-// two parts make its own fog color exactly, and at the night level's its
-// night fog as the plugin pales it. The engine's fog color is set to them, so
-// what fogs the vanilla way follows the hour as the haze does.
-void LightAir(Light &light, const Pair &pair, const dao::core::Sky &daySky, const dao::core::Sky &nightSky, float day)
+// The fog's color by the hour: the hour's sun or moon and sky light on the
+// air, by the day level's FogOver and the night level's mixed as the sky is.
+// At the day level's own light it is its own fog color exactly, and at the
+// night level's its night fog as the plugin pales it. The engine fogs every
+// surface and the sky toward it, so the far landscape follows the hour, warm
+// at dusk and cool at night.
+void LightAir(Light &light, const Pair &pair, const dao::core::Sky &daySky, const dao::core::Sky &nightSky, float day,
+              bool sunLights)
 {
     const std::array<float, 3> dayBy = FogOver(FogOf(daySky), Rgb(pair.day.sun.color), pair.day.skyLight);
     // The night level's light paled as the night's is (its fog was paled by
@@ -688,18 +717,35 @@ void LightAir(Light &light, const Pair &pair, const dao::core::Sky &daySky, cons
     std::array<float, 3> skyLight{};
     for (std::size_t i = 0; i < by.size(); ++i)
     {
-        by.at(i) = std::lerp(nightBy.at(i), dayBy.at(i), day);
+        // How much of its light the air gives back is the place's own, as
+        // its thickness is (LightAt), at every hour: from the night level
+        // the Dalish camp's thick gold fog took Redcliffe's clear night
+        // air's share and was as dark as the trees behind it by midnight
+        // (the user, 2026-10-27: "fog still seems to disappear at night").
+        by.at(i) = pair.ownIsNight ? nightBy.at(i) : dayBy.at(i);
         skyLight.at(i) = std::lerp(light.nightSky.at(i), pair.day.skyLight.at(i), day);
     }
-    light.air = AirBy(by, Rgb(light.sun.color), skyLight);
-    light.sky.fogRed = light.air.sun[0] + light.air.sky[0];
-    light.sky.fogGreen = light.air.sun[1] + light.air.sky[1];
-    light.sky.fogBlue = light.air.sun[2] + light.air.sky[2];
+    // By night the air takes the night sky's even light alone, what lights
+    // the shade, and not the moon's beam: lit by the whole moon, the game's
+    // night lit for play at half the day's light, the Dalish camp's fog was a
+    // bright cyan sheet over the dark trees at midnight (the user,
+    // 2026-10-27: "fog is way too bright ... tone it down, don't want it
+    // neon").
+    const std::array<float, 3> sun = sunLights ? Rgb(light.sun.color) : Scaled(Rgb(light.sun.color), FogMoon());
+    light.sky.fogRed = by[0] * (sun[0] + skyLight[0]);
+    light.sky.fogGreen = by[1] * (sun[1] + skyLight[1]);
+    light.sky.fogBlue = by[2] * (sun[2] + skyLight[2]);
 }
 
 Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float night, float fill, float haze)
 {
-    const dao::core::Sky daySky = SkyOf(own, pair.day);
+    dao::core::Sky daySky = SkyOf(own, pair.day);
+    // By day the clouds of the level its file names (`day_clouds`), lit as
+    // that level's makers lit them; the night keeps its own.
+    for (const auto &[member, value] : pair.dayClouds)
+    {
+        daySky.*member = value;
+    }
     dao::core::Sky nightSky = SkyOf(own, pair.night);
     // The night's fog is the moon's light scattered, paled as that light
     // is: its own deep blue was what a mist and a fall's spray fogged to,
@@ -725,6 +771,17 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
     const float day = SmoothStep(kNightFrom, kDayFrom, sunHeight);
     Light light;
     light.sky = dao::core::Blend(nightSky, daySky, day);
+    // How thick the air is, its fog's intensity, cap and zenith, is the
+    // place's own at every hour, its own level's; the hour gives the fog its
+    // colour alone. Blended to the night level's, Haven's thick fog thinned
+    // to Redcliffe's clear night air and went by midnight (the user,
+    // 2026-10-27: "the fog seems to disappear at night?").
+    {
+        const dao::core::Sky &place = pair.ownIsNight ? nightSky : daySky;
+        light.sky.fogIntensity = place.fogIntensity;
+        light.sky.fogCap = place.fogCap;
+        light.sky.fogZenith = place.fogZenith;
+    }
     light.nightShare = 1 - day;
     // At night the moon alone lights what the bake lit by day, from where it
     // is: the bake, a level's probes and its ambient go to the night sky's
@@ -785,6 +842,7 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
     // (the sky's moon alpha, the disc's whole brightness) the day's or the
     // night's own, going as the body crosses the horizon and, for the moon,
     // with twilight.
+    light.moon = !sunLights;
     const float brightest = std::max({light.disc[0], light.disc[1], light.disc[2]});
     for (float &channel : light.disc)
     {
@@ -792,7 +850,7 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
     }
     light.sky.moonAlpha = sunLights ? daySky.moonAlpha * SmoothStep(kOver, -kOver, sunHeight) : nightSky.moonAlpha * up;
     WaterAndSpray(light, pair, daySky, nightSky, day, sunLights);
-    LightAir(light, pair, daySky, nightSky, day);
+    LightAir(light, pair, daySky, nightSky, day, sunLights);
     return light;
 }
 
@@ -928,9 +986,9 @@ std::vector<std::wstring> g_fireLights;
 float g_fireStrength = 1; // defaults.ini's `fire_strength`, set once in Install
 std::map<std::wstring, std::shared_ptr<const Pair>> g_pairs;
 std::set<std::wstring> g_asked;
-// Every level opened's own light, by its name: its sun and sky light make its
-// air's light where the clock does not run (OwnAir).
-std::map<std::wstring, LevelLight> g_levels;
+// The levels opened whose pairs are yet to be read (Opened's): each its
+// archive of rooms and the game's levels' folder.
+std::vector<std::pair<std::filesystem::path, std::filesystem::path>> g_opened;
 // What the hour's light hands the render thread: the sky light's multiplier,
 // the disc's colour (under g_lock), and the day level's sunlight lamps with
 // what they are multiplied by.
@@ -943,6 +1001,7 @@ std::atomic<float> g_evenShare{0};
 std::array<std::atomic<float>, 3> g_even{0.0F, 0.0F, 0.0F};
 std::array<std::atomic<float>, 3> g_daySky{0.0F, 0.0F, 0.0F};
 std::optional<std::array<float, 3>> g_disc;
+std::atomic<bool> g_discIsMoon{false};
 std::vector<LampMove> g_lampMoves;  // the running area's, under g_lock
 std::atomic<bool> g_running{false}; // the clock runs in a level with a night
 std::atomic<bool> g_indoors{false}; // and in an interior
@@ -992,6 +1051,7 @@ void Stopped()
     }
     const std::scoped_lock lock(g_lock);
     g_disc.reset();
+    g_discIsMoon.store(false, std::memory_order_relaxed);
     g_lampMoves.clear();
 }
 
@@ -1173,18 +1233,20 @@ std::optional<Cycled> AreaOf(const std::string &tag, const Keys &keys, const Key
     const std::optional<float> noon = Number(said("noon").value_or(""));
     const std::optional<float> nightFill = Number(said("night_fill").value_or(""));
     const std::optional<float> nightHaze = Number(said("night_haze").value_or(""));
-    const std::optional<float> sprayMoon = Number(said("spray_moon").value_or(""));
+    const std::optional<float> effectsMoonlit = Number(said("effects_moonlit").value_or(""));
+    const std::optional<float> waterMoonlit = Number(said("water_moonlit").value_or(""));
     if (area.own.empty() || area.other.empty() || (!borrowedNight.empty() && !borrowedDay.empty()) || !declination ||
-        !noon || !nightFill || !nightHaze || !sprayMoon)
+        !noon || !nightFill || !nightHaze || !effectsMoonlit || !waterMoonlit)
     {
         spdlog::warn("day and night: areas/{}.ini lacks its level, one of its night or its day, the declination, "
-                     "noon, the night's fill or its haze",
+                     "noon, the night's fill, its haze or its effects' or water's moonlight",
                      tag);
         return std::nullopt;
     }
     area.nightFill = *nightFill;
     area.nightHaze = std::clamp(*nightHaze, 0.0F, 1.0F);
-    area.sprayMoon = std::clamp(*sprayMoon, 0.0F, 1.0F);
+    area.effectsMoonlit = std::clamp(*effectsMoonlit, 0.0F, 1.0F);
+    area.waterMoonlit = std::clamp(*waterMoonlit, 0.0F, 1.0F);
     area.lampMoves = LampMovesOf(keys);
     area.declination = *declination;
     area.noon = *noon;
@@ -1200,6 +1262,57 @@ std::optional<Cycled> AreaOf(const std::string &tag, const Keys &keys, const Key
         area.latitudeOf = Wide(latitude);
     }
     return area;
+}
+
+// A sky's clouds by a file of data/clouds (`name`.ini): `density`,
+// `sharpness`, `depth`, `range1`, `range2` and `color`, the engine's cloud
+// fields; none where it has no such file. An area's `day_clouds` names one,
+// for a day of other weather than its borrowed day's: the unrepaired Vigil's
+// Keep rains by day too, under the clear day it borrows (vgk101d, its sun at
+// full strength over scattered clouds), and takes `overcast` (the user,
+// 2026-10-27: "how about not changing the disk and just adding more clouds
+// during the keep day (but not night)", "shouldn't we make clouds its own
+// file?"). The keep's own storm clouds, its night level's, darkened the noon
+// sky to night (29, 37, 45 of 255): their colour is a night's.
+std::vector<std::pair<float dao::core::Sky::*, float>> CloudsOf(const std::filesystem::path &folder,
+                                                                const std::string &name)
+{
+    std::vector<std::pair<float dao::core::Sky::*, float>> clouds;
+    std::error_code error;
+    const std::filesystem::path file = folder / (name + ".ini");
+    if (name.empty() || !std::filesystem::exists(file, error))
+    {
+        return clouds;
+    }
+    const Keys keys = ReadKeys(file);
+    const auto one = [&](const char *key, float dao::core::Sky::*member) {
+        if (const auto value = keys.find(key); value != keys.end())
+        {
+            if (const std::optional<float> number = Number(value->second))
+            {
+                clouds.emplace_back(member, *number);
+            }
+        }
+    };
+    one("density", &dao::core::Sky::cloudDensity);
+    one("sharpness", &dao::core::Sky::cloudSharpness);
+    one("depth", &dao::core::Sky::cloudDepth);
+    one("range1", &dao::core::Sky::cloudRangeMultiplier1);
+    one("range2", &dao::core::Sky::cloudRangeMultiplier2);
+    if (const auto colour = keys.find("color"); colour != keys.end())
+    {
+        std::istringstream rgb(colour->second);
+        float r = 0;
+        float g = 0;
+        float b = 0;
+        if (rgb >> r >> g >> b)
+        {
+            clouds.emplace_back(&dao::core::Sky::cloudRed, r);
+            clouds.emplace_back(&dao::core::Sky::cloudGreen, g);
+            clouds.emplace_back(&dao::core::Sky::cloudBlue, b);
+        }
+    }
+    return clouds;
 }
 
 Table ReadTable(const std::filesystem::path &folder)
@@ -1240,6 +1353,10 @@ Table ReadTable(const std::filesystem::path &folder)
         }
         if (std::optional<Cycled> area = AreaOf(tag, keys, defaults))
         {
+            if (const auto clouds = keys.find("day_clouds"); clouds != keys.end())
+            {
+                area->dayClouds = CloudsOf(folder.parent_path() / "clouds", clouds->second);
+            }
             table.areas.push_back(std::move(*area));
         }
     }
@@ -1297,10 +1414,8 @@ namespace
 {
 
 // The light of an area's day and night: `own` its level's, `other` the
-// level it borrows the other of them from (Cycled's); `folderOf` the levels'
-// folder a level is in.
-std::shared_ptr<Pair> MakePair(const Cycled &cycled, const LevelLight &own, const LevelLight &other,
-                               const std::function<std::filesystem::path(const std::wstring &)> &folderOf)
+// level it borrows the other of them from (Cycled's).
+std::shared_ptr<Pair> MakePair(const Cycled &cycled, const LevelLight &own, const LevelLight &other)
 {
     auto pair = std::make_shared<Pair>();
     pair->ownIsNight = cycled.ownIsNight;
@@ -1311,7 +1426,9 @@ std::shared_ptr<Pair> MakePair(const Cycled &cycled, const LevelLight &own, cons
     pair->noon = cycled.noon;
     pair->nightFill = cycled.nightFill;
     pair->nightHaze = cycled.nightHaze;
-    pair->sprayMoon = cycled.sprayMoon;
+    pair->effectsMoonlit = cycled.effectsMoonlit;
+    pair->waterMoonlit = cycled.waterMoonlit;
+    pair->dayClouds = cycled.dayClouds;
     pair->lampMoves = cycled.lampMoves;
     pair->heldHour = cycled.heldHour;
     pair->heldOwn = cycled.heldOwn;
@@ -1325,7 +1442,7 @@ std::shared_ptr<Pair> MakePair(const Cycled &cycled, const LevelLight &own, cons
     const std::wstring &dayLevel = cycled.ownIsNight ? cycled.other : cycled.own;
     const std::wstring &latitudeOf = cycled.latitudeOf.empty() ? dayLevel : cycled.latitudeOf;
     const dao::core::Sunlight &by =
-        latitudeOf == dayLevel || !ReadArl(folderOf(latitudeOf) / (latitudeOf + L".arl"), of) ? pair->day.sun : of.sun;
+        latitudeOf == dayLevel || !ReadArl(latitudeOf, of) ? pair->day.sun : of.sun;
     pair->latitude = cycled.latitude ? *cycled.latitude * kDegree
                                      : (std::numbers::pi_v<float> / 2) -
                                            Height({-by.direction[0], -by.direction[1], -by.direction[2]});
@@ -1439,10 +1556,10 @@ std::optional<std::array<float, 3>> BakeColour(const std::filesystem::path &fold
 // a night's bake, the colour its day's fill takes (its file's `day`, a level
 // its makers lit by day: that level's rooms' fill). Left as made where either
 // could not be read.
-void ReadIndoorColours(IndoorLight &indoors, const std::filesystem::path &env, const std::wstring &own,
+void ReadIndoorColours(IndoorLight &indoors, const std::filesystem::path &folder, const std::wstring &own,
                        const std::function<std::filesystem::path(const std::wstring &)> &folderOf)
 {
-    const std::optional<std::array<float, 3>> bake = BakeColour(env / own, own);
+    const std::optional<std::array<float, 3>> bake = BakeColour(folder, own);
     if (!bake || Luminance(*bake) <= 0)
     {
         return;
@@ -1453,7 +1570,7 @@ void ReadIndoorColours(IndoorLight &indoors, const std::filesystem::path &env, c
     }
     const std::wstring &day = indoors.other;
     if (const std::optional<std::array<float, 3>> fill =
-            day.empty() ? std::nullopt : RoomsAmbient(folderOf(day) / day, day);
+            day.empty() ? std::nullopt : RoomsAmbient(folderOf(day), day);
         fill && Luminance(*fill) > 0)
     {
         indoors.dayFill = *fill;
@@ -1494,19 +1611,31 @@ void AreasOn(const std::wstring &level, std::vector<Cycled> &areas, std::vector<
 void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &coreEnv)
 {
     const std::wstring level = Lower(levelRim.stem().wstring());
-    {
-        const std::scoped_lock lock(g_lock);
-        if (g_asked.contains(level))
-        {
-            return;
-        }
-    }
     // A level with a day and a night is two, named alike but for the last
     // letter: d for the day's, n for the night's (lak100d and lak100n). The
     // clock runs in the areas data/areas names alone: a night level is the
     // story's night, and the other places are left until the story's times
     // are known. An interior is lit by the hour of the area its windows look
     // out on, whose levels are read with its own.
+    const std::scoped_lock lock(g_lock);
+    if (!g_asked.insert(level).second ||
+        std::ranges::none_of(g_cycled, [&](const Cycled &cycled) { return cycled.own == level; }))
+    {
+        return;
+    }
+    // Read at the next Now: the engine is opening an archive here, and its
+    // files are read through it (ReadArl).
+    g_opened.push_back({levelRim, coreEnv});
+}
+
+namespace
+{
+
+// The pairs of a level opened (Opened's): its areas' days and nights, read
+// from some small files (the .arl and the layouts). The game thread's.
+void ReadPairs(const std::filesystem::path &levelRim, const std::filesystem::path &coreEnv)
+{
+    const std::wstring level = Lower(levelRim.stem().wstring());
     std::vector<Cycled> areas;
     std::vector<std::pair<Cycled, Cycled>> interiors;
     {
@@ -1514,40 +1643,35 @@ void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &
         g_asked.insert(level);
         AreasOn(level, areas, interiors);
     }
+    // A level's archive of rooms is in its folder in its own levels' folder:
+    // an add-in's, a mod's (Dragon Age Evolved's in an override folder) or
+    // the game's. Another level is looked for beside it, then in the game's:
+    // an add-in's or a mod's level borrows the game's night (Awakening's,
+    // Redcliffe's).
     const std::filesystem::path env = levelRim.parent_path().parent_path();
-    // A level is in its own levels' folder, an add-in's or the game's: an
-    // add-in's level borrows the game's night (Awakening's, Redcliffe's).
-    const auto folderOf = [&](const std::wstring &name) {
+    const auto rimOf = [&](const std::wstring &name) {
         std::error_code error;
-        return std::filesystem::exists(env / (name + L".arl"), error) ? env : coreEnv;
+        const std::filesystem::path beside = env / name / (name + L".rim");
+        return std::filesystem::exists(beside, error) ? beside : coreEnv / name / (name + L".rim");
     };
-    // The level's own light, every level's: out of doors its air is lit by
-    // its sun and its sky's light whether the clock runs or not (OwnAir).
-    // Some small files (the .arl and the layouts), read as the level is
-    // opened.
-    const std::optional<LevelLight> own = ReadLevel(env, level);
-    if (own)
-    {
-        const std::scoped_lock lock(g_lock);
-        g_levels[level] = *own;
-    }
+    const std::optional<LevelLight> own = ReadLevel(levelRim, level);
     for (const Cycled &cycled : areas)
     {
-        const std::optional<LevelLight> other = ReadLevel(folderOf(cycled.other), cycled.other);
+        std::optional<LevelLight> other = ReadLevel(rimOf(cycled.other), cycled.other);
         if (!own || !other)
         {
             spdlog::warn("day and night: {} or {} could not be read", std::filesystem::path(level).string(),
                          std::filesystem::path(cycled.other).string());
             continue;
         }
-        std::shared_ptr<Pair> pair = MakePair(cycled, *own, *other, folderOf);
+        std::shared_ptr<Pair> pair = MakePair(cycled, *own, *other);
         const std::scoped_lock lock(g_lock);
         g_pairs[cycled.area] = std::move(pair);
     }
     for (const auto &[inside, outside] : interiors)
     {
-        const std::optional<LevelLight> outsideOwn = ReadLevel(folderOf(outside.own), outside.own);
-        const std::optional<LevelLight> outsideOther = ReadLevel(folderOf(outside.other), outside.other);
+        const std::optional<LevelLight> outsideOwn = ReadLevel(rimOf(outside.own), outside.own);
+        const std::optional<LevelLight> outsideOther = ReadLevel(rimOf(outside.other), outside.other);
         if (!outsideOwn || !outsideOther)
         {
             spdlog::warn("day and night: {} or {}, {}'s outside, could not be read",
@@ -1556,7 +1680,7 @@ void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &
             continue;
         }
         // The outside's clock and sky, held as the interior's own file says.
-        std::shared_ptr<Pair> pair = MakePair(outside, *outsideOwn, *outsideOther, folderOf);
+        std::shared_ptr<Pair> pair = MakePair(outside, *outsideOwn, *outsideOther);
         pair->area = inside.area;
         pair->heldHour = inside.heldHour;
         pair->heldOwn = inside.heldOwn;
@@ -1565,7 +1689,8 @@ void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &
         pair->indoors = inside.indoors;
         if (pair->indoors)
         {
-            ReadIndoorColours(*pair->indoors, env, level, folderOf);
+            ReadIndoorColours(*pair->indoors, levelRim.parent_path(), level,
+                              [&](const std::wstring &name) { return rimOf(name).parent_path(); });
         }
         spdlog::info("day and night: {} indoors, its windows on {}'s sky, its makers' light kept at {:.2f}",
                      std::filesystem::path(inside.area).string(), std::filesystem::path(outside.area).string(),
@@ -1574,6 +1699,8 @@ void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &
         g_pairs[inside.area] = std::move(pair);
     }
 }
+
+} // namespace
 
 float NightShare()
 {
@@ -1600,26 +1727,6 @@ std::array<float, 3> EvenLight()
 {
     return {g_even[0].load(std::memory_order_relaxed), g_even[1].load(std::memory_order_relaxed),
             g_even[2].load(std::memory_order_relaxed)};
-}
-
-std::optional<Air> OwnAir(const dao::core::Sunlight &ownSun, const std::array<float, 3> &fog)
-{
-    std::optional<std::array<float, 3>> skyLight;
-    {
-        const std::scoped_lock lock(g_lock);
-        const auto level =
-            std::ranges::find_if(g_levels, [&](const auto &named) { return Same(named.second.sun, ownSun); });
-        if (level != g_levels.end())
-        {
-            skyLight = level->second.skyLight;
-        }
-    }
-    if (!skyLight)
-    {
-        return std::nullopt;
-    }
-    const std::array<float, 3> sun = Rgb(ownSun.color);
-    return AirBy(FogOver(fog, sun, *skyLight), sun, *skyLight);
 }
 
 std::array<float, 3> DaySky()
@@ -1719,6 +1826,16 @@ std::optional<Borrowed> BorrowedBy(std::wstring_view level)
                                     : std::nullopt;
 }
 
+void TryFogMoon(std::optional<float> share)
+{
+    g_tryFogMoon = share;
+}
+
+void TryWaterMoonlit(std::optional<float> share)
+{
+    g_tryWaterMoonlit = share;
+}
+
 void TryNightColour(std::optional<float> kept)
 {
     g_tryColour = kept;
@@ -1783,6 +1900,15 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
                          bool running, float dayMinutes, float night, std::optional<float> fill,
                          std::optional<float> haze)
 {
+    std::vector<std::pair<std::filesystem::path, std::filesystem::path>> opened;
+    {
+        const std::scoped_lock lock(g_lock);
+        opened.swap(g_opened);
+    }
+    for (const auto &[levelRim, coreEnv] : opened)
+    {
+        ReadPairs(levelRim, coreEnv);
+    }
     std::shared_ptr<const Pair> pair;
     {
         const std::scoped_lock lock(g_lock);
@@ -1861,6 +1987,7 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
     g_running.store(true, std::memory_order_relaxed);
     const std::scoped_lock lock(g_lock);
     g_disc = light.disc;
+    g_discIsMoon.store(light.moon, std::memory_order_relaxed);
     g_lampMoves = pair->lampMoves;
     return light;
 }
@@ -1886,6 +2013,11 @@ std::optional<std::array<float, 3>> Disc()
 {
     const std::scoped_lock lock(g_lock);
     return g_disc;
+}
+
+bool DiscIsMoon()
+{
+    return g_discIsMoon.load(std::memory_order_relaxed);
 }
 
 void Install()

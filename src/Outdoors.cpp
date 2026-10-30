@@ -8,7 +8,6 @@
 #include "dao/Atmosphere.h"
 #include "dao/Camera.h"
 #include "dao/ClientExoApp.h"
-#include "dao/Framebuffer.h"
 #include "dao/GameModes.h"
 #include "dao/Module.h"
 #include "dao/Objects.h"
@@ -22,18 +21,15 @@
 #include <array>
 #include <atomic>
 #include <charconv>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <map>
-#include <numbers>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <utility>
 #include <vector>
 
 namespace outdoors
@@ -43,19 +39,10 @@ namespace
 {
 
 constexpr std::string_view kTuneFile = "outdoors.tune";
-constexpr std::wstring_view kChain = L"da_hsvmatrix"; // the chain build_shaders.py puts our values in
 // Frames between looks at the area and the file: half a second or so.
 constexpr int kEvery = 30;
 
 int g_frames = 0;
-
-using Vec3 = std::array<float, 3>;
-using Mat3 = std::array<Vec3, 3>; // by rows
-
-float Dot(const Vec3 &a, const Vec3 &b)
-{
-    return (a[0] * b[0]) + (a[1] * b[1]) + (a[2] * b[2]);
-}
 
 std::string_view Trimmed(std::string_view text)
 {
@@ -145,7 +132,7 @@ std::optional<float> Tuned(std::string_view key)
     return found != g_tune.end() ? std::optional<float>(found->second) : std::nullopt;
 }
 
-// Whether the player wants the air lit (the options screen's Improved lighting).
+// Whether the player wants Improved lighting (the options screen's).
 bool g_wanted = false;
 
 // The light of the hour where the area's level has a day and a night
@@ -165,8 +152,6 @@ std::optional<dao::atmosphere::Sky> BaseSky()
     return g_hourLight ? std::optional(g_hourLight->sky) : dao::atmosphere::AreaOwnSky();
 }
 
-SkyHaze g_haze;
-std::array<float, 20> g_hazeView{}; // HazeView's, set by KeepHaze
 float g_fills = 1;
 
 // The one sun on figures (Improved lighting): out of doors under a sun or a moon, a figure is lit as the
@@ -195,62 +180,9 @@ bool SunlitFigures()
 }
 bool g_outdoors = false;
 bool g_sunlit = false; // out of doors with a sun on the ground (Sunlit)
-
-// The air's light (haze.hlsl): what the sun or the moon and the sky's light
-// make of the air, by how much of the light on it the area's own fog color
-// is (DayNight.cpp's FogOver). The fog color is the air as the makers lit it,
-// chosen by eye and the same every way; on the mean over all ways it is still
-// that color at the level's own light, the sun's part brighter toward the
-// sun and dimmer away, in the sun's color through the fog's. Under the day and
-// the night the light is the hour's, the same that lights the ground, and the
-// moon lights its own lobe; elsewhere the area's own, its sky's light read
-// with its level (daynight::OwnAir). An area with no sun, or whose level's
-// sky light was not read, keeps its fog as it is.
-// (Before 2026-10-25 the color was split by the sky dome's Mie and Rayleigh
-// numbers, which the dome, drawn at 1 to 2 in 100, hardly shows: they gave the
-// sun 0.30 of Redcliffe's fog, 0.42 of the Dalish camp's, 0.86 of the farm's
-// and 0.93 of Haven's, and with the dome's hg of 0.5 the air toward a low sun
-// was 4.4 to 5.6 times its fog's brightness at the farm and in Haven, white,
-// in the fog's blue or teal (the user, 2026-10-23: "fog w/ improved lighting
-// makes mountains look too intense"; 2026-10-24: "The haze in general looks
-// screwed up").)
-// How the air's glow leans toward the sun, Henyey-Greenstein's g, one for
-// every area: at 0.5, at the level's own light, the air within a few degrees
-// of the sun is 4.1 to 5.0 times its fog's brightness in those four areas,
-// 1.6 to 1.7 times at 45 degrees from it, 0.6 to 0.7 across and 0.4 to 0.5
-// away; a low sun's glow is dimmer as the sun is. It is less than a hazy
-// air's own (0.7 to 0.8): the game's fogs are thick (1/e at 60 to 130 m), and
-// a haze that thick sends light on more than once, which spreads its lobe.
-// The areas' own hg is -0.5 in every area logged, and the engine's sky aims
-// it behind the eye. 0.3 for a day (2026-10-25) spread a dusk's glow too wide
-// to read: the farm's sky by the sun at 20:00 was 120, 114, 145 of 255, and
-// 196, 182, 177 at 0.5 (the user: "Let's try 0.5"). outdoors.tune's `HazeG`
-// tries another.
-constexpr float kHazeG = 0.5F;
-
-SkyHaze HazeOf(const dao::atmosphere::Sunlight &sun, const dao::atmosphere::Sky &sky, bool outdoors)
-{
-    SkyHaze haze;
-    const bool sunny = std::max({sun.color[0], sun.color[1], sun.color[2]}) > 0;
-    const std::optional<daynight::Air> air =
-        g_hourLight ? std::optional(g_hourLight->air)
-                    : daynight::OwnAir(sun, std::array<float, 3>{sky.fogRed, sky.fogGreen, sky.fogBlue});
-    haze.on = outdoors && sunny && air && g_wanted && Tuned("Haze").value_or(1) > 0;
-    static std::optional<bool> said;
-    if (outdoors && sunny && said != air.has_value())
-    {
-        said = air.has_value();
-        spdlog::info("the air: {}", air ? "lit by the level's sun and sky light"
-                                        : "the level's sky light was not read, its fog as it is");
-    }
-    if (air)
-    {
-        haze.sun = air->sun;
-        haze.sky = air->sky;
-    }
-    haze.g = std::clamp(Tuned("HazeG").value_or(kHazeG), 0.0F, 0.95F);
-    return haze;
-}
+// Whether the player's area is one the day and night run in (data/areas):
+// the only places the plugin lights the level's lamps itself (CyclingArea).
+std::atomic<bool> g_cycling{false};
 
 void KeepTune()
 {
@@ -307,8 +239,6 @@ void KeepSky()
     g_skySet = true;
 }
 
-// The air's light for the area the party is in, as the option and the file
-// say.
 // Whether the area is out of doors: a level of terrain, whose rooms are its
 // cells (dao::world::Room's state 6), not a level of rooms. An area's own sun
 // says nothing of it: 64 of the 132 layouts with a sun and a fog (counted with
@@ -344,6 +274,8 @@ bool OutOfDoors()
     return true;
 }
 
+// Whether the area the party is in is out of doors and sunlit, and how strong
+// its fills are on figures, as the option and the file say.
 void KeepAir()
 {
     // Whether the area has a sun is its own word: under a day and a night the
@@ -355,10 +287,8 @@ void KeepAir()
     if (sun && sky && said != outdoors)
     {
         said = outdoors;
-        spdlog::info("the area is {}",
-                     outdoors ? "out of doors: its air is lit by its sun" : "indoors: its fog as it is");
+        spdlog::info("the area is {}", outdoors ? "out of doors" : "indoors");
     }
-    g_haze = sun && sky ? HazeOf(*sun, *sky, outdoors) : SkyHaze{};
     g_outdoors = sun && sky && outdoors;
     const bool sunny = sun && std::max({sun->color[0], sun->color[1], sun->color[2]}) > 0;
     g_sunlit = g_outdoors && sunny;
@@ -417,165 +347,20 @@ void KeepSun()
     }
 }
 
-// The camera's turn: the matrix that takes a way in the world into the
-// camera's axes (x right, y down the picture, z ahead). Nothing of the
-// camera is read but where it is: points far off along twenty-six ways are
-// asked their place on the screen (dao::world::ToScreen), which is right
-// whatever camera draws (a conversation's, photo cam's), and the turn that
-// best takes the ways to where they are drawn is found as the rotation
-// nearest their sum (the polar decomposition, by Higham's iteration).
-// `focal` is the picture's focal length in pixels.
-// The ways about the eye, each times where it is drawn, summed; and how many
-// were drawn.
-std::pair<Mat3, int> DrawnWays(const dao::Vector &eye, float width, float height, float focal)
+// Tells the level's shadows what the camera looks at, each frame: the maps
+// are fitted around it (levelshadows::Focus).
+void KeepFocus()
 {
-    constexpr float kFar = 20000.0F; // metres: far enough that where the camera is does not matter
-    Mat3 sum{};
-    int seen = 0;
-    for (int x = -1; x <= 1; ++x)
-    {
-        for (int y = -1; y <= 1; ++y)
-        {
-            for (int z = -1; z <= 1; ++z)
-            {
-                if (x == 0 && y == 0 && z == 0)
-                {
-                    continue;
-                }
-                const float length = std::sqrt(static_cast<float>((x * x) + (y * y) + (z * z)));
-                const Vec3 way{static_cast<float>(x) / length, static_cast<float>(y) / length,
-                               static_cast<float>(z) / length};
-                const std::optional<dao::world::ScreenPoint> point =
-                    dao::world::ToScreen({eye.x + (kFar * way[0]), eye.y + (kFar * way[1]), eye.z + (kFar * way[2])});
-                if (!point || !point->inFront)
-                {
-                    continue;
-                }
-                Vec3 drawn{(point->x - (width / 2)) / focal, (point->y - (height / 2)) / focal, 1};
-                const float norm = std::sqrt(Dot(drawn, drawn));
-                // A way far to the side is drawn far from the middle, where a
-                // pixel's error is a large angle: weighed by how far ahead it is.
-                const float weight = 1 / (norm * norm);
-                for (std::size_t r = 0; r < 3; ++r)
-                {
-                    for (std::size_t c = 0; c < 3; ++c)
-                    {
-                        sum.at(r).at(c) += weight * (drawn.at(r) / norm) * way.at(c);
-                    }
-                }
-                ++seen;
-            }
-        }
-    }
-    return {sum, seen};
-}
-
-// The rotation nearest `sum` (the polar decomposition, by Higham's
-// iteration), or none where it has no inverse.
-std::optional<Mat3> Nearest(const Mat3 &sum)
-{
-    Mat3 turn = sum;
-    for (int step = 0; step < 12; ++step)
-    {
-        // R <- (R + R^-T) / 2; R^-T is the cofactor matrix over the determinant.
-        const Mat3 &m = turn;
-        const Mat3 cofactor{{
-            {(m[1][1] * m[2][2]) - (m[1][2] * m[2][1]), (m[1][2] * m[2][0]) - (m[1][0] * m[2][2]),
-             (m[1][0] * m[2][1]) - (m[1][1] * m[2][0])},
-            {(m[0][2] * m[2][1]) - (m[0][1] * m[2][2]), (m[0][0] * m[2][2]) - (m[0][2] * m[2][0]),
-             (m[0][1] * m[2][0]) - (m[0][0] * m[2][1])},
-            {(m[0][1] * m[1][2]) - (m[0][2] * m[1][1]), (m[0][2] * m[1][0]) - (m[0][0] * m[1][2]),
-             (m[0][0] * m[1][1]) - (m[0][1] * m[1][0])},
-        }};
-        const float det = Dot(m[0], cofactor[0]);
-        if (std::abs(det) < 1e-12F)
-        {
-            return std::nullopt;
-        }
-        Mat3 next{};
-        for (std::size_t r = 0; r < 3; ++r)
-        {
-            for (std::size_t c = 0; c < 3; ++c)
-            {
-                next.at(r).at(c) = 0.5F * (m.at(r).at(c) + (cofactor.at(r).at(c) / det));
-            }
-        }
-        turn = next;
-    }
-    return turn;
-}
-
-std::optional<Mat3> CameraTurn(const dao::Vector &eye, float width, float height, float focal)
-{
-    const auto [sum, seen] = DrawnWays(eye, width, height, focal);
-    if (seen < 3)
-    {
-        return std::nullopt;
-    }
-    return Nearest(sum);
-}
-
-// Hands the surfaces' shaders the view they reckon the air's light along
-// (HazeView), each frame: the camera's way moves the sun about the picture.
-void KeepHaze()
-{
-    g_hazeView = {};
-    if (!g_haze.on)
-    {
-        return;
-    }
-    const std::optional<dao::atmosphere::Sunlight> sun = BaseSunlight();
-    const std::optional<dao::world::ViewSize> size = dao::world::ScreenSize();
-    const std::optional<float> lens = dao::framebuffer::Value(kChain, L"DaoLensX");
     const dao::CClientExoApp *app = dao::CClientExoApp::Get();
     const dao::GameModeController *modes = app != nullptr ? app->GameModes() : nullptr;
     const dao::CameraController *controller = modes != nullptr ? modes->Camera() : nullptr;
-    const dao::SceneCamera *camera = controller != nullptr ? controller->Scene() : nullptr;
-    if (controller != nullptr)
-    {
-        const dao::Vector focus = controller->Focus();
-        levelshadows::Focus(std::array<float, 3>{focus.x, focus.y, focus.z});
-    }
-    else
+    if (controller == nullptr)
     {
         levelshadows::Focus(std::nullopt);
-    }
-    if (!sun || !size || !lens || *lens <= 0 || camera == nullptr || size->width <= 0)
-    {
         return;
     }
-    const auto width = static_cast<float>(size->width);
-    const auto height = static_cast<float>(size->height);
-    const std::optional<Mat3> turn = CameraTurn(camera->Position(), width, height, width / *lens);
-    if (!turn)
-    {
-        return;
-    }
-    const std::optional<float> lensY = dao::framebuffer::Value(kChain, L"DaoLensY");
-    std::array<float, 20> view{};
-    for (std::size_t axis = 0; axis < 3; ++axis)
-    {
-        for (std::size_t c = 0; c < 3; ++c)
-        {
-            view.at((4 * axis) + c) = (*turn).at(axis).at(c);
-        }
-    }
-    view[3] = 1 / width;
-    view[7] = 1 / height;
-    view[11] = *lens;
-    view[12] = -sun->direction[0];
-    view[13] = -sun->direction[1];
-    view[14] = -sun->direction[2];
-    view[15] = lensY.value_or(*lens * height / width);
-    // The sky's own fog, which bounds a surface's (haze.hlsl's DaoSkyFogAlong).
-    if (const std::optional<dao::atmosphere::Sky> now = dao::atmosphere::CurrentSky())
-    {
-        view[16] = now->fogCap;
-        view[17] = now->fogZenith * std::numbers::pi_v<float> / 180;
-        view[18] = now->fogIntensity;
-    }
-    view[19] = 1;
-    g_hazeView = view;
+    const dao::Vector focus = controller->Focus();
+    levelshadows::Focus(std::array<float, 3>{focus.x, focus.y, focus.z});
 }
 
 } // namespace
@@ -583,16 +368,6 @@ void KeepHaze()
 float Tune(std::string_view key, float otherwise)
 {
     return Tuned(key).value_or(otherwise);
-}
-
-SkyHaze Haze()
-{
-    return g_haze;
-}
-
-std::array<float, 20> HazeView()
-{
-    return g_hazeView;
 }
 
 float Fills()
@@ -613,6 +388,11 @@ void WantSunlitFigures(bool on)
 bool Sunlit()
 {
     return g_sunlit;
+}
+
+bool CyclingArea()
+{
+    return g_cycling.load(std::memory_order_relaxed);
 }
 
 void WantClock(bool on)
@@ -673,6 +453,8 @@ void KeepHour()
     daynight::TryMoon(Tuned("MoonTurn"), Tuned("MoonHeight"));
     daynight::TryIndoors(Tuned("Fill"), Tuned("Window"), Tuned("WindowReach"));
     daynight::TryNightColour(Tuned("NightColour"));
+    daynight::TryFogMoon(Tuned("FogMoon"));
+    daynight::TryWaterMoonlit(Tuned("WaterMoonlit"));
     daynight::TryDayHaze(Tuned("DawnHaze"), Tuned("DuskHaze"));
     g_hourLight = sun && sky ? daynight::Now(area, *sun, *sky, running, Tuned("DayMinutes").value_or(kDayMinutes),
                                              Tuned("Night").value_or(kNight), Tuned("NightFill"), Tuned("NightHaze"))
@@ -695,7 +477,7 @@ void Poll()
         KeepSky();
         KeepSun();
     }
-    KeepHaze();
+    KeepFocus();
     if (++g_frames % kEvery != 0 && !g_lookNow)
     {
         return;
@@ -708,9 +490,11 @@ void Poll()
     KeepSky();
     KeepSun();
     const bool outdoors = OutOfDoors();
-    if (asked || g_seenOutdoors != outdoors)
+    const bool cycling = daynight::Cycles(AreaTag());
+    if (asked || g_seenOutdoors != outdoors || g_cycling.load(std::memory_order_relaxed) != cycling)
     {
         g_seenOutdoors = outdoors;
+        g_cycling.store(cycling, std::memory_order_relaxed);
         g_changes.fetch_add(1, std::memory_order_relaxed);
     }
 }

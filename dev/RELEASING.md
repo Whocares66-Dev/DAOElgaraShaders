@@ -16,22 +16,24 @@ A release holds `extern\DAOLib` at one of DAOLib's own release tags, and `releas
 
 ## What the zip holds
 
-The plugin's folder, `bin_ship\daolib\plugins\elgarashaders\`, as the release build makes it:
+The plugin's folder, `bin_ship\daolib\plugins\elgarashaders\`, as the release build makes it, whole (`tools/package.ps1` copies every file in it, not files by name: 0.4.0's zip named its folders one by one and left out `clouds\`, #61):
 
 - `elgarashaders.dll` and `elgarashaders.pdb`: the PDB lets a crash log name the plugin's frames.
 - `materials.answers` and `materials.names`: what each of the game's materials is given, and the tables a mod's are classed by.
 - `override\`: the game's shaders rebuilt from the installed game, SMAA's lookup textures, and the metal maps.
+- every other file the build copies from `data\` (`effects.ini`, `glowing.ini`, `areas\`, `clouds\`, ...), at its place there. A file in the build's folder that the build makes from nothing and `data\` no longer has (a branch's leftover) stops the zip until it is deleted, and so does a folder of `data\` the build did not copy whole.
 - `README.md`, `LICENSE.txt`, `SMAA-LICENSE.txt` and `VERSION.txt`: the release, and the DAOLib it was built on with its plugin API.
 
 **The add-ins' materials come from a dump outside git**: `build/addins`, which `tools/dump_addins.py` writes from a running game (the add-ins' archives are enciphered). The materials step reads it at `<checkout>/build/addins`, and in a checkout without it (a new worktree) the build silently leaves out the add-ins' answers and metal maps: 89 answers and 21 maps fewer than 0.1.1's, the Blood Dragon armor among them (seen 2026-10-16). Release from a checkout that has it, or copy it in: `release.ps1` refuses without it, and the materials step reruns when the dump's files change.
 
-Not `graphics.chosen`: the options are the player's, kept across an update. Nothing in the zip may name the user's folder; `package.ps1` refuses one that does.
+Never `graphics.chosen` (the options are the player's, kept across an update), a developer's files (`outdoors.tune`, `gpu-timing`, `level-shaders`, `shadow-cost`, `dump-shadow-maps`) or the build's bookkeeping (`override\materials.made`). Nothing in the zip may name the user's folder; `package.ps1` refuses one that does.
 
 ## Steps
 
 1. On a work branch: the version in `CMakeLists.txt` and `vcpkg.json`, and a `## x.y.z` section in `CHANGELOG.md`, which becomes the release's notes. `extern/DAOLib` at a DAOLib release tag.
 2. The checks (`CLAUDE.md`: the build with its tests, the formatters and the linters, and the change seen in the game), then merge to master.
-3. `.\tools\release.ps1 -DryRun`, then `.\tools\release.ps1`. It builds the release preset with its tests, makes `dist\DAOElgaraShaders-x.y.z.zip`, tags `vx.y.z`, pushes master and the tag together (the tag's push adds x.y.z to the guide's version selector), and creates the GitHub release `DAOElgaraShaders x.y.z` with the zip. Below 1.0 it is a prerelease.
-4. The Nexus page (https://www.nexusmods.com/dragonage/mods/7061): the zip uploaded as the new version, and `MOD_PAGE.bbcode` if the description changed.
+3. **The frame time against the previous release**, every release, before the tag: `python -I tools\perf_compare.py stage <last version> build`, then `run` and `report` (about an hour and a half for two rounds; leave the machine alone, a window the game was not in front for is dropped). It times the new build and the last release's zip on five saves (Denerim's market, Redcliffe, the Brecilian Forest, Orzammar's Commons, a dungeon) with the player's options (`build\stage`'s `graphics.chosen`), the new one also with Day and night off, and a control with every option off, one launch per build per save, VSync off. A save slower by more than about 0.5 ms is fixed or named in the changelog before the release, and the table goes on the release's issue. Added 2026-10-28: a player found 0.4.0 slower than 0.3.0, and no one had timed it (Orzammar's Commons 4.3 ms a frame in 0.3.0, 7.0 in 0.4.0).
+4. `.\tools\release.ps1 -DryRun`, then `.\tools\release.ps1`. It builds the release preset with its tests, makes `dist\DAOElgaraShaders-x.y.z.zip`, tags `vx.y.z`, pushes master and the tag together (the tag's push adds x.y.z to the guide's version selector), and creates the GitHub release `DAOElgaraShaders x.y.z` with the zip. Below 1.0 it is a prerelease.
+5. The Nexus page (https://www.nexusmods.com/dragonage/mods/7061): the zip uploaded as the new version, and `MOD_PAGE.bbcode` if the description changed.
 
 If `gh release create` fails after the push, run it alone with `--notes-file build\release-notes-x.y.z.md` and the zip.
