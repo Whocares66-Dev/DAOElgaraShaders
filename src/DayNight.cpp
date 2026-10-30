@@ -899,6 +899,22 @@ Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::S
     // 0.48 of white to the day's 0.78, and 19:30's 0.50 was 7 in 100 of the
     // way (Witch Hunt's library blue, 29.9, 21.4, 43.3 of 255; 2026-10-25).
     const float day = 1 - out.nightShare;
+    // How bright the makers' light is by day: as the daylight on open ground
+    // is against noon's, the sun's by the sine of its height and the day
+    // sky's share. Out of doors the sun's light varies hour by hour by the
+    // way it meets the ground, which the shaders take; indoors nothing of the
+    // sun meets it, and by `day` alone, whole from the sun 6 degrees up, a
+    // room was as bright at 19:30 as at noon and went to night within the
+    // hour (the user, 2026-10-29: "Most of the day is equally bright, the
+    // night is equally dark. Outdoors with the Sun it varies more from hour
+    // to hour"). The colour still goes by `day`, as the sky's does.
+    const auto daylight = [&](const Light &at) {
+        const float sunUp = at.moon ? 0 : std::max(-at.sun.direction[2], 0.0F);
+        return (Luminance({at.sun.color[0], at.sun.color[1], at.sun.color[2]}) * sunUp) +
+               ((1 - at.nightShare) * Luminance(pair.day.skyLight));
+    };
+    const float atNoon = daylight(LightAt(pair, ownSky, pair.noon, night, nightFill, haze));
+    const float bright = atNoon > 0 ? std::clamp(daylight(out) / atNoon, 0.0F, 1.0F) : day;
     // The other end's colour: a night's bake's day takes its day level's
     // fill (lak303d's gray), a day's bake's night the light out of doors at
     // midnight, the moon's and the night sky's, paled again as the night's
@@ -924,7 +940,7 @@ Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::S
         const float tint = otherColour && Luminance(*otherColour) > 0 && indoors.bakeHue.at(i) > 0
                                ? (otherColour->at(i) / Luminance(*otherColour)) / indoors.bakeHue.at(i)
                                : 1;
-        const float kept = std::lerp(fill, 1.0F, day) * std::lerp(1.0F, tint, other);
+        const float kept = std::lerp(fill, 1.0F, bright) * std::lerp(1.0F, tint, other);
         light.sun.characterColor.at(i) *= kept;
         light.baked.at(i) = kept;
         light.sunOverDay.at(i) = kept;
@@ -942,7 +958,7 @@ Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::S
         // 21.9, 35.8). Most of that dormitory's blue was Finn's Cleansing Aura,
         // which his tactics turn back on as the party walks (2026-10-25).
         light.window.at(i) =
-            std::max(g_tryWindow.value_or(indoors.window), 0.0F) * out.outdoor.at(i) * std::lerp(fill, 1.0F, day);
+            std::max(g_tryWindow.value_or(indoors.window), 0.0F) * out.outdoor.at(i) * std::lerp(fill, 1.0F, bright);
     }
     // Said as the hour or the tuning moves it by more than a little.
     static std::array<float, 3> said{};
@@ -950,9 +966,10 @@ Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::S
     {
         said = light.lit;
         spdlog::info("day and night: indoors at {:.2f}, the light out of doors {:.3f} {:.3f} {:.3f}, {:.2f} {:.2f} "
-                     "{:.2f} times its makers' hour's; their light kept at {:.3f} {:.3f} {:.3f}",
+                     "{:.2f} times its makers' hour's, the daylight {:.2f} of noon's; their light kept at {:.3f} "
+                     "{:.3f} {:.3f}",
                      hour, out.outdoor[0], out.outdoor[1], out.outdoor[2], light.lit[0], light.lit[1], light.lit[2],
-                     light.baked[0], light.baked[1], light.baked[2]);
+                     bright, light.baked[0], light.baked[1], light.baked[2]);
     }
     return light;
 }
