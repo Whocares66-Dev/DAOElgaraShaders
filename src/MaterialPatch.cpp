@@ -9,6 +9,8 @@
 // the game reads anything, and not changed after.
 #include "MaterialPatch.h"
 
+#include "DayNight.h"
+
 #include "Glowing.h"
 #include "MaterialLearn.h"
 
@@ -87,14 +89,43 @@ std::optional<std::vector<std::byte>> Answered(std::wstring_view name, std::span
     return std::nullopt;
 }
 
-// The answer's, and a terrain's palette's glow (Glowing.h) on top.
+// A window's glass said (glass.hlsl's mml_fDaoWindow) on a material the
+// interiors' files name as a pane's (`glass`) (DayNight.h's IsGlassMaterial).
+std::optional<std::vector<std::byte>> Windowed(std::wstring_view name, std::span<const std::byte> bytes)
+{
+    constexpr std::string_view kEnd = "</MaterialObject>";
+    constexpr std::string_view kWindow = R"(<Float Name="mml_fDaoWindow" value="1.00"></Float>)";
+    if (!daynight::IsGlassMaterial(name))
+    {
+        return std::nullopt;
+    }
+    const std::string_view text(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+    const std::size_t end = text.rfind(kEnd);
+    if (end == std::string_view::npos)
+    {
+        return std::nullopt;
+    }
+    spdlog::info("materials: {} is a window's glass, lit by the hour", Narrow(name));
+    std::string out(text.substr(0, end));
+    out += kWindow;
+    out += text.substr(end);
+    const auto *begin = reinterpret_cast<const std::byte *>(out.data());
+    return std::vector<std::byte>(begin, begin + out.size());
+}
+
+// The answer's, a terrain's palette's glow (Glowing.h) and a window's glass on top.
 std::optional<std::vector<std::byte>> Patch(std::wstring_view name, std::span<const std::byte> bytes)
 {
     std::optional<std::vector<std::byte>> patched = Answered(name, bytes);
     if (std::optional<std::vector<std::byte>> glowing =
             glowing::Patched(patched ? std::span<const std::byte>(*patched) : bytes))
     {
-        return glowing;
+        patched = std::move(glowing);
+    }
+    if (std::optional<std::vector<std::byte>> window =
+            Windowed(name, patched ? std::span<const std::byte>(*patched) : bytes))
+    {
+        patched = std::move(window);
     }
     return patched;
 }

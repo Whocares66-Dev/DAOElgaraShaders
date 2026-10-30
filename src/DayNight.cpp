@@ -98,6 +98,7 @@ struct IndoorLight
     float window = 0;                  // the windows' light a square metre, a share of the outdoor light (`window`)
     float windowReach = 0;             // metres (`window_reach`)
     std::vector<std::wstring> windows; // the materials of its windows' models (`windows`)
+    std::vector<std::wstring> glass;   // the materials of its panes that glow by daylight (`glass`)
     std::vector<std::wstring> beams;   // the starts of its beams' models' names (`beams`)
     // Which its makers lit it as (`baked = day`, else a night), and, for a
     // night's bake, the level whose rooms' fill is its day's colour (`day`)
@@ -957,6 +958,10 @@ Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::S
     light.relitNight = 1 - bright;
     for (std::size_t i = 0; i < 3; ++i)
     {
+        light.glass.at(i) = atDay.outdoor.at(i) > 0 ? out.outdoor.at(i) / atDay.outdoor.at(i) : 1.0F;
+    }
+    for (std::size_t i = 0; i < 3; ++i)
+    {
         const float by = midnight.outdoor.at(i) > 0 ? out.outdoor.at(i) / midnight.outdoor.at(i) : 1;
         const float tint = otherColour && Luminance(*otherColour) > 0 && indoors.bakeHue.at(i) > 0
                                ? (otherColour->at(i) / Luminance(*otherColour)) / indoors.bakeHue.at(i)
@@ -1054,6 +1059,7 @@ std::array<std::atomic<float>, 3> g_bakeWindow{1.0F, 1.0F, 1.0F};
 std::atomic<float> g_relitNight{0};
 std::atomic<float> g_relitStrength{1};
 std::atomic<float> g_lampsBaked{0};
+std::array<std::atomic<float>, 3> g_glass{1.0F, 1.0F, 1.0F};
 
 // The clock: the hour, and when it was last moved on.
 float g_hour = 12;
@@ -1087,6 +1093,10 @@ void Stopped()
     g_windowReach.store(0, std::memory_order_relaxed);
     g_bakeHue[3].store(0, std::memory_order_relaxed);
     g_relitNight.store(0, std::memory_order_relaxed);
+    for (std::atomic<float> &value : g_glass)
+    {
+        value.store(1, std::memory_order_relaxed);
+    }
     for (std::atomic<float> &value : g_bakeWindow)
     {
         value.store(1, std::memory_order_relaxed);
@@ -1233,6 +1243,11 @@ std::optional<Cycled> IndoorsOf(const std::string &tag, const Keys &keys, const 
     for (std::string model; beams >> model;)
     {
         indoors.beams.push_back(Wide(model));
+    }
+    std::istringstream glass(Said(keys, defaults, "glass").value_or(""));
+    for (std::string material; glass >> material;)
+    {
+        indoors.glass.push_back(Wide(material));
     }
     std::istringstream windows(Said(keys, defaults, "windows").value_or(""));
     for (std::string material; windows >> material;)
@@ -1834,6 +1849,25 @@ std::array<float, 3> BakeWindow()
             g_bakeWindow[2].load(std::memory_order_relaxed)};
 }
 
+std::array<float, 3> Glass()
+{
+    return {g_glass[0].load(std::memory_order_relaxed), g_glass[1].load(std::memory_order_relaxed),
+            g_glass[2].load(std::memory_order_relaxed)};
+}
+
+bool IsGlassMaterial(std::wstring_view name)
+{
+    std::wstring stem = Lower(std::wstring(name));
+    if (stem.ends_with(L".mao"))
+    {
+        stem.resize(stem.size() - 4);
+    }
+    const std::scoped_lock lock(g_lock);
+    return std::ranges::any_of(g_cycled, [&](const Cycled &cycled) {
+        return cycled.indoors && std::ranges::find(cycled.indoors->glass, stem) != cycled.indoors->glass.end();
+    });
+}
+
 void LampsBaked(float share)
 {
     g_lampsBaked.store(share, std::memory_order_relaxed);
@@ -2046,6 +2080,10 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
         g_bakeWindow.at(i).store(light.bakeWindow.at(i), std::memory_order_relaxed);
     }
     g_relitNight.store(light.relitNight, std::memory_order_relaxed);
+    for (std::size_t i = 0; i < g_glass.size(); ++i)
+    {
+        g_glass.at(i).store(light.glass.at(i), std::memory_order_relaxed);
+    }
     g_relitStrength.store(std::max(g_tryRelit.value_or(1.0F), 0.0F), std::memory_order_relaxed);
     g_windowReach.store(pair->indoors ? std::max(g_tryReach.value_or(pair->indoors->windowReach), 0.0F) : 0.0F,
                         std::memory_order_relaxed);

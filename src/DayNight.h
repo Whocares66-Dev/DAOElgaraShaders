@@ -78,6 +78,7 @@ struct Light
     std::array<float, 3> window{};            // an interior's: its windows' light a square metre (WindowLight)
     std::array<float, 4> bakeHue{1, 1, 1, 0}; // an interior's: its bake's hue, and how far each texel takes it
     std::array<float, 3> bakeWindow{1, 1, 1}; // an interior's: its bake where a window sees it, over the rest
+    std::array<float, 3> glass{1, 1, 1};      // an interior's: its windows' glass by the hour (Glass)
     float relitNight = 0;                     // an interior's: how far its bake goes to its night lightmaps
 };
 
@@ -222,6 +223,16 @@ std::array<float, 3> BakeWindow();
 // light is multiplied by. x 0 where the clock is not running indoors.
 // Any thread.
 std::array<float, 4> RelitNight();
+
+// An interior's window glass by the hour (glass.hlsl): the light out of
+// doors at the hour against the day's, each colour; 1 where the clock is not
+// running indoors. Any thread.
+std::array<float, 3> Glass();
+
+// Whether a material object (its file's name, lower case, with or without
+// .mao) is an interior's window pane that glows by daylight, as its file's
+// `glass` says. Any thread.
+bool IsGlassMaterial(std::wstring_view name);
 
 // How far an interior's lamps are in its night lightmaps now (RelitNight's
 // share where the level is drawn with them, else 0): its makers' fire lights,

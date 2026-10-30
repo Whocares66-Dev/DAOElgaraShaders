@@ -591,6 +591,7 @@ MATERIAL_PARAMETERS = (
     '<Parameter Type = "Vector4f" Name = "mml_vDaoBumps" Default = "0 0 0 0"/>'
     '<Parameter Type = "Vector4f" Name = "mml_vDaoBumpsFar" Default = "0 0 0 0"/>'
     '<Parameter Type = "Vector4f" Name = "mml_vDaoClear" Default = "0 0 0 0"/>'
+    '<Parameter Type = "Float" Name = "mml_fDaoWindow" Default = "0.0"/>'
 )
 MATERIAL_SHADERS = (
     r"^(ch[12](?!\w*_vl)\w*|weapon1|cloth1|prop1(_punch)?|propalpha1|static1\w*)\.psh$"
@@ -2087,6 +2088,18 @@ def relit_night_room(listing, preamble):
 RELIT_NIGHT_NONE = []
 
 
+def with_window_glass(shader):
+    """A window's pane by the hour (glass.hlsl): what its emissive mask adds,
+    the daylight painted behind it, times the light out of doors at the hour
+    against the day's, on a material that says it is a window's."""
+    emissive = shader.parameters["smpEmissiveMask"]
+    read = shader.find(rf"^texld\w* r\d+, .*, s{emissive.base}$")
+    register = re.match(r"texld\w* (r\d+),", shader.statements[read].asm).group(1)
+    shader.insert(
+        read, [f"{register}.xyz *= lerp(1, daoGlass.xyz, mml_fDaoWindow);"]
+    )
+
+
 # The water shaders, each with the input its light comes in by: the sky's sun
 # scattered (the vertex shader's TEXCOORD2, from mml_vSkyParams), which they
 # light it by in place of the sun's own colour, as N.L times it and, in
@@ -2838,6 +2851,9 @@ def changes_for(stem, listing, show):
     if stem in PROPS:
         changes += [with_ambient_relief, without_cut]
         preamble += ours("look.hlsl") + ours("bake.hlsl")
+        if "smpEmissiveMask" in listing:
+            changes.append(with_window_glass)
+            preamble += ours("glass.hlsl")
     if takes_baked_light(listing):
         # A window's daylight in the bake, by the effects' window lights
         # (effect_lights.hlsl, which every such shader takes below).

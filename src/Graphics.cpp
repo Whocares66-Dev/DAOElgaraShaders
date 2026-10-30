@@ -208,6 +208,7 @@ constexpr UINT kDiscRegister = 214;
 constexpr UINT kNightSkyRegister = 215;   // night_sky.hlsl's daoNightSky
 constexpr UINT kBakeHueRegister = 155;    // night_sky.hlsl's daoBakeHue
 constexpr UINT kBakeWindowRegister = 156; // night_sky.hlsl's daoBakeWindow
+constexpr UINT kGlassRegister = 158;       // glass.hlsl's daoGlass
 // Water's light (water_light.hlsl's daoWaterLight), under the effects' lights':
 // the game's pixel shaders reach c55 at the most (their listings, 2026-10-22).
 constexpr UINT kWaterLightRegister = 159;
@@ -1023,6 +1024,9 @@ void HandFills(IDirect3DDevice9 *device)
     const std::array<float, 3> window = g_drawsPicture ? daynight::BakeWindow() : std::array<float, 3>{1, 1, 1};
     const std::array<float, 4> bakeWindow{window[0], window[1], window[2], 1};
     device->SetPixelShaderConstantF(kBakeWindowRegister, bakeWindow.data(), 1);
+    const std::array<float, 3> glassBy = g_drawsPicture ? daynight::Glass() : std::array<float, 3>{1, 1, 1};
+    const std::array<float, 4> glass{glassBy[0], glassBy[1], glassBy[2], 1};
+    device->SetPixelShaderConstantF(kGlassRegister, glass.data(), 1);
     // Water's on every target: no portrait or inventory scene has water.
     const std::array<float, 2> water = daynight::Water();
     const std::array<float, 4> waterLight{water[0], water[1], 0, 0};
