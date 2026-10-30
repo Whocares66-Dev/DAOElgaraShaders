@@ -106,10 +106,12 @@ std::array<float, 3> EvenLight();
 std::array<float, 3> DaySky();
 
 // Says a level was opened: `levelRim` its archive of rooms,
-// packages\core\env\<level>\<level>.rim. Reads the level's light (its sun,
-// sky and sky light), and its other's where it has one. Any thread.
-// `coreEnv`: the game's own levels' folder, where a night or a latitude an
-// add-in's level borrows is looked for when its own folder has none.
+// packages\core\env\<level>\<level>.rim, or a mod's or an add-in's. The
+// level's light (its sun, sky and sky light), and its other's where it has
+// one, are read at the next Now, the .arl the copy the game takes (a mod's).
+// Any thread. `coreEnv`: the game's own levels' folder, where the archive of a
+// night an add-in's or a mod's level borrows is looked for when its own folder
+// has none.
 void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &coreEnv);
 
 // Sets the clock to an hour, 0 to 24. Call on the game's thread.
