@@ -29,10 +29,21 @@ float3 DaoRelitNight(float3 stored)
     return stored * stored * kDaoRelitMost * daoRelitNight.y;
 }
 
-// The makers' bake as the hour has it (`baked`) with the night's lamps on it.
-float3 DaoWithRelitNight(float3 baked, float3 stored)
+// The makers' bake as the hour has it (`baked`) with the night's lamps on it,
+// `made` the makers' bake as it is in the lightmap. Where the lamps' light is
+// as bright as the makers' bake, it is the light the makers baked there: the
+// lamps' takes its place, and the bake is kept, in the night's blue, only
+// where the lamps' light is less. Added to it whole, a candle's pool on a
+// pillar was the makers' own candle glow kept in the night's violet with the
+// candle's orange on top, a pale cream (the library's pillar at midnight
+// 121, 70, 76 of 255, the lamps adding 64, 46, 26: the user, 2026-10-30, "the
+// blue fill shouldn't reduce the orange of fire light").
+float3 DaoWithRelitNight(float3 baked, float3 made, float3 stored)
 {
-    return baked + DaoRelitNight(stored) * daoRelitNight.x;
+    const float3 lamps = DaoRelitNight(stored);
+    const float3 luminance = float3(0.2126, 0.7152, 0.0722);
+    const float theirs = saturate(dot(lamps, luminance) / max(dot(made, luminance), 0.0001));
+    return (baked * (1 - (daoRelitNight.x * theirs))) + (lamps * daoRelitNight.x);
 }
 
 #endif

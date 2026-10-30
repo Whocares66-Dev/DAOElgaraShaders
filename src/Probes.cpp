@@ -8,6 +8,8 @@
 #include "Reflected.h"
 
 #include "dao/Addresses.h"
+#include "dao/ClientExoApp.h"
+#include "dao/Frame.h"
 #include "dao/Hook.h"
 #include "dao/Lights.h"
 #include "dao/Log.h"
@@ -37,6 +39,7 @@
 #include <span>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace probes
@@ -54,6 +57,8 @@ namespace
 // the probe each fill while one is added. The mix is written over them there.
 constexpr std::size_t kLightsProbes = 0x3C;    // the manager's list of light probes
 constexpr std::size_t kStateProbes = 0x20;     // in a light state: the group of probes chosen
+// In a light manager: the scene it is of (EffectLights.cpp's kManagerScene).
+constexpr std::size_t kManagerScene = 0x8;
 constexpr std::size_t kProbeBlueprint = 0x174; // in a probe's node
 constexpr std::size_t kBlueprintIrradiance = 0x160;
 constexpr std::size_t kLightNodeScore = 0x184; // a float, what the light's score leaves
@@ -132,6 +137,12 @@ std::unordered_map<void *, Blend> g_blends; // by light state, under g_blendsLoc
 // holds the light falling on it from each side, the lamps' own with what the
 // walls send on (Relighter.cpp).
 probebaker::Rooms g_nightRooms;
+
+// The area's scene, the game thread's word a frame at a time (AreaScene), and
+// the light states of figures chosen by another scene's manager (OfOtherScene).
+std::atomic<void *> g_areaScene{nullptr};
+std::mutex g_otherLock;
+std::unordered_set<std::uintptr_t> g_other;
 
 float Distance(const float *a, const float *b)
 {
@@ -259,6 +270,23 @@ std::uintptr_t __fastcall ChooseFromList(void *list, int unused, void *place, fl
                                          std::uintptr_t changed, std::uintptr_t owned, std::uintptr_t a7,
                                          std::uintptr_t a8, std::uintptr_t a9, void *only)
 {
+    if (t_figuresManager != nullptr && list == static_cast<std::byte *>(t_figuresManager) + kLightsProbes)
+    {
+        void *of = nullptr;
+        std::memcpy(static_cast<void *>(&of), static_cast<const std::byte *>(t_figuresManager) + kManagerScene,
+                    sizeof of);
+        void *area = g_areaScene.load(std::memory_order_relaxed);
+        const auto state = reinterpret_cast<std::uintptr_t>(static_cast<std::byte *>(group) - kStateProbes);
+        const std::scoped_lock lock(g_otherLock);
+        if (area != nullptr && of != area)
+        {
+            g_other.insert(state);
+        }
+        else
+        {
+            g_other.erase(state);
+        }
+    }
     const bool probes = t_figuresManager != nullptr &&
                         list == static_cast<std::byte *>(t_figuresManager) + kLightsProbes &&
                         (g_wanted.load(std::memory_order_relaxed) || !g_nightRooms.empty());
@@ -358,8 +386,9 @@ void OnProbe(dao::lights::ProbeLight &probe)
     const bool levels = (probe.model.size() >= kLayout.size() &&
                          same(probe.model.substr(probe.model.size() - kLayout.size()), kLayout)) ||
                         same(probe.model, kOutdoorRig);
-    const std::array<float, 3> times = levels ? daynight::Baked() : std::array<float, 3>{1, 1, 1};
-    const float night = levels ? daynight::EvenShare() : 0;
+    const bool ours = levels && !OfOtherScene(probe.state);
+    const std::array<float, 3> times = ours ? daynight::Baked() : std::array<float, 3>{1, 1, 1};
+    const float night = ours ? daynight::EvenShare() : 0;
     const std::scoped_lock lock(g_blendsLock);
     const auto found = g_blends.find(reinterpret_cast<void *>(probe.state));
     if (found != g_blends.end() && found->second.day && g_wanted.load(std::memory_order_relaxed))
@@ -379,7 +408,7 @@ void OnProbe(dao::lights::ProbeLight &probe)
     // An interior's lamps by night, by the same share as its surfaces take
     // theirs (relit_night.hlsl), on a level's probe alone.
     const std::array<float, 4> relit = daynight::RelitNight();
-    if (levels && found != g_blends.end() && found->second.night && relit[0] > 0)
+    if (ours && found != g_blends.end() && found->second.night && relit[0] > 0)
     {
         for (std::size_t at = 0; at < probe.irradiance.size(); ++at)
         {
@@ -449,6 +478,12 @@ bool Install()
         return false;
     }
     dao::lights::OnProbe(&OnProbe);
+    dao::OnFrame([] {
+        dao::CClientExoApp *app = dao::CClientExoApp::Get();
+        dao::CCModule *module = app != nullptr ? app->GetModule() : nullptr;
+        dao::CCArea *area = module != nullptr ? module->CurrentArea() : nullptr;
+        g_areaScene.store(area != nullptr ? area->Scene() : nullptr, std::memory_order_relaxed);
+    });
     std::error_code error;
     for (const std::filesystem::directory_entry &file :
          std::filesystem::directory_iterator(dao::Module::OwnFolder() / "night", error))
@@ -476,6 +511,12 @@ bool Install()
     }
     probebaker::Start(dao::LogDirectory() / "elgarashaders" / "probes", GameFolder(), {});
     return true;
+}
+
+bool OfOtherScene(std::uintptr_t state)
+{
+    const std::scoped_lock lock(g_otherLock);
+    return g_other.contains(state);
 }
 
 void SunBounce(const std::array<float, 3> &sent)

@@ -2060,11 +2060,15 @@ def with_relit_night(shader):
     shader.insert(
         read,
         [
-            f"{register}.xyz = DaoWithRelitNight({register}.xyz, daoNightStored.xyz);"
+            f"{register}.xyz = DaoWithRelitNight({register}.xyz, daoMadeBake.xyz, daoNightStored.xyz);"
         ],
     )
     shader.insert(
-        read - 1, [f"float4 daoNightStored = tex2D(smpDaoNightLightmap, {place}.xy);"]
+        read - 1,
+        [
+            f"float4 daoNightStored = tex2D(smpDaoNightLightmap, {place}.xy);",
+            f"float4 daoMadeBake = tex2D(smpLightmap, {place}.xy);",
+        ],
     )
 
 
