@@ -99,7 +99,8 @@ std::vector<dao::core::Point> PlacesOn(std::span<const levelfiles::Geometry *con
 
 // Returns a table's file, as a level's is kept.
 // @param stamp what says which lightmaps of our own it was baked from, 0 for the level's
-std::vector<std::byte> Write(const std::vector<Room> &rooms, std::uint64_t stamp = 0);
+// @param source what says which copy of the level it was baked from (levelfiles::LevelStamp)
+std::vector<std::byte> Write(const std::vector<Room> &rooms, std::uint64_t stamp = 0, std::uint64_t source = 0);
 
 // Returns every room there are probes for now. The answer is whole and
 // never changes; ask again for the rooms baked since.

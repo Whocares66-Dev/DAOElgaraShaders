@@ -131,8 +131,9 @@ constexpr std::size_t kFitLeast = 64; // surfaces seen in the photograph, under 
 
 constexpr std::uint32_t kTableMagic = 0x50474C45; // "ELGP"
 // 2: a room's `seen`; 3: the stamp of the lightmaps baked from; 5: the sunlit
-// surfaces by their facing
-constexpr std::uint32_t kTableVersion = 5;
+// surfaces by their facing; 6: the stamp of the level's archives baked from (a
+// mod's level of the same name, #66)
+constexpr std::uint32_t kTableVersion = 6;
 
 // The light at a place as a room's probe has it: all the light a surface of
 // the place receives, by the lightmaps its rays land on. Nothing for a place
@@ -1101,16 +1102,19 @@ template <class T> bool Take(std::span<const std::byte> &file, T &value)
 // The rooms of a table's file, or nothing for bytes that are not one of this
 // version or stop short.
 // @param wanted the stamp the table is to have, or kAnyStamp for any but none
+// @param source the level's archives' stamp it is to have, none for any
 constexpr std::uint64_t kAnyStamp = ~0ULL;
-std::optional<std::vector<Room>> Read(std::span<const std::byte> file, std::uint64_t wanted)
+std::optional<std::vector<Room>> Read(std::span<const std::byte> file, std::uint64_t wanted,
+                                      std::optional<std::uint64_t> source)
 {
     std::uint32_t magic = 0;
     std::uint32_t version = 0;
     std::uint64_t stamp = 0;
+    std::uint64_t from = 0;
     std::uint32_t count = 0;
-    if (!Take(file, magic) || !Take(file, version) || !Take(file, stamp) || !Take(file, count) ||
+    if (!Take(file, magic) || !Take(file, version) || !Take(file, stamp) || !Take(file, from) || !Take(file, count) ||
         magic != kTableMagic || version != kTableVersion || (wanted == kAnyStamp ? stamp == 0 : stamp != wanted) ||
-        count > 4096)
+        (source && from != *source) || count > 4096)
     {
         return std::nullopt;
     }
@@ -1288,6 +1292,9 @@ void BakeLevel(State &state, const std::filesystem::path &levelRim)
 {
     const std::filesystem::path kept = state.kept / (levelRim.stem().wstring() + L".bin");
     const std::uint64_t stamp = state.relit.empty() ? 0 : RelitStamp(state.relit, levelRim.stem().wstring());
+    // The copy of the level opened: a table kept from another (the game's
+    // lak200d, and now a mod's) is baked again.
+    const std::uint64_t source = LevelStamp(levelRim);
     // A level lit again comes with its probes, made of the lights themselves
     // (Relighter.cpp): they are taken as they are.
     if (!state.relit.empty())
@@ -1295,7 +1302,7 @@ void BakeLevel(State &state, const std::filesystem::path &levelRim)
         std::ifstream in(state.relit / (levelRim.stem().wstring() + L".elgp"), std::ios::binary);
         const std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         if (std::optional<std::vector<Room>> rooms =
-                Read(std::as_bytes(std::span(bytes.data(), bytes.size())), kAnyStamp))
+                Read(std::as_bytes(std::span(bytes.data(), bytes.size())), kAnyStamp, std::nullopt))
         {
             spdlog::info("light probes: {} lit again, {} rooms, {} probes of its own lights", levelRim.stem().string(),
                          rooms->size(), ProbesIn(*rooms));
@@ -1311,7 +1318,8 @@ void BakeLevel(State &state, const std::filesystem::path &levelRim)
     {
         std::ifstream in(kept, std::ios::binary);
         const std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-        if (std::optional<std::vector<Room>> rooms = Read(std::as_bytes(std::span(bytes.data(), bytes.size())), stamp))
+        if (std::optional<std::vector<Room>> rooms =
+                Read(std::as_bytes(std::span(bytes.data(), bytes.size())), stamp, source))
         {
             spdlog::info("light probes: {} kept, {} rooms, {} probes", levelRim.stem().string(), rooms->size(),
                          ProbesIn(*rooms));
@@ -1331,7 +1339,7 @@ void BakeLevel(State &state, const std::filesystem::path &levelRim)
     }
     std::error_code error;
     std::filesystem::create_directories(state.kept, error);
-    const std::vector<std::byte> file = Write(*baked, stamp);
+    const std::vector<std::byte> file = Write(*baked, stamp, source);
     std::ofstream out(kept, std::ios::binary);
     out.write(reinterpret_cast<const char *>(file.data()), static_cast<std::streamsize>(file.size()));
     const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began);
@@ -1393,12 +1401,13 @@ std::vector<Room> BakeNow(const std::filesystem::path &levelRim, const std::file
     return BakeRooms(state, levelRim).value_or(std::vector<Room>{});
 }
 
-std::vector<std::byte> Write(const std::vector<Room> &rooms, std::uint64_t stamp)
+std::vector<std::byte> Write(const std::vector<Room> &rooms, std::uint64_t stamp, std::uint64_t source)
 {
     std::vector<std::byte> file;
     Put(file, kTableMagic);
     Put(file, kTableVersion);
     Put(file, stamp);
+    Put(file, source);
     Put(file, static_cast<std::uint32_t>(rooms.size()));
     for (const Room &room : rooms)
     {
