@@ -132,15 +132,10 @@ float Hour();
 // lights by them itself (EffectLights.cpp). Any thread, once Install has run.
 bool FireLamp(std::wstring_view model, std::wstring_view name);
 
-// Whether a light's colour is a fire's: red the most, blue the least. A
-// level's layouts light more than fires about a fire: the Circle tower's
-// floors (lak503d) put the moonlight's blue bounce (bounce_RT, 0.34, 0.51,
-// 0.99) and its pink (bounce_pink_RT), the books' violet glow (book_RT) and
-// the windows' (window_001_RT, 0.69, 0.72, 0.79) among their candles and
-// lanterns (candle_001_RT, Cndl_RT, lamp_001_RT, 0.91, 0.48, 0.15; read
-// 2026-10-25). Indoors, where no sun is, a fire-coloured layout light is a
-// fitting's and the rest are the makers' fill. Any thread.
-bool FireColoured(const std::array<float, 3> &colour);
+// Whether a layout's light is a lamp: a fire (FireLamp) or named as
+// defaults.ini's `lamps` say (candle, lamp, lantern). Lamps burn by night as
+// by day. Any thread, once Install has run.
+bool Lamp(std::wstring_view model, std::wstring_view name);
 
 // How bright the plugin lights fires, a share of what the level or
 // effects.ini says (data/areas/defaults.ini's `fire_strength`). Any thread,
@@ -233,12 +228,6 @@ std::array<float, 3> Glass();
 // .mao) is an interior's window pane that glows by daylight, as its file's
 // `glass` says. Any thread.
 bool IsGlassMaterial(std::wstring_view name);
-
-// How far an interior's lamps are in its night lightmaps now (RelitNight's
-// share where the level is drawn with them, else 0): its makers' fire lights,
-// kept whole indoors, go by 1 less it. The drawing thread's word, a frame
-// behind (NightLightmaps.h's Baked).
-void LampsBaked(float share);
 
 // An interior's share of its makers' light, its windows' light and their
 // reach to try in place of its file's `fill`, `window` and `window_reach`

@@ -32,6 +32,11 @@ void LevelOpened(const std::filesystem::path &levelRim);
 // Whether a level's night lightmaps and probes are taken (LevelOpened). Any thread.
 bool LevelOn(std::wstring_view level);
 
+// Whether a level has a night of the relighter's that is taken: night
+// lightmaps of its rooms, and the game's own copy of it opened
+// (LevelOpened, called first). Any thread.
+bool Has(std::wstring_view level);
+
 // Notes whether a pixel shader made at an address reads a lightmap and has a
 // sampler for its night (`code` its bytecode).
 void CreatedPixel(const std::vector<std::byte> &code, IDirect3DPixelShader9 *shader);
@@ -41,14 +46,5 @@ void CreatedPixel(const std::vector<std::byte> &code, IDirect3DPixelShader9 *sha
 // not a portrait's). Call before each draw.
 void Drawing(IDirect3DDevice9 *device, bool picture);
 
-// Ends a frame: whether a night lightmap was bound in it, said by Baked until
-// the next frame ends. Call on the drawing thread, at a frame's end.
-void Presented();
-
-// Whether the last frame's level was drawn with night lightmaps: its lamps'
-// light is in them and in their probes by night, and their lights are not to
-// be counted again (the user, 2026-10-30: "are we maybe double-counting the
-// lights w/ both the dynamic & baked?"). Any thread.
-bool Baked();
 
 } // namespace nightlightmaps

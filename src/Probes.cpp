@@ -462,9 +462,9 @@ std::uintptr_t __fastcall OpenArchive(void *self, int unused, const dao::core::W
         if (const std::optional<std::filesystem::path> rim = LevelRimOf(path->View()))
         {
             probebaker::Want(*rim);
+            nightlightmaps::LevelOpened(*rim); // before Opened, which asks it
             daynight::Opened(*rim, GameFolder() / "packages" / "core" / "env");
             effectlights::LevelOpened(*rim);
-            nightlightmaps::LevelOpened(*rim);
             levelshadows::Forget();
         }
     }

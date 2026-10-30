@@ -672,6 +672,10 @@ struct LevelFires
     // The flames the level's makers light already (MadeLit), each where it
     // is lit: the engine's running effect there is given no light (AddFires).
     std::vector<std::array<float, 3>> madeLit;
+    // The layouts' lamps that light those flames, "<layout>/<name>", lower
+    // case: their light is the flames' and goes as the night's comes, the
+    // flames being in the relighter's night (NightLightmaps.h).
+    std::vector<std::wstring> lightingFlames;
 };
 
 // The fire a room places within kAtFire of a lamp at `at`, or none where
@@ -716,7 +720,14 @@ void AddLight(std::vector<Light> &lights, const Light &light, bool flame)
 }
 
 // The level makers' fire-coloured lights, each its place and reach.
-using MadeLights = std::vector<std::array<float, 4>>;
+// A lamp of the makers' at its place, with its reach, and its name in its
+// layout, "<layout>/<name>", lower case.
+struct MadeLight
+{
+    std::array<float, 4> light;
+    std::wstring key;
+};
+using MadeLights = std::vector<MadeLight>;
 
 // The flames a level places within half the reach of a fire-coloured light
 // of its makers', where that light is at least half as strong as at its
@@ -738,9 +749,19 @@ void MadeLit(LevelFires &read, const std::vector<Light> &fires, const MadeLights
     for (const Light &fire : fires)
     {
         const std::array<float, 3> at{fire.place[0], fire.place[1], fire.place[2]};
-        if (std::ranges::any_of(made, [&](const std::array<float, 4> &light) {
-                return Near(at, {light[0], light[1], light[2]}, light[3] / 2);
-            }))
+        bool lit = false;
+        for (const MadeLight &lamp : made)
+        {
+            if (Near(at, {lamp.light[0], lamp.light[1], lamp.light[2]}, lamp.light[3] / 2))
+            {
+                lit = true;
+                if (std::ranges::find(read.lightingFlames, lamp.key) == read.lightingFlames.end())
+                {
+                    read.lightingFlames.push_back(lamp.key);
+                }
+            }
+        }
+        if (lit)
         {
             read.madeLit.push_back(at);
             continue;
@@ -777,10 +798,13 @@ LevelFires ReadLamps(const std::filesystem::path &levelRim)
         {
             const std::array<float, 3> at{lamp.at[0], lamp.at[1], lamp.at[2]};
             const bool named = daynight::FireLamp(layout, lamp.name);
-            const bool fiery = named || daynight::FireColoured(lamp.colour);
+            // A lamp by its name (daynight::Lamp), not by its colour: by red
+            // over green over blue a chantry's sunlight through its windows
+            // was a lamp (Window_01Baked, glass_bounce; the user, 2026-10-30).
+            const bool fiery = daynight::Lamp(layout, lamp.name);
             if (fiery && lamp.reach > 0)
             {
-                made.push_back({at[0], at[1], at[2], lamp.reach});
+                made.push_back({{at[0], at[1], at[2], lamp.reach}, layout + L"/" + Lower(lamp.name)});
             }
             const auto fire = FireAt(fires, at, fiery);
             if (lamp.reach <= 0 || (!named && fire == fires.end()))
@@ -1144,14 +1168,26 @@ bool Install()
                              std::filesystem::path(g_lampLevel).string(),
                              found != g_levelLamps.end() ? found->second->lights.size() : 0);
             }
-            // A lamp at a fire the level places, lit by the plugin (ReadLamps).
-            if (const auto found = g_levelLamps.find(g_lampLevel);
-                found != g_levelLamps.end() &&
-                std::ranges::find(found->second->atFires, model + L"/" + Lower(light.name)) !=
-                    found->second->atFires.end())
+            const std::wstring key = model + L"/" + Lower(light.name);
+            if (const auto found = g_levelLamps.find(g_lampLevel); found != g_levelLamps.end())
             {
-                light.color = {0, 0, 0, light.color[3]};
-                return;
+                // A lamp at a fire the level places, lit by the plugin (ReadLamps).
+                if (std::ranges::find(found->second->atFires, key) != found->second->atFires.end())
+                {
+                    light.color = {0, 0, 0, light.color[3]};
+                    return;
+                }
+                // A lamp that lights flames near it (MadeLit): theirs is in the
+                // relighter's night, which comes in by its share.
+                if (std::ranges::find(found->second->lightingFlames, key) != found->second->lightingFlames.end())
+                {
+                    const float night = daynight::RelitNight()[0];
+                    for (std::size_t i = 0; i < 3; ++i)
+                    {
+                        light.color.at(i) *= 1 - night;
+                    }
+                    return;
+                }
             }
         }
         if (daynight::FireLamp(light.model, light.name))

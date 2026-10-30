@@ -88,10 +88,6 @@ struct Samplers
     UINT night = 0;
 };
 std::map<IDirect3DPixelShader9 *, Samplers> g_shaders;
-// Whether a night lightmap was bound in the frame being drawn, and in the last
-// one drawn (Baked).
-bool g_boundNow = false;
-std::atomic<bool> g_bound{false};
 
 // A packed night lightmap (DXT1 or DXT5, DdsPackTool.cpp) as a texture of
 // its own format, its largest picture copied as the file has it: unpacked, a
@@ -278,6 +274,13 @@ bool LevelOn(std::wstring_view level)
     return !g_off.contains(Lower(level));
 }
 
+bool Has(std::wstring_view level)
+{
+    const std::wstring lower = Lower(level);
+    return std::ranges::any_of(g_nights, [&](const std::wstring &name) { return LevelOf(name) == lower; }) &&
+           LevelOn(lower);
+}
+
 void CreatedPixel(const std::vector<std::byte> &code, IDirect3DPixelShader9 *shader)
 {
     // The last shader made at an address is the one there.
@@ -338,21 +341,10 @@ void Drawing(IDirect3DDevice9 *device, bool picture)
             device->GetSamplerState(found->second.lightmap, D3DSAMP_SRGBTEXTURE, &srgb);
             device->SetSamplerState(sampler, D3DSAMP_SRGBTEXTURE, srgb);
             relit = hour;
-            g_boundNow = true;
         }
     }
     device->SetPixelShaderConstantF(kRelitNightRegister, relit.data(), 1);
 }
 
-void Presented()
-{
-    g_bound.store(g_boundNow, std::memory_order_relaxed);
-    g_boundNow = false;
-}
-
-bool Baked()
-{
-    return g_bound.load(std::memory_order_relaxed);
-}
 
 } // namespace nightlightmaps

@@ -1,5 +1,6 @@
 #include "DayNight.h"
 
+#include "NightLightmaps.h"
 #include "Probes.h"
 
 #include "dao/Lights.h"
@@ -1055,6 +1056,9 @@ std::vector<Cycled> g_cycled;
 // The starts of the names of layouts' lights that are fires (data/areas'
 // defaults.ini's `fires`), set once in Install before any light is seen.
 std::vector<std::wstring> g_fireLights;
+// The starts of the names of layouts' lights that are lamps beside the fires
+// (defaults.ini's `lamps`), set as g_fireLights is.
+std::vector<std::wstring> g_lampLights;
 float g_fireStrength = 1; // defaults.ini's `fire_strength`, set once in Install
 std::map<std::wstring, std::shared_ptr<const Pair>> g_pairs;
 std::set<std::wstring> g_asked;
@@ -1076,7 +1080,6 @@ std::optional<std::array<float, 3>> g_disc;
 std::atomic<bool> g_discIsMoon{false};
 std::vector<LampMove> g_lampMoves;  // the running area's, under g_lock
 std::atomic<bool> g_running{false}; // the clock runs in a level with a night
-std::atomic<bool> g_indoors{false}; // and in an interior
 std::array<std::atomic<float>, 3> g_layoutLightsBy{1.0F, 1.0F, 1.0F};
 // An interior's windows' light (WindowLight).
 std::array<std::atomic<float>, 3> g_window{0.0F, 0.0F, 0.0F};
@@ -1087,7 +1090,6 @@ std::array<std::atomic<float>, 4> g_bakeHue{1.0F, 1.0F, 1.0F, 0.0F};
 std::array<std::atomic<float>, 3> g_bakeWindow{1.0F, 1.0F, 1.0F};
 std::atomic<float> g_relitNight{0};
 std::atomic<float> g_relitStrength{1};
-std::atomic<float> g_lampsBaked{0};
 std::array<std::atomic<float>, 3> g_glass{1.0F, 1.0F, 1.0F};
 
 // The clock: the hour, and when it was last moved on.
@@ -1114,7 +1116,6 @@ void Stopped()
     g_nightShare.store(0, std::memory_order_relaxed);
     g_evenShare.store(0, std::memory_order_relaxed);
     g_running.store(false, std::memory_order_relaxed);
-    g_indoors.store(false, std::memory_order_relaxed);
     for (std::atomic<float> &value : g_window)
     {
         value.store(0, std::memory_order_relaxed);
@@ -1163,6 +1164,7 @@ struct Table
 {
     std::vector<Cycled> areas;
     std::vector<std::wstring> fires;
+    std::vector<std::wstring> lamps;
     float fireStrength = 1;
 };
 
@@ -1432,6 +1434,14 @@ Table ReadTable(const std::filesystem::path &folder)
             table.fires.push_back(Wide(name));
         }
     }
+    if (const auto lamps = defaults.find("lamps"); lamps != defaults.end())
+    {
+        std::istringstream names(lamps->second);
+        for (std::string name; names >> name;)
+        {
+            table.lamps.push_back(Wide(name));
+        }
+    }
     for (const auto &[tag, keys] : sections)
     {
         if (tag == "defaults")
@@ -1451,11 +1461,6 @@ Table ReadTable(const std::filesystem::path &folder)
 }
 
 } // namespace
-
-bool FireColoured(const std::array<float, 3> &colour)
-{
-    return colour[0] >= colour[1] && colour[1] >= colour[2];
-}
 
 float FireStrength()
 {
@@ -1477,6 +1482,17 @@ bool FireLamp(std::wstring_view model, std::wstring_view name)
         return name.size() >= start.size() && std::ranges::equal(name.substr(0, start.size()), start, {}, lower, lower);
     };
     return layout && std::ranges::any_of(g_fireLights, named);
+}
+
+bool Lamp(std::wstring_view model, std::wstring_view name)
+{
+    const auto lower = [](wchar_t c) { return std::towlower(c); };
+    const bool layout = model.size() >= 3 &&
+                        std::ranges::equal(model.substr(model.size() - 3), std::wstring_view(L"_ll"), {}, lower, lower);
+    const auto named = [&](std::wstring_view start) {
+        return name.size() >= start.size() && std::ranges::equal(name.substr(0, start.size()), start, {}, lower, lower);
+    };
+    return FireLamp(model, name) || (layout && std::ranges::any_of(g_lampLights, named));
 }
 
 Scattered Scattering(const dao::core::Sky &sky)
@@ -1782,6 +1798,14 @@ void ReadPairs(const std::filesystem::path &levelRim, const std::filesystem::pat
         pair->heldOwn = inside.heldOwn;
         pair->heldUntil = inside.heldUntil;
         pair->lampMoves = inside.lampMoves;
+        // Its night's lamps are the relighter's (NightLightmaps.h): without
+        // them it is left as its makers lit it.
+        if (!nightlightmaps::Has(level))
+        {
+            spdlog::info("day and night: {} has no night of the relighter's; left as its makers lit it",
+                         std::filesystem::path(inside.area).string());
+            continue;
+        }
         pair->indoors = inside.indoors;
         if (pair->indoors)
         {
@@ -1897,10 +1921,6 @@ bool IsGlassMaterial(std::wstring_view name)
     });
 }
 
-void LampsBaked(float share)
-{
-    g_lampsBaked.store(share, std::memory_order_relaxed);
-}
 
 std::array<float, 4> RelitNight()
 {
@@ -2116,7 +2136,6 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
     g_relitStrength.store(std::max(g_tryRelit.value_or(1.0F), 0.0F), std::memory_order_relaxed);
     g_windowReach.store(pair->indoors ? std::max(g_tryReach.value_or(pair->indoors->windowReach), 0.0F) : 0.0F,
                         std::memory_order_relaxed);
-    g_indoors.store(pair->indoors.has_value(), std::memory_order_relaxed);
     g_running.store(true, std::memory_order_relaxed);
     const std::scoped_lock lock(g_lock);
     g_disc = light.disc;
@@ -2160,6 +2179,7 @@ void Install()
         spdlog::info("day and night: {} areas and {} names of fires by the areas' files", table.areas.size(),
                      table.fires.size());
         g_fireLights = std::move(table.fires);
+        g_lampLights = std::move(table.lamps);
         g_fireStrength = table.fireStrength;
         const std::scoped_lock lock(g_lock);
         g_cycled = std::move(table.areas);
@@ -2211,33 +2231,20 @@ void Install()
             return model.size() >= end.size() &&
                    _wcsnicmp(model.data() + model.size() - end.size(), end.data(), end.size()) == 0;
         };
-        // Indoors a fire-coloured one of the level's (its layouts' or its
-        // figures' lights) is a lantern's or a candle's and keeps its light
-        // (FireColoured); the rest are its makers' fill. Not another scene's:
-        // the portraits' figures are lit by the warm lights of a rig of their
-        // own (outside_day_rig), which went out with the level's lamps by
-        // night, and every portrait drawn again (as the device is reset, by the
-        // video options) was dark (the user, 2026-10-30: "again w/ the
-        // portrait problem ... this should be solved correctly and
-        // automatically"; Redcliffe's chantry at midnight, the game's
-        // anti-aliasing set to 4x and back).
-        const bool levels = endsWith(L"_ll") || endsWith(L"_lc");
-        const bool fitting = levels && g_indoors.load(std::memory_order_relaxed) &&
-                             FireColoured({light.color[0], light.color[1], light.color[2]});
-        if (endsWith(L"_ll") && !FireLamp(model, light.name) && !fitting)
+        // A lamp of its makers' (Lamp: named as a flame) burns by night as by
+        // day: where it lights flames the plugin's night of them takes its
+        // place (EffectLights.cpp), and one at no flame is in no bake. Told by
+        // its name, not by its colour: by red over green over blue the
+        // chantries' sunlight (Window_01Baked, glass_bounce, Character_sun)
+        // went out with the lamps by night, and the portraits' rig
+        // (outside_day_rig) did, dark as they were drawn again (the user,
+        // 2026-10-30: "this should be solved correctly and automatically").
+        // Any other scene's light is left as made.
+        if (endsWith(L"_ll") && !Lamp(model, light.name))
         {
             for (std::size_t i = 0; i < 3; ++i)
             {
                 light.color.at(i) *= g_layoutLightsBy.at(i).load(std::memory_order_relaxed);
-            }
-        }
-        else if (fitting)
-        {
-            // Its light in the night lightmaps and their probes by night.
-            const float kept = 1 - g_lampsBaked.load(std::memory_order_relaxed);
-            for (std::size_t i = 0; i < 3; ++i)
-            {
-                light.color.at(i) *= kept;
             }
         }
         else if (endsWith(L"_lc"))
