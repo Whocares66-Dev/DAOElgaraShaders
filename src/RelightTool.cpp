@@ -37,7 +37,10 @@
 //   flame=fire_cnd:0.5,0.3,0.12:12   every model placed whose name has
 //                  "fire_cnd" in it is a flame of that light, carrying 12 m;
 //                  flames together are one lamp, and their light falls off
-//                  by the square of the distance
+//                  by the square of the distance; after the reach, how far
+//                  above its place it burns, how far about it is clear, 1
+//                  for a light that lands, and how many flames together are
+//                  summed (10 if not said)
 //
 //   beam=window:0.5,0.6,0.85:0.5,0.3,-0.8   a light from far off, the moon,
 //                  that travels that way and comes in through every part
@@ -162,8 +165,9 @@ relighter::Flame FlameOf(const std::string &value)
     flame.colour = ColourAt(after);
     // The reach, then how far above its place it burns, then how far about it is clear.
     flame.reach = 12.0F;
-    // And a fourth, 1 for a light that lands (a shaft through a roof): Relighter.h's Flame.
-    for (float *number : {&flame.reach, &flame.lift, &flame.clear, &flame.lands})
+    // And a fourth, 1 for a light that lands (a shaft through a roof), and a
+    // fifth, how many of its flames together are summed: Relighter.h's Flame.
+    for (float *number : {&flame.reach, &flame.lift, &flame.clear, &flame.lands, &flame.most})
     {
         if (*after != ':')
         {

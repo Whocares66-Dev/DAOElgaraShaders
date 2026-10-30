@@ -66,6 +66,13 @@ struct Flame
     // light is the pool where it lands. The light is then put `lift` over
     // the first surface straight under the model's place.
     float lands = 0;
+    // How many of its flames together are summed into one lamp: a
+    // candelabra's candles are its flames' sum (ten at the most), but a fire's
+    // effect placed twice in one bowl is one fire. Two of the Broken Circle's
+    // second floor's statues hold such a bowl, lit at twice a small fire's 10
+    // (the user, 2026-10-30: "women carrying bowl fires on 2nd floor are
+    // really bright").
+    float most = 10;
 };
 
 // A light from far off that comes in through openings, the moon or the sun

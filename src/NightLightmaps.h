@@ -9,6 +9,8 @@
 #pragma once
 
 #include <cstddef>
+#include <filesystem>
+#include <string_view>
 #include <vector>
 
 struct IDirect3DDevice9;
@@ -20,6 +22,15 @@ namespace nightlightmaps
 // Notes each lightmap the engine makes that has a night of the plugin's.
 // Call once, as the plugin loads.
 void Install();
+
+// Says the engine is opening a level (the path of its .rim): its night
+// lightmaps and probes are taken only for the game's own copy of it, in the
+// game's levels' folder; a mod's or an add-in's copy keeps its own night.
+// Any thread.
+void LevelOpened(const std::filesystem::path &levelRim);
+
+// Whether a level's night lightmaps and probes are taken (LevelOpened). Any thread.
+bool LevelOn(std::wstring_view level);
 
 // Notes whether a pixel shader made at an address reads a lightmap and has a
 // sampler for its night (`code` its bytecode).

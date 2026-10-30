@@ -439,7 +439,7 @@ void AddFlames(Scene &scene, std::span<const core::Point> flames, const Flame &f
         {
             continue;
         }
-        const float many = std::min(group.count, kFlamesMost);
+        const float many = std::min({group.count, kFlamesMost, std::max(flame.most, 1.0F)});
         scene.lamps.push_back({{middle[0], middle[1], middle[2] + flame.lift},
                                {flame.colour[0] * many, flame.colour[1] * many, flame.colour[2] * many},
                                flame.reach,

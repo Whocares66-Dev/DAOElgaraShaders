@@ -143,16 +143,14 @@ dao_apply_warnings(elgarashaders)
 # the lights it gives fires that have none and the effects it dims at night;
 # data/glowing.ini, the terrain palettes' layers that glow (lava);
 # data/areas, a file for each area the day and night runs in, how its sun and
-# moon go; data/clouds, the clouds an area's sky may take by day; data/night, an
-# interior's lightmaps and probes by its own lamps (NightLightmaps.h, Probes.cpp). Steps with the tables for their input: copied after the DLL's
+# moon go; data/clouds, the clouds an area's sky may take by day (an interior's
+# night lightmaps are baked into the plugin's folder by toolsake-night.ps1). Steps with the tables for their input: copied after the DLL's
 # link, a change to a table alone never reached the build (2026-10-23).
 file(
     GLOB ELGARA_AREAS
     CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/data/areas/*.ini"
     "${CMAKE_CURRENT_SOURCE_DIR}/data/clouds/*.ini"
-    "${CMAKE_CURRENT_SOURCE_DIR}/data/night/*.dds"
-    "${CMAKE_CURRENT_SOURCE_DIR}/data/night/*.elgp"
 )
 set(ELGARA_TABLES
     "${CMAKE_CURRENT_SOURCE_DIR}/data/effects.ini"
@@ -178,6 +176,12 @@ add_custom_target(elgarashaders_effects ALL DEPENDS ${ELGARA_TABLES_OUT})
 add_executable(elgarashaders_bake src/BakeTool.cpp src/ProbeBaker.cpp)
 target_link_libraries(elgarashaders_bake PRIVATE DAOLib::daolib)
 dao_apply_warnings(elgarashaders_bake)
+
+# A lightmap of the relighter's packed as the game keeps its own (DXT1 or
+# DXT5): the night lightmaps tools/bake-night.ps1 bakes (src/DdsPackTool.cpp).
+add_executable(elgarashaders_ddspack src/DdsPackTool.cpp)
+target_link_libraries(elgarashaders_ddspack PRIVATE DAOLib::core)
+dao_apply_warnings(elgarashaders_ddspack)
 
 # The materials' table (data/materials.ini) made from the game, and given to
 # the plugin as answers and maps (src/materials/Table.h, issue 19), over

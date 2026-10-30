@@ -4,6 +4,7 @@
 #include "EffectLights.h"
 #include "GameFolder.h"
 #include "LevelShadows.h"
+#include "NightLightmaps.h"
 #include "ProbeBaker.h"
 #include "Reflected.h"
 
@@ -207,15 +208,19 @@ std::uintptr_t __fastcall ProbeScore(void *node, int unused, const float *place,
 }
 
 // The nearest probes of `rooms` to a figure at `place`, of each room of the
-// level's own probes that scored for it, mixed; none where none are.
+// level's own probes that scored for it, mixed; none where none are. `night`
+// for the night rooms: a level's are left out where its night is its own
+// (NightLightmaps.h's LevelOn).
 std::optional<Irradiance> MixOf(const probebaker::Rooms &rooms, const std::vector<ScoredProbe> &scored,
-                                const float *place)
+                                const float *place, bool night = false)
 {
     thread_local std::vector<dao::core::probes::Near> lights;
     lights.clear();
     for (const ScoredProbe &probe : scored)
     {
-        if (const probebaker::Room *room = RoomOf(rooms, probe.node); room != nullptr && !room->probes.empty())
+        const probebaker::Room *room = RoomOf(rooms, probe.node);
+        if (room != nullptr && !room->probes.empty() &&
+            (!night || nightlightmaps::LevelOn(std::wstring(room->level.begin(), room->level.end()))))
         {
             probebaker::Nearest(*room, place, lights);
         }
@@ -241,7 +246,7 @@ void KeepBlend(void *group, const std::vector<ScoredProbe> &scored, const float 
     const std::shared_ptr<const probebaker::Rooms> rooms =
         g_wanted.load(std::memory_order_relaxed) ? probebaker::AllRooms() : nullptr;
     const std::optional<Irradiance> mix = rooms ? MixOf(*rooms, scored, place) : std::nullopt;
-    const std::optional<Irradiance> night = MixOf(g_nightRooms, scored, place);
+    const std::optional<Irradiance> night = MixOf(g_nightRooms, scored, place, true);
     void *state = static_cast<std::byte *>(group) - kStateProbes;
     const std::scoped_lock lock(g_blendsLock);
     if (mix || night)
@@ -459,6 +464,7 @@ std::uintptr_t __fastcall OpenArchive(void *self, int unused, const dao::core::W
             probebaker::Want(*rim);
             daynight::Opened(*rim, GameFolder() / "packages" / "core" / "env");
             effectlights::LevelOpened(*rim);
+            nightlightmaps::LevelOpened(*rim);
             levelshadows::Forget();
         }
     }
