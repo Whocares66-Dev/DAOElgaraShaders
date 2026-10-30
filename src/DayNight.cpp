@@ -947,9 +947,19 @@ Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::S
         indoors.ownIsNight
             ? indoors.dayFill
             : std::optional(Paler(indoors.nightBake.value_or(atNight.outdoor), NightColour()));
-    const float nightBright = !indoors.ownIsNight && indoors.nightBake && indoors.bakeLuminance > 0
-                                  ? Luminance(*indoors.nightBake) / indoors.bakeLuminance
-                                  : 1.0F;
+    // Without a night bake of the makers' to borrow, the light out of doors
+    // at midnight against the day's: the light the windows let in falls as
+    // it does. Kept at half its day at midnight, Redcliffe's chantry was
+    // twice as bright as Witch Hunt's tower by the makers' night (0.42, 0.51,
+    // 0.71 of its day against 0.21, 0.28, 0.50; the user, 2026-10-30: "things
+    // seem pretty bright"); the light out of doors falls to 0.56 of its day
+    // there, the makers' night in the tower to 0.54.
+    const float dayOut = Luminance(atDay.outdoor);
+    const float nightBright =
+        indoors.ownIsNight ? 1.0F
+        : indoors.nightBake && indoors.bakeLuminance > 0 ? Luminance(*indoors.nightBake) / indoors.bakeLuminance
+        : dayOut > 0 ? Luminance(atNight.outdoor) / dayOut
+                     : 1.0F;
     Light light;
     light.sun = ownSun;
     light.sky = ownSky;
@@ -2201,10 +2211,19 @@ void Install()
             return model.size() >= end.size() &&
                    _wcsnicmp(model.data() + model.size() - end.size(), end.data(), end.size()) == 0;
         };
-        // Indoors a fire-coloured one is a lantern's or a candle's and keeps
-        // its light (FireColoured); the rest are its makers' fill.
-        const bool fitting =
-            g_indoors.load(std::memory_order_relaxed) && FireColoured({light.color[0], light.color[1], light.color[2]});
+        // Indoors a fire-coloured one of the level's (its layouts' or its
+        // figures' lights) is a lantern's or a candle's and keeps its light
+        // (FireColoured); the rest are its makers' fill. Not another scene's:
+        // the portraits' figures are lit by the warm lights of a rig of their
+        // own (outside_day_rig), which went out with the level's lamps by
+        // night, and every portrait drawn again (as the device is reset, by the
+        // video options) was dark (the user, 2026-10-30: "again w/ the
+        // portrait problem ... this should be solved correctly and
+        // automatically"; Redcliffe's chantry at midnight, the game's
+        // anti-aliasing set to 4x and back).
+        const bool levels = endsWith(L"_ll") || endsWith(L"_lc");
+        const bool fitting = levels && g_indoors.load(std::memory_order_relaxed) &&
+                             FireColoured({light.color[0], light.color[1], light.color[2]});
         if (endsWith(L"_ll") && !FireLamp(model, light.name) && !fitting)
         {
             for (std::size_t i = 0; i < 3; ++i)
