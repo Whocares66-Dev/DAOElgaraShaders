@@ -30,6 +30,15 @@ void Want(bool on);
 // none. The game thread's word (Outdoors.cpp).
 void SunBounce(const std::array<float, 3> &sent);
 
+// Whether a light manager is the area's scene's, not a portrait's, the
+// record's or the inventory's, which have managers of their own; false while
+// no area is (a load). The one test of it: the probes, the ambient light and
+// the effects' lights ask it alike. Any thread, the area as of this frame.
+bool OfArea(const void *manager);
+
+// The scene the player's area is drawn as, as of this frame, or null.
+void *AreaScene();
+
 // Whether a light state is of a figure in another scene than the area's: a
 // portrait's, the record's or the inventory's, which have light managers and
 // lights of their own and are lit as made at every hour (the user, 2026-10-30,

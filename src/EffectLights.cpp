@@ -5,6 +5,7 @@
 #include "Glowing.h"
 #include "LevelFiles.h"
 #include "LevelShadows.h"
+#include "Probes.h"
 
 #include "dao/Addresses.h"
 #include "dao/Camera.h"
@@ -56,13 +57,11 @@ constexpr std::size_t kRegisterFloats = ((2 * kMostLights) + 1) * 4;
 
 // The light manager's lists of the lights that have no flag in their
 // blueprint, the figures' and the level's (DAOLib's notes on
-// kLightManager_AddLights), the most an object takes of a list (+4 of it,
-// 0x00461F10), and the scene a manager is of (+8; its base's constructor,
-// 0x0046C4F0).
+// kLightManager_AddLights), and the most an object takes of a list (+4 of
+// it, 0x00461F10). Which scene a manager is of is Probes.h's OfArea.
 constexpr std::size_t kFiguresUnflagged = 0x84;
 constexpr std::size_t kLevelsUnflagged = 0xC;
 constexpr std::size_t kListMost = 4;
-constexpr std::size_t kManagerScene = 0x8;
 
 // A point light's node as LightState::Fill (0x0046B260) makes what a shader
 // is handed of it, read 2026-10-17: its place, the translation of the
@@ -1008,15 +1007,7 @@ void AddFires(std::vector<Light> &lights, std::size_t engines)
     }
 }
 
-// The scene the player's area is drawn as, and where the camera is.
-void *AreasScene()
-{
-    dao::CClientExoApp *app = dao::CClientExoApp::Get();
-    dao::CCModule *module = app != nullptr ? app->GetModule() : nullptr;
-    dao::CCArea *area = module != nullptr ? module->CurrentArea() : nullptr;
-    return area != nullptr ? area->Scene() : nullptr;
-}
-
+// Where the camera is.
 std::array<float, 3> Eye()
 {
     const dao::CClientExoApp *app = dao::CClientExoApp::Get();
@@ -1081,7 +1072,7 @@ void NoteChoice(std::size_t had, std::size_t kept)
 {
     static void *said = nullptr;
     static std::optional<std::chrono::steady_clock::time_point> first;
-    void *scene = AreasScene();
+    void *scene = probes::AreaScene();
     if (scene == said || had == 0)
     {
         return;
@@ -1250,13 +1241,10 @@ void Read()
     std::vector<Light> lights;
     if (g_wanted.load(std::memory_order_relaxed))
     {
-        void *scene = AreasScene();
         const std::scoped_lock lock(g_lock);
         for (const auto &[node, manager] : g_lights)
         {
-            void *of = nullptr;
-            std::memcpy(static_cast<void *>(&of), static_cast<const std::byte *>(manager) + kManagerScene, sizeof of);
-            if (scene == nullptr || of != scene)
+            if (!probes::OfArea(manager))
             {
                 continue; // another scene's: a portrait's, or an area kept by fast load
             }

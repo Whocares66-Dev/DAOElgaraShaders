@@ -58,7 +58,7 @@ namespace
 // the probe each fill while one is added. The mix is written over them there.
 constexpr std::size_t kLightsProbes = 0x3C;    // the manager's list of light probes
 constexpr std::size_t kStateProbes = 0x20;     // in a light state: the group of probes chosen
-// In a light manager: the scene it is of (EffectLights.cpp's kManagerScene).
+// In a light manager: the scene it is of (+8; its base's constructor, 0x0046C4F0).
 constexpr std::size_t kManagerScene = 0x8;
 constexpr std::size_t kProbeBlueprint = 0x174; // in a probe's node
 constexpr std::size_t kBlueprintIrradiance = 0x160;
@@ -277,13 +277,10 @@ std::uintptr_t __fastcall ChooseFromList(void *list, int unused, void *place, fl
 {
     if (t_figuresManager != nullptr && list == static_cast<std::byte *>(t_figuresManager) + kLightsProbes)
     {
-        void *of = nullptr;
-        std::memcpy(static_cast<void *>(&of), static_cast<const std::byte *>(t_figuresManager) + kManagerScene,
-                    sizeof of);
-        void *area = g_areaScene.load(std::memory_order_relaxed);
         const auto state = reinterpret_cast<std::uintptr_t>(static_cast<std::byte *>(group) - kStateProbes);
+        const bool other = g_areaScene.load(std::memory_order_relaxed) != nullptr && !OfArea(t_figuresManager);
         const std::scoped_lock lock(g_otherLock);
-        if (area != nullptr && of != area)
+        if (other)
         {
             g_other.insert(state);
         }
@@ -517,6 +514,19 @@ bool Install()
     }
     probebaker::Start(dao::LogDirectory() / "elgarashaders" / "probes", GameFolder(), {});
     return true;
+}
+
+bool OfArea(const void *manager)
+{
+    void *of = nullptr;
+    std::memcpy(static_cast<void *>(&of), static_cast<const std::byte *>(manager) + kManagerScene, sizeof of);
+    void *area = g_areaScene.load(std::memory_order_relaxed);
+    return area != nullptr && of == area;
+}
+
+void *AreaScene()
+{
+    return g_areaScene.load(std::memory_order_relaxed);
 }
 
 bool OfOtherScene(std::uintptr_t state)

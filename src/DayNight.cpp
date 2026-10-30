@@ -1,7 +1,6 @@
 #include "DayNight.h"
 
 #include "NightLightmaps.h"
-#include "Probes.h"
 
 #include "dao/Lights.h"
 #include "dao/Module.h"
@@ -2187,12 +2186,6 @@ void Install()
     // The ambient colour the engine adds to a level's surfaces and props: the
     // level's sky light, which goes with the hour as its bake does.
     dao::lights::OnAmbient([](dao::lights::Ambient &ambient) {
-        // A portrait's and the record's figures are lit as made (Probes.h's
-        // OfOtherScene): dark blue at night indoors otherwise.
-        if (probes::OfOtherScene(ambient.state))
-        {
-            return;
-        }
         for (std::size_t i = 0; i < 3; ++i)
         {
             ambient.color.at(i) *= g_baked.at(i).load(std::memory_order_relaxed);
