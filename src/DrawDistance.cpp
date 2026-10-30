@@ -15,16 +15,6 @@
 namespace
 {
 
-// The address library's IDs of what is read here (DrawDistance.h), not yet
-// named in DAOLib's Addresses.h: to be asked of the address library's session.
-// `python extern/DAOLib/tools/address_ids.py <id>` gives each one's address.
-constexpr dao::AddressId kTile_ChooseDetail{10319};   // 0x005CCFE0, __thiscall (tile, viewer, layout), ret 8
-constexpr dao::AddressId kLodManager_Distance{11669}; // 0x006170F0, LodManager::BandDistance
-constexpr dao::AddressId kTreeDistanceFactor{95759};  // 0x00BF22D8, float
-constexpr std::array<dao::AddressId, 3> kEffectFadeDistances{dao::AddressId{95756}, dao::AddressId{95757},
-                                                             dao::AddressId{95758}}; // 0x00BF22CC.., floats, m
-constexpr dao::AddressId kApp_RemakeTreeBounds{10551};                               // 0x005D6C20, __thiscall (app)
-
 // A tile's distance in metres at which it changes from its near detail to
 // its far (0x005CBD00 writes it as the tile is made).
 constexpr std::size_t kTileFarDetail = 0x2A8;
@@ -123,9 +113,9 @@ struct Scaled
     }
 };
 
-Scaled g_trees{kTreeDistanceFactor};
-std::array<Scaled, 3> g_effects{Scaled{kEffectFadeDistances[0]}, Scaled{kEffectFadeDistances[1]},
-                                Scaled{kEffectFadeDistances[2]}};
+Scaled g_trees{dao::addr::kTreeLodFactor};
+std::array<Scaled, 3> g_effects{Scaled{dao::addr::kEmitterLodDistance0}, Scaled{dao::addr::kEmitterLodDistance1},
+                                Scaled{dao::addr::kEmitterLodDistance2}};
 
 } // namespace
 
@@ -134,11 +124,11 @@ namespace drawdistance
 
 void Install()
 {
-    if (!g_chooseDetail.Attach(kTile_ChooseDetail, &ChooseDetail))
+    if (!g_chooseDetail.Attach(dao::addr::kEC_ChunkTile_ChooseDetail, &ChooseDetail))
     {
         spdlog::warn("draw distance: the terrain keeps vanilla's detail, no detour");
     }
-    if (!g_distance.Attach(kLodManager_Distance, &Distance))
+    if (!g_distance.Attach(dao::addr::kLodManager_BandDistance, &Distance))
     {
         spdlog::warn("draw distance: creatures and objects keep vanilla's distances, no detour");
     }
@@ -182,7 +172,7 @@ void Keep()
         // made again by the detail setting as it changes the factor.
         if (void *app = dao::CClientExoApp::Get(); app != nullptr)
         {
-            if (const std::uintptr_t remake = dao::Module::Address(kApp_RemakeTreeBounds); remake != 0)
+            if (const std::uintptr_t remake = dao::Module::Address(dao::addr::kCClientExoApp_RemakeTreeBounds); remake != 0)
             {
                 reinterpret_cast<RemakeTreeBoundsFn>(remake)(app, 0);
             }
