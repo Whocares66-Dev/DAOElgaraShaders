@@ -99,9 +99,23 @@ $stale = @()
 foreach ($file in Get-ChildItem $built -Recurse -File) {
     $relative = $file.FullName.Substring($built.Length + 1)
     if ($notGiven -contains $file.Name -or $notGivenKinds -contains $file.Extension) { continue }
-    if ($products -contains $relative -or $relative.StartsWith('override\')) { $given += $relative; continue }
+    if ($products -contains $relative -or $relative.StartsWith('override\') -or $relative.StartsWith('night\')) {
+        $given += $relative
+        continue
+    }
     if (Test-Path -PathType Leaf (Join-Path $data $relative)) { $given += $relative; continue }
     $stale += $relative
+}
+# The interiors' nights (tools\bake-night.ps1): every interior data\areas names has its
+# probes and lightmaps, or it would be left as its makers lit it in the release.
+foreach ($area in Get-ChildItem (Join-Path $data 'areas') -Filter '*.ini') {
+    $text = Get-Content $area.FullName
+    if (-not ($text -match '^\s*outside\s*=')) { continue }
+    $level = ($text | Select-String -Pattern '^\s*level\s*=\s*(\w+)').Matches | Select-Object -First 1 |
+        ForEach-Object { $_.Groups[1].Value }
+    if ($level -and -not (Test-Path (Join-Path $built "night\$level.elgp"))) {
+        throw "No night of $level ($($area.Name)) in $built\night; build with the 64-bit relighter (tools\build-bake.ps1)"
+    }
 }
 if ($stale) {
     throw "In $built, made by no step of this build and no file of data\: $($stale -join ', '). Delete them (a branch's leavings) or add their source to data\ and the build"
