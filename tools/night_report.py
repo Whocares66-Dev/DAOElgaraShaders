@@ -30,7 +30,11 @@ def read_base(path):
 def mip_bytes(w, h, mips, per_block, block=True):
     total = 0
     for _ in range(max(mips, 1)):
-        total += (max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * per_block) if block else w * h * per_block
+        total += (
+            (max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * per_block)
+            if block
+            else w * h * per_block
+        )
         w, h = max(1, w // 2), max(1, h // 2)
     return total
 
@@ -65,8 +69,12 @@ def main(folder, sheet):
         tot["raw"] += size
         tot["dxt1"] += HEADER + mip_bytes(w, h, mips, 8)
         tot["dxt5"] += HEADER + mip_bytes(w, h, mips, 16)
-        tot["half"] += HEADER + mip_bytes(max(1, w // 2), max(1, h // 2), max(mips - 1, 1), 4, block=False)
-        tot["half_dxt1"] += HEADER + mip_bytes(max(1, w // 2), max(1, h // 2), max(mips - 1, 1), 8)
+        tot["half"] += HEADER + mip_bytes(
+            max(1, w // 2), max(1, h // 2), max(mips - 1, 1), 4, block=False
+        )
+        tot["half_dxt1"] += HEADER + mip_bytes(
+            max(1, w // 2), max(1, h // 2), max(mips - 1, 1), 8
+        )
         stored = rgba[:, :, :3]
         ref = decode(stored)
         out = [name, w, h]
@@ -74,16 +82,27 @@ def main(folder, sheet):
             back, _ = roundtrip(rgba, fmt)
             got = decode(back[:, :, :3])
             out += [
-                float(np.abs(back[:, :, :3].astype(float) - stored).mean()) / 255.0,  # stored-domain MAE
+                float(np.abs(back[:, :, :3].astype(float) - stored).mean())
+                / 255.0,  # stored-domain MAE
                 float(np.abs(got - ref).mean()),  # light-domain MAE
                 float(ref.mean()),
             ]
         maps.append((name, ref))
         rows.append(out)
     print("totals (bytes, headers included):", tot)
-    print("name w h | DXT1 stored-MAE light-MAE mean-light | DXT5 stored-MAE light-MAE mean-light")
+    print(
+        "name w h | DXT1 stored-MAE light-MAE mean-light | DXT5 stored-MAE light-MAE mean-light"
+    )
     for r in rows:
-        print(r[0], r[1], r[2], "|", " ".join(f"{v:.5f}" for v in r[3:6]), "|", " ".join(f"{v:.5f}" for v in r[6:9]))
+        print(
+            r[0],
+            r[1],
+            r[2],
+            "|",
+            " ".join(f"{v:.5f}" for v in r[3:6]),
+            "|",
+            " ".join(f"{v:.5f}" for v in r[6:9]),
+        )
     allmean = np.mean([m.mean() for _, m in maps])
     # Contact sheet: every map in a 5-wide grid at 128 px, one exposure for all.
     tile = 128
@@ -92,7 +111,9 @@ def main(folder, sheet):
     canvas = Image.new("RGB", (cols * tile, rows_n * tile), (20, 20, 20))
     exposure = 0.5 / max(allmean, 1e-6)
     for i, (_, light) in enumerate(maps):
-        t = Image.fromarray(tonemap(light, exposure), "RGB").resize((tile, tile), Image.BILINEAR)
+        t = Image.fromarray(tonemap(light, exposure), "RGB").resize(
+            (tile, tile), Image.BILINEAR
+        )
         canvas.paste(t, ((i % cols) * tile, (i // cols) * tile))
     canvas.save(sheet)
     print("mean light over all maps", allmean, "exposure", exposure, "sheet", sheet)

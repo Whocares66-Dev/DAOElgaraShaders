@@ -46,7 +46,13 @@ def vanilla_pictures(game, level):
             entries = script_commands.erf_entries(os.path.join(env, archive))
         except Exception:  # noqa: BLE001  (not an archive)
             continue
-        vanilla.update({name.lower(): body for name, body in entries.items() if name.lower().endswith(".dds")})
+        vanilla.update(
+            {
+                name.lower(): body
+                for name, body in entries.items()
+                if name.lower().endswith(".dds")
+            }
+        )
     return vanilla
 
 
@@ -69,18 +75,34 @@ def colour_against_vanilla(vanilla, folder):
     ours_sum = np.zeros(3)
     vanilla_sum = np.zeros(3)
     for name in os.listdir(folder):
-        if not name.lower().endswith(".dds") or name.lower() not in vanilla or is_cube(vanilla[name.lower()]):
+        if (
+            not name.lower().endswith(".dds")
+            or name.lower() not in vanilla
+            or is_cube(vanilla[name.lower()])
+        ):
             continue
-        stored = np.asarray(Image.open(os.path.join(folder, name)).convert("RGB")).astype(float) / 255
+        stored = (
+            np.asarray(Image.open(os.path.join(folder, name)).convert("RGB")).astype(
+                float
+            )
+            / 255
+        )
         light = stored * stored * 8  # ours is the square root of an eighth of the light
-        theirs = Image.open(io.BytesIO(vanilla[name.lower()])).convert("RGB").resize((light.shape[1], light.shape[0]))
+        theirs = (
+            Image.open(io.BytesIO(vanilla[name.lower()]))
+            .convert("RGB")
+            .resize((light.shape[1], light.shape[0]))
+        )
         theirs = np.asarray(theirs).astype(float) / 255
         lit = light.sum(axis=2) > 0
         ours_sum += light[lit].sum(axis=0)
         vanilla_sum += theirs[lit].sum(axis=0)
     if ours_sum[0] <= 0 or vanilla_sum[0] <= 0:
         return None
-    return (ours_sum[1] / ours_sum[0], ours_sum[2] / ours_sum[0]), (vanilla_sum[1] / vanilla_sum[0], vanilla_sum[2] / vanilla_sum[0])
+    return (ours_sum[1] / ours_sum[0], ours_sum[2] / ours_sum[0]), (
+        vanilla_sum[1] / vanilla_sum[0],
+        vanilla_sum[2] / vanilla_sum[0],
+    )
 
 
 def main(argv):
@@ -89,7 +111,9 @@ def main(argv):
         return 2
     game, level, folder = argv[1], argv[2].lower(), argv[3]
     names = {name: label for label, name in gff4.field_names().items()}
-    rooms = script_commands.erf_entries(os.path.join(game, "packages", "core", "env", level, level + ".rim"))
+    rooms = script_commands.erf_entries(
+        os.path.join(game, "packages", "core", "env", level, level + ".rim")
+    )
     made = {name.lower() for name in os.listdir(folder)}
     wanted = {}
     for room, body in sorted(rooms.items()):
@@ -101,17 +125,25 @@ def main(argv):
                 for value in atlas.values():
                     if isinstance(value, str) and value.lower().endswith(".dds"):
                         wanted.setdefault(value.lower(), set()).add(room)
-    missing = {atlas: sorted(where) for atlas, where in wanted.items() if atlas not in made}
-    print(f"check: {level}: its rooms name {len(wanted)} lightmaps, {len(wanted) - len(missing)} of them made")
+    missing = {
+        atlas: sorted(where) for atlas, where in wanted.items() if atlas not in made
+    }
+    print(
+        f"check: {level}: its rooms name {len(wanted)} lightmaps, {len(wanted) - len(missing)} of them made"
+    )
     # The level's cubes are the cube maps of its own archives: in every one of the game's
     # 158 levels those are the cubes its light probes name, no more and no fewer (read
     # 2026-10-12), which are the ones the relighter makes.
     vanilla = vanilla_pictures(game, level)
     cubes = sorted(name for name, body in vanilla.items() if is_cube(body))
     cubes_made = [name for name in cubes if name in made]
-    print(f"check: {level}: it has {len(cubes)} reflection cubes, {len(cubes_made)} of them made")
+    print(
+        f"check: {level}: it has {len(cubes)} reflection cubes, {len(cubes_made)} of them made"
+    )
     if cubes and not cubes_made:
-        print(f"check: {level}: NOTE none of its cubes is made: its metal will read vanilla's as if they were ours")
+        print(
+            f"check: {level}: NOTE none of its cubes is made: its metal will read vanilla's as if they were ours"
+        )
     colour = colour_against_vanilla(vanilla, folder)
     if colour is not None:
         ours, vanillas = colour
@@ -120,7 +152,9 @@ def main(argv):
             f"vanilla's bake is 1 : {vanillas[0]:.2f} : {vanillas[1]:.2f}"
         )
         if max(abs(ours[0] - vanillas[0]), abs(ours[1] - vanillas[1])) > COLOUR_APART:
-            print(f"check: {level}: NOTE its colour is far from vanilla's: look at the recipe's colours before it is shown")
+            print(
+                f"check: {level}: NOTE its colour is far from vanilla's: look at the recipe's colours before it is shown"
+            )
     if missing:
         by_room = {}
         for atlas, where in missing.items():
@@ -128,11 +162,15 @@ def main(argv):
                 by_room.setdefault(room, []).append(atlas)
         for room, atlases in sorted(by_room.items())[:12]:
             print(f"check:   {room}: {len(atlases)} not made, as {sorted(atlases)[0]}")
-        print(f"check: {level} is NOT lit again whole: {len(missing)} lightmaps are the game's own still")
+        print(
+            f"check: {level} is NOT lit again whole: {len(missing)} lightmaps are the game's own still"
+        )
         return 1
     if cubes_made and len(cubes_made) != len(cubes):
         left = sorted(set(cubes) - set(cubes_made))
-        print(f"check: {level} has NOT all its cubes: {len(left)} are vanilla's still, as {left[0]}")
+        print(
+            f"check: {level} has NOT all its cubes: {len(left)} are vanilla's still, as {left[0]}"
+        )
         return 1
     return 0
 

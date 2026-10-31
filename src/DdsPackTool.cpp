@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <cstdio>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -17,7 +18,7 @@
 #include <string_view>
 #include <vector>
 
-int main(int argc, char **argv)
+static int Pack(int argc, char **argv)
 {
     if (argc != 4)
     {
@@ -39,8 +40,8 @@ int main(int argc, char **argv)
         std::fprintf(stderr, "%s is not a DDS file read here\n", argv[1]);
         return 1;
     }
-    const std::vector<std::byte> packed = dao::core::dds::Encode(
-        *image, kind == "dxt1" ? dao::core::dds::Format::Dxt1 : dao::core::dds::Format::Dxt5);
+    const std::vector<std::byte> packed =
+        dao::core::dds::Encode(*image, kind == "dxt1" ? dao::core::dds::Format::Dxt1 : dao::core::dds::Format::Dxt5);
     if (packed.empty())
     {
         std::fprintf(stderr, "%s could not be packed: its sides are not powers of two\n", argv[1]);
@@ -49,4 +50,18 @@ int main(int argc, char **argv)
     std::ofstream out(argv[2], std::ios::binary);
     out.write(reinterpret_cast<const char *>(packed.data()), static_cast<std::streamsize>(packed.size()));
     return out ? 0 : 1;
+}
+
+int main(int argc, char **argv)
+{
+    try
+    {
+        return Pack(argc, argv);
+    }
+    catch (const std::exception &error)
+    {
+        std::fputs(error.what(), stderr);
+        std::fputs("\n", stderr);
+        return 1;
+    }
 }

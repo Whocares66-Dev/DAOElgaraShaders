@@ -2095,9 +2095,7 @@ def with_window_glass(shader):
     emissive = shader.parameters["smpEmissiveMask"]
     read = shader.find(rf"^texld\w* r\d+, .*, s{emissive.base}$")
     register = re.match(r"texld\w* (r\d+),", shader.statements[read].asm).group(1)
-    shader.insert(
-        read, [f"{register}.xyz *= lerp(1, daoGlass.xyz, mml_fDaoWindow);"]
-    )
+    shader.insert(read, [f"{register}.xyz *= lerp(1, daoGlass.xyz, mml_fDaoWindow);"])
 
 
 # The water shaders, each with the input its light comes in by: the sky's sun
@@ -3189,7 +3187,9 @@ def main(argv):
     print(f"build_shaders: {built} shaders in {out}, {failed} failed")
     print(f"build_shaders: the fills' strength in {len(FILLS_KEPT)} shaders")
     if RELIT_NIGHT_NONE:
-        print(f"build_shaders: no sampler left for the night lightmap in {len(RELIT_NIGHT_NONE)} shaders")
+        print(
+            f"build_shaders: no sampler left for the night lightmap in {len(RELIT_NIGHT_NONE)} shaders"
+        )
     by_light = collections.Counter(place for place, _, _ in EFFECT_LIT)
     print(
         f"build_shaders: effects' lights in {len(EFFECT_LIT)} shaders, by the reckoning of light "

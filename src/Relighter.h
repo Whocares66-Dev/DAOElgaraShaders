@@ -100,16 +100,16 @@ struct Beam
 
 struct Options
 {
-    std::uint32_t side = 256;   // a lightmap is made no larger a side
-    float lamps = 1.0F;         // what a lamp's own colour is multiplied by
-    float reach = 1.0F;         // and its reach
-    float furthest = 60.0F;     // a lamp that reaches further than this, in metres, is left out
-    float surfaces = 0.5F;      // of the light on a surface, what it sends on
-    int bounces = 2;            // how many times light is followed off a surface
-    std::size_t rays = 48;      // cast from a texel for what comes back
-    float kept = 0.0F;          // of the game's own baked light, what is laid under ours
-    std::vector<Glow> glows;    // what glows in this level
-    std::vector<Flame> flames;  // and what burns in it
+    std::uint32_t side = 256;  // a lightmap is made no larger a side
+    float lamps = 1.0F;        // what a lamp's own colour is multiplied by
+    float reach = 1.0F;        // and its reach
+    float furthest = 60.0F;    // a lamp that reaches further than this, in metres, is left out
+    float surfaces = 0.5F;     // of the light on a surface, what it sends on
+    int bounces = 2;           // how many times light is followed off a surface
+    std::size_t rays = 48;     // cast from a texel for what comes back
+    float kept = 0.0F;         // of the game's own baked light, what is laid under ours
+    std::vector<Glow> glows;   // what glows in this level
+    std::vector<Flame> flames; // and what burns in it
     // How far the level's light is brought to vanilla's bake: at 1 its mean
     // colour over every texel lit is that of vanilla's lightmaps over the same
     // texels, and its bright end (the texel brighter than nineteen in twenty)
@@ -137,7 +137,7 @@ struct Options
     // whole world in one scene: a room far off is in the way of light there,
     // where the tree tries only the rooms about a texel's own.
     int caster = 1;
-    std::vector<Beam> beams;    // and what comes in from far off
+    std::vector<Beam> beams; // and what comes in from far off
     // How many pixels a side a face of the level's reflection cubes is made
     // (the power of two at or under it); 0 makes none. A level's metal
     // mirrors a cube map, a picture of a room from where its light-probe

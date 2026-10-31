@@ -891,6 +891,24 @@ std::optional<float> g_tryRelit;
 // of doors at noon over midnight's (2.28, 1.63, 0.74), the Broken Circle's
 // violet bake (lak503d's lightmaps' mean 0.096, 0.105, 0.182) went a
 // red-brown at noon, read as firelight, not daylight.
+// How bright an interior its makers lit by day is at night against its day:
+// its rooms' night bake's (`night`) against its own where it names one, the
+// light out of doors at midnight against the day's where not; 1 for a bake
+// of the night.
+float NightBright(const IndoorLight &indoors, const Light &atNight, const Light &atDay)
+{
+    if (indoors.ownIsNight)
+    {
+        return 1.0F;
+    }
+    if (indoors.nightBake && indoors.bakeLuminance > 0)
+    {
+        return Luminance(*indoors.nightBake) / indoors.bakeLuminance;
+    }
+    const float dayOut = Luminance(atDay.outdoor);
+    return dayOut > 0 ? Luminance(atNight.outdoor) / dayOut : 1.0F;
+}
+
 Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::Sunlight &ownSun,
                 const dao::core::Sky &ownSky, float hour, float night, float nightFill, float haze)
 {
@@ -944,9 +962,8 @@ Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::S
     // user, 2026-10-30: "wh night is really blue ... prefer bc's not too
     // saturated blue").
     const std::optional<std::array<float, 3>> otherColour =
-        indoors.ownIsNight
-            ? indoors.dayFill
-            : std::optional(Paler(indoors.nightBake.value_or(atNight.outdoor), NightColour()));
+        indoors.ownIsNight ? indoors.dayFill
+                           : std::optional(Paler(indoors.nightBake.value_or(atNight.outdoor), NightColour()));
     // Without a night bake of the makers' to borrow, the light out of doors
     // at midnight against the day's: the light the windows let in falls as
     // it does. Kept at half its day at midnight, Redcliffe's chantry was
@@ -954,12 +971,7 @@ Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::S
     // 0.71 of its day against 0.21, 0.28, 0.50; the user, 2026-10-30: "things
     // seem pretty bright"); the light out of doors falls to 0.56 of its day
     // there, the makers' night in the tower to 0.54.
-    const float dayOut = Luminance(atDay.outdoor);
-    const float nightBright =
-        indoors.ownIsNight ? 1.0F
-        : indoors.nightBake && indoors.bakeLuminance > 0 ? Luminance(*indoors.nightBake) / indoors.bakeLuminance
-        : dayOut > 0 ? Luminance(atNight.outdoor) / dayOut
-                     : 1.0F;
+    const float nightBright = NightBright(indoors, atNight, atDay);
     Light light;
     light.sun = ownSun;
     light.sky = ownSky;
@@ -1021,10 +1033,11 @@ Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::S
     if (std::abs(light.lit[0] - said[0]) + std::abs(light.lit[1] - said[1]) + std::abs(light.lit[2] - said[2]) > 0.05F)
     {
         said = light.lit;
-        spdlog::info("day and night: indoors at {:.2f}, the light out of doors {:.3f} {:.3f} {:.3f}, its makers' beams at "
-                     "{:.2f}, the daylight {:.2f} of noon's; their light kept at {:.3f} {:.3f} {:.3f}",
-                     hour, out.outdoor[0], out.outdoor[1], out.outdoor[2], light.lit[0],
-                     bright, light.baked[0], light.baked[1], light.baked[2]);
+        spdlog::info(
+            "day and night: indoors at {:.2f}, the light out of doors {:.3f} {:.3f} {:.3f}, its makers' beams at "
+            "{:.2f}, the daylight {:.2f} of noon's; their light kept at {:.3f} {:.3f} {:.3f}",
+            hour, out.outdoor[0], out.outdoor[1], out.outdoor[2], light.lit[0], bright, light.baked[0], light.baked[1],
+            light.baked[2]);
     }
     return light;
 }
@@ -1543,8 +1556,7 @@ std::shared_ptr<Pair> MakePair(const Cycled &cycled, const LevelLight &own, cons
     // The day level's sun, the area's own or the borrowed day's.
     const std::wstring &dayLevel = cycled.ownIsNight ? cycled.other : cycled.own;
     const std::wstring &latitudeOf = cycled.latitudeOf.empty() ? dayLevel : cycled.latitudeOf;
-    const dao::core::Sunlight &by =
-        latitudeOf == dayLevel || !ReadArl(latitudeOf, of) ? pair->day.sun : of.sun;
+    const dao::core::Sunlight &by = latitudeOf == dayLevel || !ReadArl(latitudeOf, of) ? pair->day.sun : of.sun;
     pair->latitude = cycled.latitude ? *cycled.latitude * kDegree
                                      : (std::numbers::pi_v<float> / 2) -
                                            Height({-by.direction[0], -by.direction[1], -by.direction[2]});
@@ -1676,12 +1688,12 @@ void ReadIndoorColours(IndoorLight &indoors, const std::filesystem::path &folder
         night && Luminance(*night) > 0)
     {
         indoors.nightBake = *night;
-        spdlog::info("day and night: {}'s night as {}'s bake, {:.3f} {:.3f} {:.3f}", std::filesystem::path(own).string(),
-                     std::filesystem::path(indoors.night).string(), night->at(0), night->at(1), night->at(2));
+        spdlog::info("day and night: {}'s night as {}'s bake, {:.3f} {:.3f} {:.3f}",
+                     std::filesystem::path(own).string(), std::filesystem::path(indoors.night).string(), night->at(0),
+                     night->at(1), night->at(2));
     }
     const std::wstring &day = indoors.other;
-    if (const std::optional<std::array<float, 3>> fill =
-            day.empty() ? std::nullopt : RoomsAmbient(folderOf(day), day);
+    if (const std::optional<std::array<float, 3>> fill = day.empty() ? std::nullopt : RoomsAmbient(folderOf(day), day);
         fill && Luminance(*fill) > 0)
     {
         indoors.dayFill = *fill;
@@ -1736,7 +1748,7 @@ void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &
     }
     // Read at the next Now: the engine is opening an archive here, and its
     // files are read through it (ReadArl).
-    g_opened.push_back({levelRim, coreEnv});
+    g_opened.emplace_back(levelRim, coreEnv);
 }
 
 namespace
@@ -1919,7 +1931,6 @@ bool IsGlassMaterial(std::wstring_view name)
         return cycled.indoors && std::ranges::find(cycled.indoors->glass, stem) != cycled.indoors->glass.end();
     });
 }
-
 
 std::array<float, 4> RelitNight()
 {

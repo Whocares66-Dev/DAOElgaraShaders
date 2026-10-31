@@ -8,13 +8,12 @@
 // nighttime").
 #pragma once
 
+#include <d3d9.h>
+
 #include <cstddef>
 #include <filesystem>
 #include <string_view>
 #include <vector>
-
-struct IDirect3DDevice9;
-struct IDirect3DPixelShader9;
 
 namespace nightlightmaps
 {
@@ -49,6 +48,5 @@ void Drawing(IDirect3DDevice9 *device, bool picture);
 // Gives the sampler Drawing lent the night lightmap on back what it held.
 // Call after each draw Drawing was called for.
 void Drawn(IDirect3DDevice9 *device);
-
 
 } // namespace nightlightmaps

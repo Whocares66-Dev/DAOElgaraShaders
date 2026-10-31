@@ -1960,10 +1960,12 @@ void PlaceFlames(Level &level, Scene &scene, const Options &options, const std::
         const std::vector<core::Point> flames = FlamesOf(level, scene, flame, ids, sources, hints);
         if (!flames.empty())
         {
-            spdlog::info("relight: {} flames of {} found, before those an earlier kind lit", flames.size(), std::filesystem::path(flame.named).string());
+            spdlog::info("relight: {} flames of {} found, before those an earlier kind lit", flames.size(),
+                         std::filesystem::path(flame.named).string());
             for (const core::Point &at : flames)
             {
-                spdlog::debug("relight:   {} at {:.1f} {:.1f} {:.1f}", std::filesystem::path(flame.named).string(), at[0], at[1], at[2]);
+                spdlog::debug("relight:   {} at {:.1f} {:.1f} {:.1f}", std::filesystem::path(flame.named).string(),
+                              at[0], at[1], at[2]);
             }
         }
         // What an earlier rule lit is this rule's "already lit": a lantern's
@@ -2244,8 +2246,8 @@ void MatchVanilla(Scene &scene, const Options &options, std::optional<Colour> &g
         Against measured = Measured(scene);
         const Colour found = GainTo(measured, options);
         gain = found;
-        spdlog::info("relight: {}: brought to vanilla's bake: its light by {:.2f}, {:.2f}, {:.2f}", name, found[0], found[1],
-                     found[2]);
+        spdlog::info("relight: {}: brought to vanilla's bake: its light by {:.2f}, {:.2f}, {:.2f}", name, found[0],
+                     found[1], found[2]);
     }
     const Colour by = *gain;
     const auto scaled = [&by](Colour &colour) {

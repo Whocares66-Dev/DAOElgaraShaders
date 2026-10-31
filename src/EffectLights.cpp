@@ -1126,6 +1126,56 @@ void Choose(std::vector<Light> &lights)
     lights.resize(kMostLights);
 }
 
+// A light the engine takes for an object: a lamp of the level's that the
+// plugin lights itself put out, and one that lights flames of the relighter's
+// night (MadeLit) going as that night comes.
+void LampLight(dao::lights::PointLight &light)
+{
+    if (!g_wanted.load(std::memory_order_relaxed) || !g_lampsWanted.load(std::memory_order_relaxed))
+    {
+        return;
+    }
+    // A room's layout (<level>_<x>_<y>_<d>_ll): the level the player is in.
+    const std::wstring model = Lower(light.model);
+    if (const std::size_t end = model.find(L'_'); end != std::wstring::npos && model.ends_with(L"_ll"))
+    {
+        const std::scoped_lock lock(g_lampLock);
+        if (model.substr(0, end) != g_lampLevel)
+        {
+            g_lampLevel = model.substr(0, end);
+            const auto found = g_levelLamps.find(g_lampLevel);
+            spdlog::info("effects' lights: in {}, {} of its lamps lit by the plugin",
+                         std::filesystem::path(g_lampLevel).string(),
+                         found != g_levelLamps.end() ? found->second->lights.size() : 0);
+        }
+        const std::wstring key = model + L"/" + Lower(light.name);
+        if (const auto found = g_levelLamps.find(g_lampLevel); found != g_levelLamps.end())
+        {
+            // A lamp at a fire the level places, lit by the plugin (ReadLamps).
+            if (std::ranges::find(found->second->atFires, key) != found->second->atFires.end())
+            {
+                light.color = {0, 0, 0, light.color[3]};
+                return;
+            }
+            // A lamp that lights flames near it (MadeLit): theirs is in the
+            // relighter's night, which comes in by its share.
+            if (std::ranges::find(found->second->lightingFlames, key) != found->second->lightingFlames.end())
+            {
+                const float night = daynight::RelitNight()[0];
+                for (std::size_t i = 0; i < 3; ++i)
+                {
+                    light.color.at(i) *= 1 - night;
+                }
+                return;
+            }
+        }
+    }
+    if (daynight::FireLamp(light.model, light.name))
+    {
+        light.color = {0, 0, 0, light.color[3]};
+    }
+}
+
 } // namespace
 
 bool Install()
@@ -1141,51 +1191,7 @@ bool Install()
     g_fires = ReadTable(dao::Module::OwnFolder() / "effects.ini", g_lit, g_holders);
     spdlog::info("effects' lights: {} lightless fires given a light and {} effects lit by the sky, by effects.ini",
                  g_fires.size(), g_lit.size());
-    dao::lights::OnPointLight([](dao::lights::PointLight &light) {
-        if (!g_wanted.load(std::memory_order_relaxed) || !g_lampsWanted.load(std::memory_order_relaxed))
-        {
-            return;
-        }
-        // A room's layout (<level>_<x>_<y>_<d>_ll): the level the player is in.
-        const std::wstring model = Lower(light.model);
-        if (const std::size_t end = model.find(L'_'); end != std::wstring::npos && model.ends_with(L"_ll"))
-        {
-            const std::scoped_lock lock(g_lampLock);
-            if (model.substr(0, end) != g_lampLevel)
-            {
-                g_lampLevel = model.substr(0, end);
-                const auto found = g_levelLamps.find(g_lampLevel);
-                spdlog::info("effects' lights: in {}, {} of its lamps lit by the plugin",
-                             std::filesystem::path(g_lampLevel).string(),
-                             found != g_levelLamps.end() ? found->second->lights.size() : 0);
-            }
-            const std::wstring key = model + L"/" + Lower(light.name);
-            if (const auto found = g_levelLamps.find(g_lampLevel); found != g_levelLamps.end())
-            {
-                // A lamp at a fire the level places, lit by the plugin (ReadLamps).
-                if (std::ranges::find(found->second->atFires, key) != found->second->atFires.end())
-                {
-                    light.color = {0, 0, 0, light.color[3]};
-                    return;
-                }
-                // A lamp that lights flames near it (MadeLit): theirs is in the
-                // relighter's night, which comes in by its share.
-                if (std::ranges::find(found->second->lightingFlames, key) != found->second->lightingFlames.end())
-                {
-                    const float night = daynight::RelitNight()[0];
-                    for (std::size_t i = 0; i < 3; ++i)
-                    {
-                        light.color.at(i) *= 1 - night;
-                    }
-                    return;
-                }
-            }
-        }
-        if (daynight::FireLamp(light.model, light.name))
-        {
-            light.color = {0, 0, 0, light.color[3]};
-        }
-    });
+    dao::lights::OnPointLight(&LampLight);
     dao::vfx::OnEmitterColor([](dao::vfx::EmitterColor &emitter) {
         if (!emitter.modelHasLight && g_lit.contains(Lower(emitter.model)))
         {

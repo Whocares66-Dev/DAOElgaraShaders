@@ -97,7 +97,7 @@ std::map<IDirect3DPixelShader9 *, Samplers> g_shaders;
 // patchwork as the camera turned (the user, 2026-10-30: "there's weird glowing
 // on the weapons at certain angles").
 constexpr std::array<D3DSAMPLERSTATETYPE, 6> kLentStates{D3DSAMP_MINFILTER, D3DSAMP_MAGFILTER, D3DSAMP_MIPFILTER,
-                                                        D3DSAMP_ADDRESSU,  D3DSAMP_ADDRESSV,  D3DSAMP_SRGBTEXTURE};
+                                                         D3DSAMP_ADDRESSU,  D3DSAMP_ADDRESSV,  D3DSAMP_SRGBTEXTURE};
 struct Lent
 {
     bool lent = false;
@@ -122,8 +122,8 @@ IDirect3DTexture9 *MakePacked(IDirect3DDevice9 *device, std::span<const std::byt
         return nullptr;
     }
     IDirect3DTexture9 *texture = nullptr;
-    if (FAILED(device->CreateTexture(about.width, about.height, 1, 0, dxt1 ? D3DFMT_DXT1 : D3DFMT_DXT5,
-                                     D3DPOOL_MANAGED, &texture, nullptr)))
+    if (FAILED(device->CreateTexture(about.width, about.height, 1, 0, dxt1 ? D3DFMT_DXT1 : D3DFMT_DXT5, D3DPOOL_MANAGED,
+                                     &texture, nullptr)))
     {
         return nullptr;
     }
@@ -156,8 +156,9 @@ IDirect3DTexture9 *Make(IDirect3DDevice9 *device, const std::wstring &name)
         return MakePacked(device, bytes, *about);
     }
     const std::optional<dds::Image> image =
-        raw.empty() ? std::nullopt
-                    : dds::Decode(std::span<const std::byte>(reinterpret_cast<const std::byte *>(raw.data()), raw.size()));
+        raw.empty()
+            ? std::nullopt
+            : dds::Decode(std::span<const std::byte>(reinterpret_cast<const std::byte *>(raw.data()), raw.size()));
     if (!image || image->width == 0 || image->height == 0)
     {
         spdlog::warn("night lightmaps: {} could not be read", std::filesystem::path(name).string());
@@ -370,7 +371,6 @@ void Drawing(IDirect3DDevice9 *device, bool picture)
     }
     device->SetPixelShaderConstantF(kRelitNightRegister, relit.data(), 1);
 }
-
 
 void Drawn(IDirect3DDevice9 *device)
 {

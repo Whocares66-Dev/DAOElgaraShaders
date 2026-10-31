@@ -62,7 +62,7 @@ foreach ($product in $products) {
 # tuning; the frame and GPU timers' gpu-timing, level-shaders and shadow-cost; the shadow
 # maps' dump's), the build's bookkeeping, and a debug link's leavings.
 $notGiven = 'graphics.chosen', 'outdoors.tune', 'gpu-timing', 'level-shaders', 'shadow-cost', 'dump-shadow-maps',
-    'materials.made'
+'materials.made'
 $notGivenKinds = '.ilk', '.exp', '.lib', '.log'
 
 # The override folder: the game's shaders as build_shaders.py rebuilt them, and the
@@ -164,6 +164,6 @@ if (Test-Path $zip) { Remove-Item -Force $zip }
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip
 Remove-Item -Recurse -Force $stage
 $folders = ($given | Where-Object { $_.Contains('\') } | ForEach-Object { $_.Split('\')[0] } | Group-Object |
-    ForEach-Object { "$($_.Name)\ $($_.Count)" }) -join ', '
+        ForEach-Object { "$($_.Name)\ $($_.Count)" }) -join ', '
 Show-Info "built on $builtOn, plugin API $pluginApi; $($given.Count) files ($($shaders.Count) shaders, $($maps.Count) metal maps); $folders"
 Show-Ok "package -> $zip"

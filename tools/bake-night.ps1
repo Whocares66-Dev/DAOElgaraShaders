@@ -31,6 +31,7 @@ param(
     [switch] $Fresh
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'console.ps1')
 $repo = Split-Path -Parent $PSScriptRoot
 $recipe = Join-Path $repo 'data\relight_night.ini'
 $relight = Join-Path $repo 'build\bake64\elgarashaders_relight.exe'
@@ -39,7 +40,7 @@ $out = Join-Path $repo "build\$Preset\daolib\plugins\elgarashaders\night"
 $work = Join-Path $repo "build\$Preset\night-bake"
 
 if (-not (Test-Path $relight)) {
-    Write-Host "bake-night: no $relight (tools\build-bake.ps1 makes it); no night lightmaps baked" -ForegroundColor Yellow
+    Show-Line "bake-night: no $relight (tools\build-bake.ps1 makes it); no night lightmaps baked" -Colour Yellow
     return
 }
 if (-not (Test-Path $pack)) { throw "bake-night: no $pack; build the preset first" }
@@ -52,10 +53,10 @@ $interiors = Get-ChildItem (Join-Path $repo 'data\areas') -Filter '*.ini' | ForE
     if ($text -match '^\s*outside\s*=') {
         ($text | Select-String -Pattern '^\s*level\s*=\s*(\w+)').Matches | Select-Object -First 1 |
             ForEach-Object { $_.Groups[1].Value }
+        }
     }
-}
-$sections = Select-String -Path $recipe -Pattern '^\[(\w+)\]\s*$' |
-    ForEach-Object { $_.Matches[0].Groups[1].Value } | Where-Object { $_ -ne 'default' }
+    $sections = Select-String -Path $recipe -Pattern '^\[(\w+)\]\s*$' |
+        ForEach-Object { $_.Matches[0].Groups[1].Value } | Where-Object { $_ -ne 'default' }
 $levels = @($interiors) + @($sections) | Where-Object { $_ } | Sort-Object -Unique
 $inputs = @($recipe, $relight, $pack) | ForEach-Object { (Get-Item $_).LastWriteTimeUtc }
 $newest = ($inputs | Measure-Object -Maximum).Maximum
@@ -83,6 +84,6 @@ foreach ($level in $levels) {
     }
     Copy-Item (Join-Path $raw "$level.elgp") $probes
     $made = Get-ChildItem $out -Filter "$($level)*" | Measure-Object -Property Length -Sum
-    Write-Host ("bake-night: {0}, {1} files, {2:N1} MB, {3:N0} s" -f $level, $made.Count, ($made.Sum / 1MB),
+    Show-Line ("bake-night: {0}, {1} files, {2:N1} MB, {3:N0} s" -f $level, $made.Count, ($made.Sum / 1MB),
         ((Get-Date) - $started).TotalSeconds)
 }

@@ -56,8 +56,8 @@ namespace
 // handed: the probe's three matrices (g_mLightParams), which DAOLib hands a
 // callback as it fills (dao::lights::OnProbe, DAOLib #225), copied afresh from
 // the probe each fill while one is added. The mix is written over them there.
-constexpr std::size_t kLightsProbes = 0x3C;    // the manager's list of light probes
-constexpr std::size_t kStateProbes = 0x20;     // in a light state: the group of probes chosen
+constexpr std::size_t kLightsProbes = 0x3C; // the manager's list of light probes
+constexpr std::size_t kStateProbes = 0x20;  // in a light state: the group of probes chosen
 // In a light manager: the scene it is of (+8; its base's constructor, 0x0046C4F0).
 constexpr std::size_t kManagerScene = 0x8;
 constexpr std::size_t kProbeBlueprint = 0x174; // in a probe's node
@@ -410,11 +410,15 @@ void OnProbe(dao::lights::ProbeLight &probe)
     // An interior's lamps by night, by the same share as its surfaces take
     // theirs (relit_night.hlsl), on a level's probe alone.
     const std::array<float, 4> relit = daynight::RelitNight();
-    if (ours && found != g_blends.end() && found->second.night && relit[0] > 0)
+    if (!ours || found == g_blends.end() || relit[0] <= 0)
+    {
+        return;
+    }
+    if (const std::optional<Irradiance> &lamps = found->second.night; lamps.has_value())
     {
         for (std::size_t at = 0; at < probe.irradiance.size(); ++at)
         {
-            probe.irradiance[at] += found->second.night->at(at) * relit[0] * relit[1];
+            probe.irradiance[at] += lamps->at(at) * relit[0] * relit[1];
         }
     }
 }

@@ -83,7 +83,7 @@ float __fastcall Distance(void *manager, int edx, void *object, int anyArea)
 // holds that is not what was last written is the game's own anew.
 struct Scaled
 {
-    dao::AddressId id;
+    dao::AddressId id{};
     float own = 0.0F;
     float written = 0.0F;
     bool read = false;
@@ -172,7 +172,8 @@ void Keep()
         // made again by the detail setting as it changes the factor.
         if (void *app = dao::CClientExoApp::Get(); app != nullptr)
         {
-            if (const std::uintptr_t remake = dao::Module::Address(dao::addr::kCClientExoApp_RemakeTreeBounds); remake != 0)
+            if (const std::uintptr_t remake = dao::Module::Address(dao::addr::kCClientExoApp_RemakeTreeBounds);
+                remake != 0)
             {
                 reinterpret_cast<RemakeTreeBoundsFn>(remake)(app, 0);
             }

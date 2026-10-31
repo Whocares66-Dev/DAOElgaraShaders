@@ -138,16 +138,45 @@ def dds_of(pixels, width, height):
         h, w = max(level.shape[0] // 2, 1), max(level.shape[1] // 2, 1)
         tall = level.shape[0] >= 2
         wide = level.shape[1] >= 2
-        level = level.reshape(h, 2 if tall else 1, w, 2 if wide else 1, 4).mean(axis=(1, 3))
+        level = level.reshape(h, 2 if tall else 1, w, 2 if wide else 1, 4).mean(
+            axis=(1, 3)
+        )
         levels.append(level)
     header = bytearray(128)
     header[0:4] = b"DDS "
-    struct.pack_into("<7I", header, 4, 124, 0x1 | 0x2 | 0x4 | 0x8 | 0x1000 | 0x20000, height, width, width * 4, 0, len(levels))
-    struct.pack_into("<8I", header, 76, 32, 0x41, 0, 32, 0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000)
+    struct.pack_into(
+        "<7I",
+        header,
+        4,
+        124,
+        0x1 | 0x2 | 0x4 | 0x8 | 0x1000 | 0x20000,
+        height,
+        width,
+        width * 4,
+        0,
+        len(levels),
+    )
+    struct.pack_into(
+        "<8I",
+        header,
+        76,
+        32,
+        0x41,
+        0,
+        32,
+        0x00FF0000,
+        0x0000FF00,
+        0x000000FF,
+        0xFF000000,
+    )
     struct.pack_into("<I", header, 108, 0x1000 | 0x8 | 0x400000)
     body = bytearray(header)
     for level in levels:
-        body += np.clip(level[..., [2, 1, 0, 3]] * 255.0 + 0.5, 0, 255).astype(np.uint8).tobytes()
+        body += (
+            np.clip(level[..., [2, 1, 0, 3]] * 255.0 + 0.5, 0, 255)
+            .astype(np.uint8)
+            .tobytes()
+        )
     return bytes(body)
 
 
@@ -155,7 +184,10 @@ def tint_texture(body, colour):
     import numpy as np
     from PIL import Image
 
-    picture = np.asarray(Image.open(io.BytesIO(body)).convert("RGBA")).astype(np.float64) / 255.0
+    picture = (
+        np.asarray(Image.open(io.BytesIO(body)).convert("RGBA")).astype(np.float64)
+        / 255.0
+    )
     bright = picture[..., :3] @ np.array([0.2126, 0.7152, 0.0722])
     tinted = np.empty_like(picture)
     for channel in range(3):
@@ -176,7 +208,14 @@ def main(argv):
         if kind == "param" and len(parts) == 2:
             params[parts[0]] = colour_of(parts[1])
         elif kind == "model" and len(parts) == 4:
-            models.append((parts[0].lower(), parts[1].lower(), parts[2].lower(), colour_of(parts[3])))
+            models.append(
+                (
+                    parts[0].lower(),
+                    parts[1].lower(),
+                    parts[2].lower(),
+                    colour_of(parts[3]),
+                )
+            )
         elif kind == "texture" and len(parts) == 2:
             textures.append((parts[0].lower(), colour_of(parts[1])))
         else:
@@ -187,7 +226,9 @@ def main(argv):
 
     # The copies of models, and the rooms that place them and have the named colours.
     if models:
-        hierarchies = script_commands.erf_entries(os.path.join(data, "modelhierarchies.erf"))
+        hierarchies = script_commands.erf_entries(
+            os.path.join(data, "modelhierarchies.erf")
+        )
     for old, new, material, colour in models:
         body = hierarchies.get(old + ".mmh")
         if body is None:
@@ -202,9 +243,13 @@ def main(argv):
                 tinted += 1
         with open(os.path.join(out, new + ".mmh"), "wb") as f:
             f.write(bytes(copy))
-        print(f"tint: {new}.mmh: a copy of {old} ({named} name), {tinted} emitters of {material} tinted")
+        print(
+            f"tint: {new}.mmh: a copy of {old} ({named} name), {tinted} emitters of {material} tinted"
+        )
     if params or models:
-        rooms = script_commands.erf_entries(os.path.join(game, "packages", "core", "env", level, level + ".rim"))
+        rooms = script_commands.erf_entries(
+            os.path.join(game, "packages", "core", "env", level, level + ".rim")
+        )
         colours = placed = 0
         for name, body in sorted(rooms.items()):
             if not name.endswith(".rml"):
@@ -218,12 +263,19 @@ def main(argv):
                 with open(os.path.join(out, name), "wb") as f:
                     f.write(tinted)
             colours += changed
-        print(f"tint: {level}: {colours - placed} colours of its models set, {placed} names of models changed")
+        print(
+            f"tint: {level}: {colours - placed} colours of its models set, {placed} names of models changed"
+        )
 
     for name, colour in textures:
         found = None
-        for archive in (("data", "textures.erf"), ("textures", "high", "texturepack.erf")):
-            entries = script_commands.erf_entries(os.path.join(game, "packages", "core", *archive))
+        for archive in (
+            ("data", "textures.erf"),
+            ("textures", "high", "texturepack.erf"),
+        ):
+            entries = script_commands.erf_entries(
+                os.path.join(game, "packages", "core", *archive)
+            )
             if name + ".dds" in entries:
                 found = entries[name + ".dds"]
                 break

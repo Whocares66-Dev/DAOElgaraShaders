@@ -49,11 +49,11 @@
 #include "MaterialLearn.h"
 #include "MaterialPatch.h"
 #include "NightCubes.h"
+#include "NightLightmaps.h"
 #include "Outdoors.h"
 #include "Probes.h"
 #include "ResourceDump.h"
 #include "ShaderCode.h"
-#include "NightLightmaps.h"
 #include "SkyBodies.h"
 
 #include "dao/Addresses.h"
@@ -208,7 +208,7 @@ constexpr UINT kDiscRegister = 214;
 constexpr UINT kNightSkyRegister = 215;   // night_sky.hlsl's daoNightSky
 constexpr UINT kBakeHueRegister = 155;    // night_sky.hlsl's daoBakeHue
 constexpr UINT kBakeWindowRegister = 156; // night_sky.hlsl's daoBakeWindow
-constexpr UINT kGlassRegister = 158;       // glass.hlsl's daoGlass
+constexpr UINT kGlassRegister = 158;      // glass.hlsl's daoGlass
 // Water's light (water_light.hlsl's daoWaterLight), under the effects' lights':
 // the game's pixel shaders reach c55 at the most (their listings, 2026-10-22).
 constexpr UINT kWaterLightRegister = 159;
