@@ -1,8 +1,11 @@
 #include "DayNight.h"
 
+#include "NightLightmaps.h"
+
 #include "dao/Lights.h"
 #include "dao/Module.h"
 #include "dao/Resources.h"
+#include "dao/core/Dds.h"
 #include "dao/core/Erf.h"
 #include "dao/core/Gff4.h"
 #include "dao/generated/ScriptApi.h"
@@ -20,6 +23,7 @@
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -87,6 +91,30 @@ struct LevelLight
     std::array<float, 3> skyLight{};
 };
 
+// What an interior's file says of its own light (data/areas/README.md).
+struct IndoorLight
+{
+    float fill = 1;                    // how much of its makers' unmotivated light is kept (`fill`)
+    float window = 0;                  // the windows' light a square metre, a share of the outdoor light (`window`)
+    float windowReach = 0;             // metres (`window_reach`)
+    std::vector<std::wstring> windows; // the materials of its windows' models (`windows`)
+    std::vector<std::wstring> glass;   // the materials of its panes that glow by daylight (`glass`)
+    std::vector<std::wstring> beams;   // the starts of its beams' models' names (`beams`)
+    // Which its makers lit it as (`baked = day`, else a night), and, for a
+    // night's bake, the level whose rooms' fill is its day's colour (`day`)
+    // and that colour (ReadIndoorColours).
+    bool ownIsNight = true;
+    std::wstring other;
+    std::optional<std::array<float, 3>> dayFill;
+    std::array<float, 3> bakeHue{1, 1, 1}; // its bake's mean colour at a luminance of 1 (ReadIndoorColours)
+    float bakeLuminance = 0;               // its bake's mean luminance (ReadIndoorColours)
+    // For a day's bake, the level its makers lit the same rooms by night
+    // (`night`), and its bake's mean colour (ReadIndoorColours): its night's
+    // colour and brightness.
+    std::wstring night;
+    std::optional<std::array<float, 3>> nightBake;
+};
+
 struct Pair
 {
     LevelLight day;
@@ -112,6 +140,10 @@ struct Pair
     bool heldOwn = false;          // held at the level's own hour (its file's `hour = own`)
     float ownHour = 0;             // the hour the level's own sun stands where it is
     std::vector<std::pair<std::wstring, std::int32_t>> heldUntil; // plots' flags any of which lets the clock run
+    // An interior (its file's `outside`): the fields above are the outside
+    // area's, whose clock and sky its windows see; its own light is its
+    // level's, the makers', by the hour (IndoorsAt).
+    std::optional<IndoorLight> indoors;
 };
 
 std::wstring Lower(std::wstring text)
@@ -408,6 +440,8 @@ struct Cycled
     std::optional<float> heldHour; // the hour its light is held at (its file's `hour`), none for the clock's
     bool heldOwn = false;          // held at the level's own hour (its file's `hour = own`)
     std::vector<std::pair<std::wstring, std::int32_t>> heldUntil; // plots' flags any of which lets the clock run
+    std::wstring outside;               // an interior's: the area whose clock and sky its windows see
+    std::optional<IndoorLight> indoors; // an interior's own light
 };
 // The sun's and the moon's radius as seen, radians: a body is gone when its
 // disc is.
@@ -451,6 +485,12 @@ float WaterMoonlit(const Pair &pair)
 float NightColour()
 {
     return std::clamp(g_tryColour.value_or(kNightColour), 0.0F, 1.0F);
+}
+
+// A colour's luminance.
+float Luminance(const std::array<float, 3> &colour)
+{
+    return (0.2126F * colour[0]) + (0.7152F * colour[1]) + (0.0722F * colour[2]);
 }
 
 // A colour with `kept` of its saturation: 0 its grey of the same luminance.
@@ -798,6 +838,7 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
         light.sunOverDay.at(i) = sunLights != pair.ownIsNight ? through : 0;
         const float skyLight = std::lerp(nightSkyLight.at(i), pair.day.skyLight.at(i), day);
         light.baked.at(i) = ownSkyLight.at(i) > 0 ? skyLight / ownSkyLight.at(i) : 1;
+        light.outdoor.at(i) = light.sun.color.at(i) + skyLight;
         light.even.at(i) = pair.ownIsNight ? skyLight : nightSkyLight.at(i);
     }
     // The bake gives way to the sky's even light by night (night_sky.hlsl),
@@ -819,6 +860,185 @@ Light LightAt(const Pair &pair, const dao::core::Sky &own, float hour, float nig
     light.sky.moonAlpha = sunLights ? daySky.moonAlpha * SmoothStep(kOver, -kOver, sunHeight) : nightSky.moonAlpha * up;
     WaterAndSpray(light, pair, daySky, nightSky, day, sunLights);
     LightAir(light, pair, daySky, nightSky, day, sunLights);
+    return light;
+}
+
+// outdoors.tune's Fill, Window and WindowReach (TryIndoors). The game thread's.
+std::optional<float> g_tryFill;
+std::optional<float> g_tryWindow;
+std::optional<float> g_tryReach;
+std::optional<float> g_tryRelit;
+
+// An interior's light by the hour (its file's `outside`): its level is lit
+// by its makers as a night (the Broken Circle's tower floors) or as a day (the
+// mage origin's and Witch Hunt's tower, lak303d), and every light of theirs,
+// its bake and ambient colour, its probes, its layouts' lamps that are not a
+// fitting's, its figures' fills and key light and its fog, is whole by day in
+// the daylight's colour and kept to `fill` of it by night in the night's,
+// going between them as the light out of doors does; the candles and lamps
+// light the night. The colour at the makers' own end is their bake's as made,
+// at the other a night's bake's day level's fill colour (its file's `day`) or
+// a day's bake's night the light out of doors at midnight. Where a window
+// sees the bake (DaoWindowSeen), its daylight goes by the light out of doors
+// of the hour (BakeWindow). The sun's or the moon's colour comes in by the
+// windows alone (WindowLight), and the beams of light its makers placed (effects.ini's
+// `lit`) are the windows' and go by the light out of doors against their
+// makers' hour's. `fill` was first the share kept at every hour, the makers'
+// own as bright as made and the other end by the light out of doors against
+// theirs: Witch Hunt's library was half its vanilla brightness at noon and
+// blue (the user, 2026-10-25: "Should be darker at night. Shouldn't be blue
+// during the day"). Taken in the sun's colour, each channel by the light out
+// of doors at noon over midnight's (2.28, 1.63, 0.74), the Broken Circle's
+// violet bake (lak503d's lightmaps' mean 0.096, 0.105, 0.182) went a
+// red-brown at noon, read as firelight, not daylight.
+// How bright an interior its makers lit by day is at night against its day:
+// its rooms' night bake's (`night`) against its own where it names one, the
+// light out of doors at midnight against the day's where not; 1 for a bake
+// of the night.
+float NightBright(const IndoorLight &indoors, const Light &atNight, const Light &atDay)
+{
+    if (indoors.ownIsNight)
+    {
+        return 1.0F;
+    }
+    if (indoors.nightBake && indoors.bakeLuminance > 0)
+    {
+        return Luminance(*indoors.nightBake) / indoors.bakeLuminance;
+    }
+    const float dayOut = Luminance(atDay.outdoor);
+    return dayOut > 0 ? Luminance(atNight.outdoor) / dayOut : 1.0F;
+}
+
+Light IndoorsAt(const Pair &pair, const IndoorLight &indoors, const dao::core::Sunlight &ownSun,
+                const dao::core::Sky &ownSky, float hour, float night, float nightFill, float haze)
+{
+    const float fill = std::max(g_tryFill.value_or(indoors.fill), 0.0F);
+    const Light out = LightAt(pair, ownSky, hour, night, nightFill, haze);
+    // The light out of doors at midnight and at the day level's own hour.
+    const Light atNight = LightAt(pair, ownSky, 0, night, nightFill, haze);
+    const Light atDay = LightAt(pair, ownSky, pair.ownHour, night, nightFill, haze);
+    // How far the hour is from night to day, as the sky and the bake out of
+    // doors go (LightAt's: from the sun 12 degrees under to 6 up). By the
+    // light out of doors' brightness between midnight's and the day's it was
+    // night by 19:30, the sun 10 degrees up: the game's night is lit for play,
+    // 0.48 of white to the day's 0.78, and 19:30's 0.50 was 7 in 100 of the
+    // way (Witch Hunt's library blue, 29.9, 21.4, 43.3 of 255; 2026-10-25).
+    const float day = 1 - out.nightShare;
+    // How bright the makers' light is by day: as the daylight on open ground
+    // is against noon's, the sun's by the sine of its height and the day
+    // sky's share. Out of doors the sun's light varies hour by hour by the
+    // way it meets the ground, which the shaders take; indoors nothing of the
+    // sun meets it, and by `day` alone, whole from the sun 6 degrees up, a
+    // room was as bright at 19:30 as at noon and went to night within the
+    // hour (the user, 2026-10-29: "Most of the day is equally bright, the
+    // night is equally dark. Outdoors with the Sun it varies more from hour
+    // to hour"). The colour still goes by `day`, as the sky's does.
+    const auto daylight = [&](const Light &at) {
+        const float sunUp = at.moon ? 0 : std::max(-at.sun.direction[2], 0.0F);
+        return (Luminance({at.sun.color[0], at.sun.color[1], at.sun.color[2]}) * sunUp) +
+               ((1 - at.nightShare) * Luminance(pair.day.skyLight));
+    };
+    const float atNoon = daylight(LightAt(pair, ownSky, pair.noon, night, nightFill, haze));
+    const float bright = atNoon > 0 ? std::clamp(daylight(out) / atNoon, 0.0F, 1.0F) : day;
+    // The other end's colour: a night's bake's day takes its day level's
+    // fill (lak303d's gray), a day's bake's night the light out of doors at
+    // midnight, the moon's and the night sky's, paled again as the night's
+    // fog is (NightColour): taken as it is, the moon's 1 : 1.25 : 1.85, Witch
+    // Hunt's library at midnight was 27.3, 16.8, 36.9 of 255, and 29.8, 16.7,
+    // 29.8 paled (2026-10-25). In the
+    // Broken Circle's own deep blue fill (lak503d's rooms', 0.015, 0.045,
+    // 0.095), paled as the night's, Witch Hunt's library at midnight was
+    // blue-violet (27.1, 19.1, 41.9 of 255, 2026-10-25).
+    // A day's bake with its rooms' night bake named (`night`) takes that
+    // bake's colour by night, and its brightness against its own: the makers'
+    // night. Witch Hunt's tower, a day's bake, in the light out of doors at
+    // midnight paled, was brighter and less blue than the Broken Circle's
+    // night floors (the user, 2026-10-30: "The witch one version doesn't
+    // really look blue at night compared to the vanilla game. It also looks a
+    // lot brighter").
+    // Paled as the night's fog is: in the night bake's own mean colour, laid
+    // on every texel alike, Witch Hunt's hall was a deep, saturated blue where
+    // the Broken Circle's own night, its texels each their own, is not (the
+    // user, 2026-10-30: "wh night is really blue ... prefer bc's not too
+    // saturated blue").
+    const std::optional<std::array<float, 3>> otherColour =
+        indoors.ownIsNight ? indoors.dayFill
+                           : std::optional(Paler(indoors.nightBake.value_or(atNight.outdoor), NightColour()));
+    // Without a night bake of the makers' to borrow, the light out of doors
+    // at midnight against the day's: the light the windows let in falls as
+    // it does. Kept at half its day at midnight, Redcliffe's chantry was
+    // twice as bright as Witch Hunt's tower by the makers' night (0.42, 0.51,
+    // 0.71 of its day against 0.21, 0.28, 0.50; the user, 2026-10-30: "things
+    // seem pretty bright"); the light out of doors falls to 0.56 of its day
+    // there, the makers' night in the tower to 0.54.
+    const float nightBright = NightBright(indoors, atNight, atDay);
+    Light light;
+    light.sun = ownSun;
+    light.sky = ownSky;
+    light.outdoor = out.outdoor;
+    const std::array<float *, 3> fog{&light.sky.fogRed, &light.sky.fogGreen, &light.sky.fogBlue};
+    // How far the hour is from the makers' own end to the other.
+    const float other = indoors.ownIsNight ? day : 1 - day;
+    light.bakeHue[3] = other;
+    light.relitNight = 1 - bright;
+    for (std::size_t i = 0; i < 3; ++i)
+    {
+        light.glass.at(i) = atDay.outdoor.at(i) > 0 ? out.outdoor.at(i) / atDay.outdoor.at(i) : 1.0F;
+    }
+    for (std::size_t i = 0; i < 3; ++i)
+    {
+        const float tint = otherColour && Luminance(*otherColour) > 0 && indoors.bakeHue.at(i) > 0
+                               ? (otherColour->at(i) / Luminance(*otherColour)) / indoors.bakeHue.at(i)
+                               : 1;
+        const float kept = std::lerp(fill, 1.0F, bright) * std::lerp(1.0F, tint * nightBright, other);
+        light.sun.characterColor.at(i) *= kept;
+        light.baked.at(i) = kept;
+        light.sunOverDay.at(i) = kept;
+        *fog.at(i) *= kept;
+        // Where a window sees the bake, its daylight goes by the light out of
+        // doors against the day's own, the sun's colour by dusk.
+        light.bakeWindow.at(i) =
+            std::lerp(1.0F, atDay.outdoor.at(i) > 0 ? out.outdoor.at(i) / atDay.outdoor.at(i) : 1.0F, day);
+        // A shaft of light its makers placed at a window (effects.ini's `lit`)
+        // is the light out of doors coming in: it goes by that light at the
+        // hour against its makers' hour's, a day's sunbeam a moonbeam by
+        // night, paled as the night's colours are. Faded out with the makers'
+        // hour, the chantries' shafts were gone at midnight (the user,
+        // 2026-10-30: "Light shafts seem to disappear at night for the
+        // chantry?").
+        const Light &atOwn = indoors.ownIsNight ? atNight : atDay;
+        light.lit.at(i) = atOwn.outdoor.at(i) > 0 ? out.outdoor.at(i) / atOwn.outdoor.at(i) : 1.0F;
+        light.bakeHue.at(i) = indoors.bakeHue.at(i);
+        // The windows' own light is kept by night as the makers' is: one eye
+        // for the room (the user, 2026-10-25, of Witch Hunt's dormitory: "The
+        // dorm looks very blue"). The Broken Circle's dormitory at midnight
+        // went from 48.6, 22.0, 34.2 of 255 to 37.4, 13.7, 23.1 (vanilla's 48.5,
+        // 21.9, 35.8). Most of that dormitory's blue was Finn's Cleansing Aura,
+        // which his tactics turn back on as the party walks (2026-10-25).
+        light.window.at(i) =
+            std::max(g_tryWindow.value_or(indoors.window), 0.0F) * out.outdoor.at(i) * std::lerp(fill, 1.0F, bright);
+    }
+    // The shafts and the panes in the moon's colour paled as the night's
+    // fog is (NightColour), whole by day.
+    light.lit = Paler(light.lit, std::lerp(1.0F, NightColour(), 1 - day));
+    // No shaft brighter than its makers made it: the Broken Circle's
+    // moonbeams by the noon light over midnight's were 2.28 times theirs.
+    if (const float most = Luminance(light.lit); most > 1)
+    {
+        light.lit = Scaled(light.lit, 1 / most);
+    }
+    light.glass = Paler(light.glass, std::lerp(1.0F, NightColour(), 1 - day));
+    // Said as the hour or the tuning moves it by more than a little.
+    static std::array<float, 3> said{};
+    if (std::abs(light.lit[0] - said[0]) + std::abs(light.lit[1] - said[1]) + std::abs(light.lit[2] - said[2]) > 0.05F)
+    {
+        said = light.lit;
+        spdlog::info(
+            "day and night: indoors at {:.2f}, the light out of doors {:.3f} {:.3f} {:.3f}, its makers' beams at "
+            "{:.2f}, the daylight {:.2f} of noon's; their light kept at {:.3f} {:.3f} {:.3f}",
+            hour, out.outdoor[0], out.outdoor[1], out.outdoor[2], light.lit[0], bright, light.baked[0], light.baked[1],
+            light.baked[2]);
+    }
     return light;
 }
 
@@ -848,6 +1068,9 @@ std::vector<Cycled> g_cycled;
 // The starts of the names of layouts' lights that are fires (data/areas'
 // defaults.ini's `fires`), set once in Install before any light is seen.
 std::vector<std::wstring> g_fireLights;
+// The starts of the names of layouts' lights that are lamps beside the fires
+// (defaults.ini's `lamps`), set as g_fireLights is.
+std::vector<std::wstring> g_lampLights;
 float g_fireStrength = 1; // defaults.ini's `fire_strength`, set once in Install
 std::map<std::wstring, std::shared_ptr<const Pair>> g_pairs;
 std::set<std::wstring> g_asked;
@@ -870,6 +1093,16 @@ std::atomic<bool> g_discIsMoon{false};
 std::vector<LampMove> g_lampMoves;  // the running area's, under g_lock
 std::atomic<bool> g_running{false}; // the clock runs in a level with a night
 std::array<std::atomic<float>, 3> g_layoutLightsBy{1.0F, 1.0F, 1.0F};
+// An interior's windows' light (WindowLight).
+std::array<std::atomic<float>, 3> g_window{0.0F, 0.0F, 0.0F};
+std::atomic<float> g_windowReach{0};
+// An interior's bake's own hue and how much each texel takes it (BakeHue),
+// and where a window sees it (BakeWindow).
+std::array<std::atomic<float>, 4> g_bakeHue{1.0F, 1.0F, 1.0F, 0.0F};
+std::array<std::atomic<float>, 3> g_bakeWindow{1.0F, 1.0F, 1.0F};
+std::atomic<float> g_relitNight{0};
+std::atomic<float> g_relitStrength{1};
+std::array<std::atomic<float>, 3> g_glass{1.0F, 1.0F, 1.0F};
 
 // The clock: the hour, and when it was last moved on.
 float g_hour = 12;
@@ -895,6 +1128,21 @@ void Stopped()
     g_nightShare.store(0, std::memory_order_relaxed);
     g_evenShare.store(0, std::memory_order_relaxed);
     g_running.store(false, std::memory_order_relaxed);
+    for (std::atomic<float> &value : g_window)
+    {
+        value.store(0, std::memory_order_relaxed);
+    }
+    g_windowReach.store(0, std::memory_order_relaxed);
+    g_bakeHue[3].store(0, std::memory_order_relaxed);
+    g_relitNight.store(0, std::memory_order_relaxed);
+    for (std::atomic<float> &value : g_glass)
+    {
+        value.store(1, std::memory_order_relaxed);
+    }
+    for (std::atomic<float> &value : g_bakeWindow)
+    {
+        value.store(1, std::memory_order_relaxed);
+    }
     const std::scoped_lock lock(g_lock);
     g_disc.reset();
     g_discIsMoon.store(false, std::memory_order_relaxed);
@@ -928,6 +1176,7 @@ struct Table
 {
     std::vector<Cycled> areas;
     std::vector<std::wstring> fires;
+    std::vector<std::wstring> lamps;
     float fireStrength = 1;
 };
 
@@ -969,31 +1218,118 @@ std::vector<LampMove> LampMovesOf(const Keys &keys)
     return moves;
 }
 
+// A key's value in an area's file, or defaults.ini's where it says none.
+std::optional<std::string> Said(const Keys &keys, const Keys &defaults, const std::string &key)
+{
+    if (const auto value = keys.find(key); value != keys.end())
+    {
+        return value->second;
+    }
+    if (const auto value = defaults.find(key); value != defaults.end())
+    {
+        return value->second;
+    }
+    return std::nullopt;
+}
+
+std::wstring Wide(const std::string &text)
+{
+    return Lower(std::wstring(text.begin(), text.end()));
+}
+
+// An area's `hour` and `hour_until`, its own file's alone. `hour`: the hour
+// the area's light is held at, the story's (Soldier's Peak's night before its
+// quest is done, the user, 2026-10-25: "before you beat the quest and claim
+// the keep for your own, it should be night. After that it can cycle
+// normally"); `hour = own`: the level's own hour, its makers' light
+// (Redcliffe's day before the night's siege). `hour_until`: `<plot> <flag>`,
+// several by commas, any of which, the party's, lets the clock run.
+void ReadHold(const Keys &keys, Cycled &area)
+{
+    const std::string hour = keys.contains("hour") ? keys.at("hour") : "";
+    area.heldOwn = hour == "own";
+    area.heldHour = area.heldOwn ? std::optional<float>(0.0F) : Number(hour);
+    if (keys.contains("hour_until"))
+    {
+        std::istringstream all(keys.at("hour_until"));
+        for (std::string one; std::getline(all, one, ',');)
+        {
+            std::istringstream until(one);
+            std::string plot;
+            std::int32_t flag = -1;
+            if (until >> plot >> flag && flag >= 0)
+            {
+                area.heldUntil.emplace_back(Wide(plot), flag);
+            }
+        }
+    }
+}
+
+// An interior's file (its `outside`): its level, the area whose clock and
+// sky its windows see, how much of its makers' light it keeps and how its
+// windows light it; none where it lacks one of them.
+std::optional<Cycled> IndoorsOf(const std::string &tag, const Keys &keys, const Keys &defaults)
+{
+    Cycled area;
+    area.area = Wide(tag);
+    area.own = Wide(Said(keys, defaults, "level").value_or(""));
+    area.outside = Wide(Said(keys, defaults, "outside").value_or(""));
+    IndoorLight indoors;
+    const std::optional<float> fill = Number(Said(keys, defaults, "fill").value_or(""));
+    const std::optional<float> window = Number(Said(keys, defaults, "window").value_or(""));
+    const std::optional<float> reach = Number(Said(keys, defaults, "window_reach").value_or(""));
+    const std::string day = Said(keys, defaults, "day").value_or("");
+    indoors.ownIsNight = keys.contains("baked") ? keys.at("baked") != "day" : true;
+    indoors.other = Wide(day);
+    indoors.night = Wide(Said(keys, defaults, "night").value_or(""));
+    std::istringstream beams(Said(keys, defaults, "beams").value_or(""));
+    for (std::string model; beams >> model;)
+    {
+        indoors.beams.push_back(Wide(model));
+    }
+    std::istringstream glass(Said(keys, defaults, "glass").value_or(""));
+    for (std::string material; glass >> material;)
+    {
+        indoors.glass.push_back(Wide(material));
+    }
+    std::istringstream windows(Said(keys, defaults, "windows").value_or(""));
+    for (std::string material; windows >> material;)
+    {
+        indoors.windows.push_back(Wide(material));
+    }
+    if (area.own.empty() || area.outside.empty() || !fill || !window || !reach || (!day.empty() && !indoors.ownIsNight))
+    {
+        spdlog::warn("day and night: areas/{}.ini, an interior, lacks its level, its outside, its fill or its windows' "
+                     "light or reach, or names a day for a day's bake",
+                     tag);
+        return std::nullopt;
+    }
+    indoors.fill = std::max(*fill, 0.0F);
+    indoors.window = std::max(*window, 0.0F);
+    indoors.windowReach = std::max(*reach, 0.0F);
+    area.indoors = std::move(indoors);
+    ReadHold(keys, area);
+    return area;
+}
+
 // One area's file, with defaults.ini's values where it says none; none
 // where it lacks what the clock needs.
 std::optional<Cycled> AreaOf(const std::string &tag, const Keys &keys, const Keys &defaults)
 {
-    const auto wide = [](const std::string &text) { return Lower(std::wstring(text.begin(), text.end())); };
-    const auto said = [&](const std::string &key) -> std::optional<std::string> {
-        if (const auto value = keys.find(key); value != keys.end())
-        {
-            return value->second;
-        }
-        if (const auto value = defaults.find(key); value != defaults.end())
-        {
-            return value->second;
-        }
-        return std::nullopt;
-    };
+    if (keys.contains("outside"))
+    {
+        return IndoorsOf(tag, keys, defaults);
+    }
+    const auto said = [&](const std::string &key) { return Said(keys, defaults, key); };
     Cycled area;
-    area.area = wide(tag);
-    area.own = wide(said("level").value_or(""));
+    area.area = Wide(tag);
+    area.own = Wide(said("level").value_or(""));
     // `night`: the night borrowed, the level the day; `day`: the day
     // borrowed, the level the night (the Circle's docks). Not both.
     const std::string borrowedNight = said("night").value_or("");
     const std::string borrowedDay = said("day").value_or("");
     area.ownIsNight = !borrowedDay.empty();
-    area.other = wide(area.ownIsNight ? borrowedDay : borrowedNight);
+    area.other = Wide(area.ownIsNight ? borrowedDay : borrowedNight);
     const std::optional<float> declination = Number(said("declination").value_or(""));
     const std::optional<float> noon = Number(said("noon").value_or(""));
     const std::optional<float> nightFill = Number(said("night_fill").value_or(""));
@@ -1019,36 +1355,12 @@ std::optional<Cycled> AreaOf(const std::string &tag, const Keys &keys, const Key
     const std::string moonHeight = said("moon_height").value_or("own");
     area.moonHeight = moonHeight == "own" ? std::nullopt : Number(moonHeight);
     area.moonTurn = Number(said("moon_turn").value_or("")).value_or(0);
-    // `hour`: the hour the area's light is held at, the story's (Soldier's
-    // Peak's night before its quest is done, the user, 2026-10-25: "before you
-    // beat the quest and claim the keep for your own, it should be night. After
-    // that it can cycle normally"); `hour_until`: a plot and its flag, the
-    // party's, after which the clock runs there.
-    // `hour = own`: the level's own hour, its makers' light (Redcliffe's day
-    // before the night's siege). `hour_until`: `<plot> <flag>`, several by
-    // commas, any of which lets the clock run.
-    const std::string hour = keys.contains("hour") ? keys.at("hour") : "";
-    area.heldOwn = hour == "own";
-    area.heldHour = area.heldOwn ? std::optional<float>(0.0F) : Number(hour);
-    if (keys.contains("hour_until"))
-    {
-        std::istringstream all(keys.at("hour_until"));
-        for (std::string one; std::getline(all, one, ',');)
-        {
-            std::istringstream until(one);
-            std::string plot;
-            std::int32_t flag = -1;
-            if (until >> plot >> flag && flag >= 0)
-            {
-                area.heldUntil.emplace_back(wide(plot), flag);
-            }
-        }
-    }
+    ReadHold(keys, area);
     const std::string latitude = said("latitude").value_or("");
     area.latitude = Number(latitude);
     if (!area.latitude)
     {
-        area.latitudeOf = wide(latitude);
+        area.latitudeOf = Wide(latitude);
     }
     return area;
 }
@@ -1121,7 +1433,6 @@ Table ReadTable(const std::filesystem::path &folder)
     {
         defaults = found->second;
     }
-    const auto wide = [](const std::string &text) { return Lower(std::wstring(text.begin(), text.end())); };
     Table table;
     if (const auto strength = defaults.find("fire_strength"); strength != defaults.end())
     {
@@ -1132,7 +1443,15 @@ Table ReadTable(const std::filesystem::path &folder)
         std::istringstream names(fires->second);
         for (std::string name; names >> name;)
         {
-            table.fires.push_back(wide(name));
+            table.fires.push_back(Wide(name));
+        }
+    }
+    if (const auto lamps = defaults.find("lamps"); lamps != defaults.end())
+    {
+        std::istringstream names(lamps->second);
+        for (std::string name; names >> name;)
+        {
+            table.lamps.push_back(Wide(name));
         }
     }
     for (const auto &[tag, keys] : sections)
@@ -1177,6 +1496,17 @@ bool FireLamp(std::wstring_view model, std::wstring_view name)
     return layout && std::ranges::any_of(g_fireLights, named);
 }
 
+bool Lamp(std::wstring_view model, std::wstring_view name)
+{
+    const auto lower = [](wchar_t c) { return std::towlower(c); };
+    const bool layout = model.size() >= 3 &&
+                        std::ranges::equal(model.substr(model.size() - 3), std::wstring_view(L"_ll"), {}, lower, lower);
+    const auto named = [&](std::wstring_view start) {
+        return name.size() >= start.size() && std::ranges::equal(name.substr(0, start.size()), start, {}, lower, lower);
+    };
+    return FireLamp(model, name) || (layout && std::ranges::any_of(g_lampLights, named));
+}
+
 Scattered Scattering(const dao::core::Sky &sky)
 {
     constexpr std::array<double, 3> kRayleigh{6.95e-6, 1.18e-5, 2.44e-5};                 // per metre
@@ -1195,6 +1525,212 @@ Scattered Scattering(const dao::core::Sky &sky)
     return scattered;
 }
 
+namespace
+{
+
+// The light of an area's day and night: `own` its level's, `other` the
+// level it borrows the other of them from (Cycled's).
+std::shared_ptr<Pair> MakePair(const Cycled &cycled, const LevelLight &own, const LevelLight &other)
+{
+    auto pair = std::make_shared<Pair>();
+    pair->ownIsNight = cycled.ownIsNight;
+    pair->day = cycled.ownIsNight ? other : own;
+    pair->night = cycled.ownIsNight ? own : other;
+    pair->area = cycled.area;
+    pair->declination = cycled.declination * kDegree;
+    pair->noon = cycled.noon;
+    pair->nightFill = cycled.nightFill;
+    pair->nightHaze = cycled.nightHaze;
+    pair->effectsMoonlit = cycled.effectsMoonlit;
+    pair->waterMoonlit = cycled.waterMoonlit;
+    pair->dayClouds = cycled.dayClouds;
+    pair->lampMoves = cycled.lampMoves;
+    pair->heldHour = cycled.heldHour;
+    pair->heldOwn = cycled.heldOwn;
+    pair->heldUntil = cycled.heldUntil;
+    pair->ownMoon = {-pair->night.sun.direction[0], -pair->night.sun.direction[1], -pair->night.sun.direction[2]};
+    pair->moonHeight = cycled.moonHeight;
+    pair->moonTurn = cycled.moonTurn;
+    pair->midnight = MidnightOf(pair->ownMoon, cycled.moonTurn, cycled.moonHeight);
+    LevelLight of;
+    // The day level's sun, the area's own or the borrowed day's.
+    const std::wstring &dayLevel = cycled.ownIsNight ? cycled.other : cycled.own;
+    const std::wstring &latitudeOf = cycled.latitudeOf.empty() ? dayLevel : cycled.latitudeOf;
+    const dao::core::Sunlight &by = latitudeOf == dayLevel || !ReadArl(latitudeOf, of) ? pair->day.sun : of.sun;
+    pair->latitude = cycled.latitude ? *cycled.latitude * kDegree
+                                     : (std::numbers::pi_v<float> / 2) -
+                                           Height({-by.direction[0], -by.direction[1], -by.direction[2]});
+    const Vec3 levelSun{-pair->day.sun.direction[0], -pair->day.sun.direction[1], -pair->day.sun.direction[2]};
+    pair->ownHour = pair->noon + (SunPathThrough(levelSun, pair->latitude, pair->declination).second / (15 * kDegree));
+    spdlog::info("day and night: {}'s level's sun is the season's at {:02d}:{:02d}, at {:.1f} degrees' latitude",
+                 std::filesystem::path(cycled.area).string(), static_cast<int>(pair->ownHour),
+                 static_cast<int>((pair->ownHour - std::floor(pair->ownHour)) * 60), pair->latitude / kDegree);
+    spdlog::info("day and night: {} by day and {} by night, their skies' light {:.3f} {:.3f} {:.3f} and {:.3f} "
+                 "{:.3f} {:.3f}",
+                 std::filesystem::path(cycled.ownIsNight ? cycled.other : cycled.own).string(),
+                 std::filesystem::path(cycled.ownIsNight ? cycled.own : cycled.other).string(), pair->day.skyLight[0],
+                 pair->day.skyLight[1], pair->day.skyLight[2], pair->night.skyLight[0], pair->night.skyLight[1],
+                 pair->night.skyLight[2]);
+    return pair;
+}
+
+// Each file of a level's folder's archives that `wanted` says, by its name in
+// lower case, handed to `take` until it answers true.
+void EachFile(const std::filesystem::path &folder, const std::function<bool(const std::wstring &)> &wanted,
+              const std::function<bool(const std::vector<std::byte> &)> &take)
+{
+    std::error_code error;
+    for (const std::filesystem::directory_entry &file : std::filesystem::directory_iterator(folder, error))
+    {
+        if (Lower(file.path().extension().wstring()) != L".rim")
+        {
+            continue;
+        }
+        const std::optional<dao::core::erf::Archive> archive = dao::core::erf::Archive::Open(file.path());
+        if (!archive || !archive->Readable())
+        {
+            continue;
+        }
+        for (const dao::core::erf::Entry &entry : archive->Entries())
+        {
+            if (!wanted(Lower(entry.name)))
+            {
+                continue;
+            }
+            if (const std::optional<std::vector<std::byte>> bytes = archive->Read(entry); bytes && take(*bytes))
+            {
+                return;
+            }
+        }
+    }
+}
+
+// The ambient light (a node `nalt`) of a level of rooms, its first room
+// layout's (<level>_<room>_ll.mmh, in its rooms' archives): the light its
+// makers filled its rooms with. The mage origin's tower, lit as a day
+// (lak303d), fills every room with 0.104, 0.112, 0.108, its GreyRT and GreyBK
+// lights alike gray (0.39, 0.42, 0.40); the Broken Circle's night floors with
+// 0.015, 0.045, 0.095 (read 2026-10-25).
+std::optional<std::array<float, 3>> RoomsAmbient(const std::filesystem::path &folder, const std::wstring &level)
+{
+    std::optional<std::array<float, 3>> ambient;
+    EachFile(
+        folder, [&](const std::wstring &name) { return name.starts_with(level + L"_") && name.ends_with(L"_ll.mmh"); },
+        [&](const std::vector<std::byte> &bytes) {
+            const std::optional<gff4::File> parsed = gff4::File::Parse(bytes);
+            if (const std::optional<gff4::Struct> root = parsed ? parsed->Root() : std::nullopt)
+            {
+                Under(*root, 0, ambient);
+            }
+            return ambient.has_value();
+        });
+    return ambient;
+}
+
+// The mean colour of a level's lightmaps (<level>_room*.dds, in its
+// archives) as stored, over the texels with any light, every fourth a side:
+// the colour of its makers' bake. lak503d's is 0.096, 0.105, 0.182 (measured
+// 2026-10-25), a violet.
+std::optional<std::array<float, 3>> BakeColour(const std::filesystem::path &folder, const std::wstring &level)
+{
+    std::array<double, 3> sum{};
+    std::size_t counted = 0;
+    EachFile(
+        folder, [&](const std::wstring &name) { return name.starts_with(level + L"_room") && name.ends_with(L".dds"); },
+        [&](const std::vector<std::byte> &bytes) {
+            const std::optional<dao::core::dds::Image> image = dao::core::dds::Decode(bytes);
+            constexpr std::size_t kEvery = 4;
+            for (std::size_t y = 0; image && y < image->height; y += kEvery)
+            {
+                for (std::size_t x = 0; x < image->width; x += kEvery)
+                {
+                    const std::uint8_t *pixel = &image->rgba[((y * image->width) + x) * 4];
+                    if (pixel[0] + pixel[1] + pixel[2] <= 3)
+                    {
+                        continue;
+                    }
+                    for (std::size_t c = 0; c < 3; ++c)
+                    {
+                        sum.at(c) += pixel[c] / 255.0;
+                    }
+                    ++counted;
+                }
+            }
+            return false;
+        });
+    if (counted == 0)
+    {
+        return std::nullopt;
+    }
+    const auto mean = [&](std::size_t c) { return static_cast<float>(sum.at(c) / static_cast<double>(counted)); };
+    return std::array<float, 3>{mean(0), mean(1), mean(2)};
+}
+
+// An interior's bake's own colour at a luminance of 1 (BakeColour), and, for
+// a night's bake, the colour its day's fill takes (its file's `day`, a level
+// its makers lit by day: that level's rooms' fill). Left as made where either
+// could not be read.
+void ReadIndoorColours(IndoorLight &indoors, const std::filesystem::path &folder, const std::wstring &own,
+                       const std::function<std::filesystem::path(const std::wstring &)> &folderOf)
+{
+    const std::optional<std::array<float, 3>> bake = BakeColour(folder, own);
+    if (!bake || Luminance(*bake) <= 0)
+    {
+        return;
+    }
+    for (std::size_t c = 0; c < 3; ++c)
+    {
+        indoors.bakeHue.at(c) = bake->at(c) / Luminance(*bake);
+    }
+    indoors.bakeLuminance = Luminance(*bake);
+    if (const std::optional<std::array<float, 3>> night =
+            indoors.night.empty() ? std::nullopt : BakeColour(folderOf(indoors.night), indoors.night);
+        night && Luminance(*night) > 0)
+    {
+        indoors.nightBake = *night;
+        spdlog::info("day and night: {}'s night as {}'s bake, {:.3f} {:.3f} {:.3f}",
+                     std::filesystem::path(own).string(), std::filesystem::path(indoors.night).string(), night->at(0),
+                     night->at(1), night->at(2));
+    }
+    const std::wstring &day = indoors.other;
+    if (const std::optional<std::array<float, 3>> fill = day.empty() ? std::nullopt : RoomsAmbient(folderOf(day), day);
+        fill && Luminance(*fill) > 0)
+    {
+        indoors.dayFill = *fill;
+    }
+    spdlog::info("day and night: {}'s bake {:.3f} {:.3f} {:.3f}{}", std::filesystem::path(own).string(), bake->at(0),
+                 bake->at(1), bake->at(2),
+                 indoors.dayFill ? ", its day's fill " + std::filesystem::path(day).string() + "'s" : std::string());
+}
+
+// The areas the clock runs in on a level, each out of doors, and each
+// interior with the area out of doors its windows look on. Under g_lock.
+void AreasOn(const std::wstring &level, std::vector<Cycled> &areas, std::vector<std::pair<Cycled, Cycled>> &interiors)
+{
+    for (const Cycled &cycled : g_cycled)
+    {
+        if (cycled.own != level)
+        {
+            continue;
+        }
+        if (!cycled.indoors)
+        {
+            areas.push_back(cycled);
+            continue;
+        }
+        const auto outside = std::ranges::find(g_cycled, cycled.outside, &Cycled::area);
+        if (outside == g_cycled.end() || outside->indoors)
+        {
+            spdlog::warn("day and night: {}'s outside, {}, has no file of an area out of doors",
+                         std::filesystem::path(cycled.area).string(), std::filesystem::path(cycled.outside).string());
+            continue;
+        }
+        interiors.emplace_back(cycled, *outside);
+    }
+}
+
+} // namespace
+
 void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &coreEnv)
 {
     const std::wstring level = Lower(levelRim.stem().wstring());
@@ -1202,7 +1738,8 @@ void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &
     // letter: d for the day's, n for the night's (lak100d and lak100n). The
     // clock runs in the areas data/areas names alone: a night level is the
     // story's night, and the other places are left until the story's times
-    // are known.
+    // are known. An interior is lit by the hour of the area its windows look
+    // out on, whose levels are read with its own.
     const std::scoped_lock lock(g_lock);
     if (!g_asked.insert(level).second ||
         std::ranges::none_of(g_cycled, [&](const Cycled &cycled) { return cycled.own == level; }))
@@ -1211,7 +1748,7 @@ void Opened(const std::filesystem::path &levelRim, const std::filesystem::path &
     }
     // Read at the next Now: the engine is opening an archive here, and its
     // files are read through it (ReadArl).
-    g_opened.push_back({levelRim, coreEnv});
+    g_opened.emplace_back(levelRim, coreEnv);
 }
 
 namespace
@@ -1223,10 +1760,11 @@ void ReadPairs(const std::filesystem::path &levelRim, const std::filesystem::pat
 {
     const std::wstring level = Lower(levelRim.stem().wstring());
     std::vector<Cycled> areas;
+    std::vector<std::pair<Cycled, Cycled>> interiors;
     {
         const std::scoped_lock lock(g_lock);
-        std::ranges::copy_if(g_cycled, std::back_inserter(areas),
-                             [&](const Cycled &cycled) { return cycled.own == level; });
+        g_asked.insert(level);
+        AreasOn(level, areas, interiors);
     }
     // A level's archive of rooms is in its folder in its own levels' folder:
     // an add-in's, a mod's (Dragon Age Evolved's in an override folder) or
@@ -1249,53 +1787,47 @@ void ReadPairs(const std::filesystem::path &levelRim, const std::filesystem::pat
                          std::filesystem::path(cycled.other).string());
             continue;
         }
-        auto pair = std::make_shared<Pair>();
-        pair->ownIsNight = cycled.ownIsNight;
-        pair->day = cycled.ownIsNight ? *other : *own;
-        pair->night = cycled.ownIsNight ? *own : *other;
-        pair->area = cycled.area;
-        pair->declination = cycled.declination * kDegree;
-        pair->noon = cycled.noon;
-        pair->nightFill = cycled.nightFill;
-        pair->nightHaze = cycled.nightHaze;
-        pair->effectsMoonlit = cycled.effectsMoonlit;
-        pair->waterMoonlit = cycled.waterMoonlit;
-        pair->dayClouds = cycled.dayClouds;
-        pair->lampMoves = cycled.lampMoves;
-        pair->heldHour = cycled.heldHour;
-        pair->heldOwn = cycled.heldOwn;
-        pair->heldUntil = cycled.heldUntil;
-        pair->ownMoon = {-pair->night.sun.direction[0], -pair->night.sun.direction[1], -pair->night.sun.direction[2]};
-        pair->moonHeight = cycled.moonHeight;
-        pair->moonTurn = cycled.moonTurn;
-        pair->midnight = MidnightOf(pair->ownMoon, cycled.moonTurn, cycled.moonHeight);
-        {
-            LevelLight of;
-            // The day level's sun, the area's own or the borrowed day's.
-            const std::wstring &dayLevel = cycled.ownIsNight ? cycled.other : level;
-            const std::wstring &latitudeOf = cycled.latitudeOf.empty() ? dayLevel : cycled.latitudeOf;
-            const dao::core::Sunlight &by =
-                latitudeOf == dayLevel || !ReadArl(latitudeOf, of) ? pair->day.sun : of.sun;
-            pair->latitude = cycled.latitude ? *cycled.latitude * kDegree
-                                             : (std::numbers::pi_v<float> / 2) -
-                                                   Height({-by.direction[0], -by.direction[1], -by.direction[2]});
-            const Vec3 levelSun{-pair->day.sun.direction[0], -pair->day.sun.direction[1], -pair->day.sun.direction[2]};
-            const float at =
-                pair->noon + (SunPathThrough(levelSun, pair->latitude, pair->declination).second / (15 * kDegree));
-            pair->ownHour = at;
-            spdlog::info("day and night: {}'s level's sun is the season's at {:02d}:{:02d}, at {:.1f} degrees' "
-                         "latitude",
-                         std::filesystem::path(cycled.area).string(), static_cast<int>(at),
-                         static_cast<int>((at - std::floor(at)) * 60), pair->latitude / kDegree);
-        }
-        spdlog::info("day and night: {} by day and {} by night, their skies' light {:.3f} {:.3f} {:.3f} and {:.3f} "
-                     "{:.3f} {:.3f}",
-                     std::filesystem::path(cycled.ownIsNight ? cycled.other : level).string(),
-                     std::filesystem::path(cycled.ownIsNight ? level : cycled.other).string(), pair->day.skyLight[0],
-                     pair->day.skyLight[1], pair->day.skyLight[2], pair->night.skyLight[0], pair->night.skyLight[1],
-                     pair->night.skyLight[2]);
+        std::shared_ptr<Pair> pair = MakePair(cycled, *own, *other);
         const std::scoped_lock lock(g_lock);
         g_pairs[cycled.area] = std::move(pair);
+    }
+    for (const auto &[inside, outside] : interiors)
+    {
+        const std::optional<LevelLight> outsideOwn = ReadLevel(rimOf(outside.own), outside.own);
+        const std::optional<LevelLight> outsideOther = ReadLevel(rimOf(outside.other), outside.other);
+        if (!outsideOwn || !outsideOther)
+        {
+            spdlog::warn("day and night: {} or {}, {}'s outside, could not be read",
+                         std::filesystem::path(outside.own).string(), std::filesystem::path(outside.other).string(),
+                         std::filesystem::path(inside.area).string());
+            continue;
+        }
+        // The outside's clock and sky, held as the interior's own file says.
+        std::shared_ptr<Pair> pair = MakePair(outside, *outsideOwn, *outsideOther);
+        pair->area = inside.area;
+        pair->heldHour = inside.heldHour;
+        pair->heldOwn = inside.heldOwn;
+        pair->heldUntil = inside.heldUntil;
+        pair->lampMoves = inside.lampMoves;
+        // Its night's lamps are the relighter's (NightLightmaps.h): without
+        // them it is left as its makers lit it.
+        if (!nightlightmaps::Has(level))
+        {
+            spdlog::info("day and night: {} has no night of the relighter's; left as its makers lit it",
+                         std::filesystem::path(inside.area).string());
+            continue;
+        }
+        pair->indoors = inside.indoors;
+        if (pair->indoors)
+        {
+            ReadIndoorColours(*pair->indoors, levelRim.parent_path(), level,
+                              [&](const std::wstring &name) { return rimOf(name).parent_path(); });
+        }
+        spdlog::info("day and night: {} indoors, its windows on {}'s sky, its makers' light kept at {:.2f}",
+                     std::filesystem::path(inside.area).string(), std::filesystem::path(outside.area).string(),
+                     inside.indoors.value_or(IndoorLight{}).fill);
+        const std::scoped_lock lock(g_lock);
+        g_pairs[inside.area] = std::move(pair);
     }
 }
 
@@ -1348,13 +1880,105 @@ bool Cycles(std::wstring_view area)
 {
     const std::wstring tag = Lower(std::wstring(area));
     const std::scoped_lock lock(g_lock);
-    return std::ranges::any_of(g_cycled, [&](const Cycled &cycled) { return Lower(cycled.area) == tag; });
+    return std::ranges::any_of(g_cycled,
+                               [&](const Cycled &cycled) { return !cycled.indoors && Lower(cycled.area) == tag; });
+}
+
+bool Indoors(std::wstring_view area)
+{
+    const std::wstring tag = Lower(std::wstring(area));
+    const std::scoped_lock lock(g_lock);
+    return std::ranges::any_of(g_cycled,
+                               [&](const Cycled &cycled) { return cycled.indoors && Lower(cycled.area) == tag; });
+}
+
+std::vector<std::wstring> WindowMaterials(std::wstring_view level)
+{
+    const std::wstring name = Lower(std::wstring(level));
+    const std::scoped_lock lock(g_lock);
+    std::vector<std::wstring> materials;
+    for (const Cycled &cycled : g_cycled)
+    {
+        if (cycled.indoors && cycled.own == name)
+        {
+            materials.insert(materials.end(), cycled.indoors->windows.begin(), cycled.indoors->windows.end());
+        }
+    }
+    return materials;
+}
+
+std::array<float, 3> BakeWindow()
+{
+    return {g_bakeWindow[0].load(std::memory_order_relaxed), g_bakeWindow[1].load(std::memory_order_relaxed),
+            g_bakeWindow[2].load(std::memory_order_relaxed)};
+}
+
+std::array<float, 3> Glass()
+{
+    return {g_glass[0].load(std::memory_order_relaxed), g_glass[1].load(std::memory_order_relaxed),
+            g_glass[2].load(std::memory_order_relaxed)};
+}
+
+bool IsGlassMaterial(std::wstring_view name)
+{
+    std::wstring stem = Lower(std::wstring(name));
+    if (stem.ends_with(L".mao"))
+    {
+        stem.resize(stem.size() - 4);
+    }
+    const std::scoped_lock lock(g_lock);
+    return std::ranges::any_of(g_cycled, [&](const Cycled &cycled) {
+        return cycled.indoors && std::ranges::find(cycled.indoors->glass, stem) != cycled.indoors->glass.end();
+    });
+}
+
+std::array<float, 4> RelitNight()
+{
+    return {g_relitNight.load(std::memory_order_relaxed), g_relitStrength.load(std::memory_order_relaxed), 0, 0};
+}
+
+std::array<float, 4> BakeHue()
+{
+    return {g_bakeHue[0].load(std::memory_order_relaxed), g_bakeHue[1].load(std::memory_order_relaxed),
+            g_bakeHue[2].load(std::memory_order_relaxed), g_bakeHue[3].load(std::memory_order_relaxed)};
+}
+
+std::vector<std::wstring> BeamModels(std::wstring_view level)
+{
+    const std::wstring name = Lower(std::wstring(level));
+    const std::scoped_lock lock(g_lock);
+    std::vector<std::wstring> starts;
+    for (const Cycled &cycled : g_cycled)
+    {
+        if (cycled.indoors && cycled.own == name)
+        {
+            starts.insert(starts.end(), cycled.indoors->beams.begin(), cycled.indoors->beams.end());
+        }
+    }
+    return starts;
+}
+
+Windows WindowLight()
+{
+    return {{g_window[0].load(std::memory_order_relaxed), g_window[1].load(std::memory_order_relaxed),
+             g_window[2].load(std::memory_order_relaxed)},
+            g_windowReach.load(std::memory_order_relaxed)};
+}
+
+void TryIndoors(std::optional<float> fill, std::optional<float> window, std::optional<float> reach,
+                std::optional<float> relit)
+{
+    g_tryFill = fill;
+    g_tryWindow = window;
+    g_tryReach = reach;
+    g_tryRelit = relit;
 }
 
 std::optional<Borrowed> BorrowedBy(std::wstring_view level)
 {
     const std::scoped_lock lock(g_lock);
-    const auto cycled = std::ranges::find(g_cycled, level, &Cycled::own);
+    const auto cycled =
+        std::ranges::find_if(g_cycled, [&](const Cycled &each) { return !each.indoors && each.own == level; });
     return cycled != g_cycled.end() ? std::optional<Borrowed>(Borrowed{cycled->other, cycled->ownIsNight})
                                     : std::nullopt;
 }
@@ -1447,7 +2071,9 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
         const std::scoped_lock lock(g_lock);
         for (const auto &[tag, each] : g_pairs)
         {
-            if (tag == Lower(std::wstring(area)) && Same(Own(*each).sun, ownSun))
+            // An interior is its own level's whatever its sun; an area out of
+            // doors is the one of its levels the area's sun says.
+            if (tag == Lower(std::wstring(area)) && (each->indoors || Same(Own(*each).sun, ownSun)))
             {
                 pair = each;
                 break;
@@ -1475,8 +2101,12 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
             MidnightOf(pair->ownMoon, g_tryTurn.value_or(pair->moonTurn), g_tryHeight ? g_tryHeight : pair->moonHeight);
         lit = &tried;
     }
-    const Light light = LightAt(*lit, ownSky, HeldHour(*pair).value_or(g_hour), night, fill.value_or(pair->nightFill),
-                                std::clamp(haze.value_or(pair->nightHaze), 0.0F, 1.0F));
+    const float hour = HeldHour(*pair).value_or(g_hour);
+    const float nightFill = fill.value_or(pair->nightFill);
+    const float nightHaze = std::clamp(haze.value_or(pair->nightHaze), 0.0F, 1.0F);
+    const Light light = pair->indoors
+                            ? IndoorsAt(*lit, *pair->indoors, ownSun, ownSky, hour, night, nightFill, nightHaze)
+                            : LightAt(*lit, ownSky, hour, night, nightFill, nightHaze);
     for (std::size_t i = 0; i < 3; ++i)
     {
         g_baked.at(i).store(light.baked.at(i), std::memory_order_relaxed);
@@ -1496,6 +2126,26 @@ std::optional<Light> Now(std::wstring_view area, const dao::core::Sunlight &ownS
         g_daySky.at(i).store(pair->day.skyLight.at(i), std::memory_order_relaxed);
     }
     g_evenShare.store(light.evenShare, std::memory_order_relaxed);
+    for (std::size_t i = 0; i < g_window.size(); ++i)
+    {
+        g_window.at(i).store(light.window.at(i), std::memory_order_relaxed);
+    }
+    for (std::size_t i = 0; i < g_bakeHue.size(); ++i)
+    {
+        g_bakeHue.at(i).store(light.bakeHue.at(i), std::memory_order_relaxed);
+    }
+    for (std::size_t i = 0; i < g_bakeWindow.size(); ++i)
+    {
+        g_bakeWindow.at(i).store(light.bakeWindow.at(i), std::memory_order_relaxed);
+    }
+    g_relitNight.store(light.relitNight, std::memory_order_relaxed);
+    for (std::size_t i = 0; i < g_glass.size(); ++i)
+    {
+        g_glass.at(i).store(light.glass.at(i), std::memory_order_relaxed);
+    }
+    g_relitStrength.store(std::max(g_tryRelit.value_or(1.0F), 0.0F), std::memory_order_relaxed);
+    g_windowReach.store(pair->indoors ? std::max(g_tryReach.value_or(pair->indoors->windowReach), 0.0F) : 0.0F,
+                        std::memory_order_relaxed);
     g_running.store(true, std::memory_order_relaxed);
     const std::scoped_lock lock(g_lock);
     g_disc = light.disc;
@@ -1539,6 +2189,7 @@ void Install()
         spdlog::info("day and night: {} areas and {} names of fires by the areas' files", table.areas.size(),
                      table.fires.size());
         g_fireLights = std::move(table.fires);
+        g_lampLights = std::move(table.lamps);
         g_fireStrength = table.fireStrength;
         const std::scoped_lock lock(g_lock);
         g_cycled = std::move(table.areas);
@@ -1584,7 +2235,16 @@ void Install()
             return model.size() >= end.size() &&
                    _wcsnicmp(model.data() + model.size() - end.size(), end.data(), end.size()) == 0;
         };
-        if (endsWith(L"_ll") && !FireLamp(model, light.name))
+        // A lamp of its makers' (Lamp: named as a flame) burns by night as by
+        // day: where it lights flames the plugin's night of them takes its
+        // place (EffectLights.cpp), and one at no flame is in no bake. Told by
+        // its name, not by its colour: by red over green over blue the
+        // chantries' sunlight (Window_01Baked, glass_bounce, Character_sun)
+        // went out with the lamps by night, and the portraits' rig
+        // (outside_day_rig) did, dark as they were drawn again (the user,
+        // 2026-10-30: "this should be solved correctly and automatically").
+        // Any other scene's light is left as made.
+        if (endsWith(L"_ll") && !Lamp(model, light.name))
         {
             for (std::size_t i = 0; i < 3; ++i)
             {

@@ -1452,6 +1452,11 @@ std::shared_ptr<const std::vector<float>> BakedLamps()
     return state.lamps;
 }
 
+std::optional<std::vector<Room>> ReadTable(std::span<const std::byte> file)
+{
+    return Read(file, kAnyStamp, std::nullopt);
+}
+
 std::shared_ptr<const Rooms> AllRooms()
 {
     State &state = TheState();

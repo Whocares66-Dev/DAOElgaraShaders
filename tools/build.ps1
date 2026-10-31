@@ -164,6 +164,10 @@ try {
     finally { $env:TEMP, $env:TMP = $userTemp }
     if ($LASTEXITCODE -ne 0) { throw "build failed ($LASTEXITCODE)" }
 
+    # The interiors' night lightmaps, from the installed game (toolsake-night.ps1).
+    Show-Line "`n== night lightmaps ($Preset) ==" -Colour Cyan
+    & (Join-Path $PSScriptRoot 'bake-night.ps1') -Preset $Preset
+
     if ($Test) {
         Show-Line "`n== test ($Preset) ==" -Colour Cyan
         ctest --preset $Preset --parallel $parallel

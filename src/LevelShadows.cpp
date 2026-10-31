@@ -2070,6 +2070,28 @@ static void MakePatches()
 // the last way's depth (2026-10-22). A surface outside a
 // map's depth is read from the next (shadow.hlsl), and one nearer the sun
 // than all of it, read as lit, was a bright patch on a hillside (2026-10-16).
+// A box's span in a map: x and y in the map's square, and the way along the
+// light, each its least and most over the box's eight corners.
+static std::array<float, 6> SpanIn(const std::array<float, 6> &b, const cascades::Matrix &clip,
+                                   const cascades::Vector &light)
+{
+    std::array<float, 6> span{1e30F, -1e30F, 1e30F, -1e30F, 1e30F, -1e30F};
+    for (int corner = 0; corner < 8; ++corner)
+    {
+        const cascades::Vector p{b[(corner & 1) != 0 ? 3 : 0], b[(corner & 2) != 0 ? 4 : 1],
+                                 b[(corner & 4) != 0 ? 5 : 2]};
+        const cascades::Vector at = cascades::Transformed(clip, p);
+        const float way = (light[0] * p[0]) + (light[1] * p[1]) + (light[2] * p[2]);
+        span[0] = std::min(span[0], at[0]);
+        span[1] = std::max(span[1], at[0]);
+        span[2] = std::min(span[2], at[1]);
+        span[3] = std::max(span[3], at[1]);
+        span[4] = std::min(span[4], way);
+        span[5] = std::max(span[5], way);
+    }
+    return span;
+}
+
 static std::optional<std::array<float, 2>> DepthAlong(std::size_t map, const cascades::Matrix &clip,
                                                       const cascades::Vector &light)
 {
@@ -2088,21 +2110,7 @@ static std::optional<std::array<float, 2>> DepthAlong(std::size_t map, const cas
         {
             continue;
         }
-        const std::array<float, 6> &b = *draw.bounds;
-        std::array<float, 6> span{1e30F, -1e30F, 1e30F, -1e30F, 1e30F, -1e30F}; // x, y in the map, way along the sun
-        for (int corner = 0; corner < 8; ++corner)
-        {
-            const cascades::Vector p{b[(corner & 1) != 0 ? 3 : 0], b[(corner & 2) != 0 ? 4 : 1],
-                                     b[(corner & 4) != 0 ? 5 : 2]};
-            const cascades::Vector at = cascades::Transformed(clip, p);
-            const float way = (light[0] * p[0]) + (light[1] * p[1]) + (light[2] * p[2]);
-            span[0] = std::min(span[0], at[0]);
-            span[1] = std::max(span[1], at[0]);
-            span[2] = std::min(span[2], at[1]);
-            span[3] = std::max(span[3], at[1]);
-            span[4] = std::min(span[4], way);
-            span[5] = std::max(span[5], way);
-        }
+        const std::array<float, 6> span = SpanIn(*draw.bounds, clip, light); // x, y in the map, way along the sun
         if (span[1] < -1 || span[0] > 1 || span[3] < -1 || span[2] > 1)
         {
             continue;

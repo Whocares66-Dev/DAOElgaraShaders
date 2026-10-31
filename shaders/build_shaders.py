@@ -591,6 +591,7 @@ MATERIAL_PARAMETERS = (
     '<Parameter Type = "Vector4f" Name = "mml_vDaoBumps" Default = "0 0 0 0"/>'
     '<Parameter Type = "Vector4f" Name = "mml_vDaoBumpsFar" Default = "0 0 0 0"/>'
     '<Parameter Type = "Vector4f" Name = "mml_vDaoClear" Default = "0 0 0 0"/>'
+    '<Parameter Type = "Float" Name = "mml_fDaoWindow" Default = "0.0"/>'
 )
 MATERIAL_SHADERS = (
     r"^(ch[12](?!\w*_vl)\w*|weapon1|cloth1|prop1(_punch)?|propalpha1|static1\w*)\.psh$"
@@ -1510,9 +1511,10 @@ def with_effect_lights(shader):
 
     lines = ["[loop] for (int daoI = 0; daoI < daoEffectCount.x; daoI++)", "{"]
     # The light's colour, less what stands between it and the point.
+    # and the way it is aimed (a window's; effect_lights.hlsl's DaoEffectAim).
     lines += [
         "    const float4 daoEffectColour = float4(daoEffectLights[2 * daoI + 1].rgb *"
-        f" DAO_EFFECT_SHADOW(daoI, {world}.xyz), daoEffectLights[2 * daoI + 1].a);"
+        f" DAO_EFFECT_SHADOW(daoI, {world}.xyz) * DaoEffectAim(daoI, {world}.xyz), 1);"
     ]
     lines += [f"    float4 dao_{name} = {name};" for name in sorted(written)]
     lines += [
@@ -2004,22 +2006,96 @@ def with_baked_billboard_light(shader, tint):
     shader.insert(-1, [f"{tint}.xyz *= DAO_BAKED_LIGHT;"])
 
 
-def with_baked_light(shader):
+def window_point(shader):
+    """The point a shader reckons its lights at (the world's place of the
+    surface, an input: `add <w>.xyz, c<light [9] or [0]>, -v<N>`), or None."""
+    lights = shader.parameters.get("g_vLightParams")
+    if lights is None:
+        return None
+    for place in (9, 0):
+        for st in shader.statements:
+            m = re.match(
+                rf"^add r\d+\.xyz, c{lights.base + place}, -(v\d+)$", st.asm.strip()
+            )
+            if m:
+                return m.group(1)
+    return None
+
+
+def with_baked_light(shader, windows=False):
     """The level's baked light by the hour, where the lightmap is read
     (night_sky.hlsl): the day's colour, times the hour's (look.hlsl's
     DAO_BAKED_LIGHT) as the sun goes, and toward the night sky's even light
-    by the night's share. Its alpha, which says where the sun reaches, is
-    kept. Run after with_shaped_bake, so that its line comes first after the
+    by the night's share; an interior's by day takes its bake's own mean hue
+    first (DaoBakeHued), which the hour's multiplier makes the daylight's.
+    Its alpha, which says where the sun reaches, is kept. Run after with_shaped_bake, so that its line comes first after the
     read and what the shaped bake keeps of the light (daoBaked) has it."""
     lightmap = shader.parameters["smpLightmap"]
     read = shader.find(rf"^texld\w* r\d+, .*, s{lightmap.base}$")
     register = re.match(r"texld\w* (r\d+),", shader.statements[read].asm).group(1)
+    world = window_point(shader) if windows else None
+    window = (
+        f" * lerp(1, daoBakeWindow.xyz, DaoWindowSeen({world}.xyz))" if world else ""
+    )
     shader.insert(
         read,
         [
-            f"{register}.xyz = lerp({register}.xyz * DAO_BAKED_LIGHT, daoNightSky.yzw, daoNightSky.x);"
+            f"{register}.xyz = lerp(DaoBakeHued({register}.xyz) * DAO_BAKED_LIGHT{window},"
+            " daoNightSky.yzw, daoNightSky.x);"
         ],
     )
+
+
+def with_relit_night(shader):
+    """An interior's night by its own lamps (relit_night.hlsl): beside the
+    makers' lightmap the relighter's of the same room, read at the same place
+    before the makers' read (whose result may take the register the place is
+    in), and the night lamps added by the night's share (DaoWithRelitNight) after the
+    hour's light has been put on the makers'. Run between with_shaped_bake and
+    with_baked_light: each puts its line straight after the read, so the
+    hour's light comes first, then this, then the relief."""
+    lightmap = shader.parameters["smpLightmap"]
+    read = shader.find(rf"^texld\w* r\d+, .*, s{lightmap.base}$")
+    found = re.match(r"texld\w* (r\d+), (\w+)", shader.statements[read].asm)
+    register, place = found.group(1), found.group(2)
+    shader.insert(
+        read,
+        [
+            f"{register}.xyz = DaoWithRelitNight({register}.xyz, daoMadeBake.xyz, daoNightStored.xyz);"
+        ],
+    )
+    shader.insert(
+        read - 1,
+        [
+            f"float4 daoNightStored = tex2D(smpDaoNightLightmap, {place}.xy);",
+            f"float4 daoMadeBake = tex2D(smpLightmap, {place}.xy);",
+        ],
+    )
+
+
+def relit_night_room(listing, preamble):
+    """Whether a level's shader has a sampler left for the night lightmap:
+    the game's own and those our changes add, sixteen at the most. Where none
+    is, the shader keeps the makers' bake at night (RELIT_NIGHT_NONE counts)."""
+    used = {int(n) for n in re.findall(r"^//\s+\w+\s+s(\d+)\s+\d+", listing, re.M)}
+    added = len(re.findall(r"^sampler2D \w+;$", preamble, re.M))
+    if len(used) + added >= 16:
+        RELIT_NIGHT_NONE.append(1)
+        return False
+    return True
+
+
+RELIT_NIGHT_NONE = []
+
+
+def with_window_glass(shader):
+    """A window's pane by the hour (glass.hlsl): what its emissive mask adds,
+    the daylight painted behind it, times the light out of doors at the hour
+    against the day's, on a material that says it is a window's."""
+    emissive = shader.parameters["smpEmissiveMask"]
+    read = shader.find(rf"^texld\w* r\d+, .*, s{emissive.base}$")
+    register = re.match(r"texld\w* (r\d+),", shader.statements[read].asm).group(1)
+    shader.insert(read, [f"{register}.xyz *= lerp(1, daoGlass.xyz, mml_fDaoWindow);"])
 
 
 # The water shaders, each with the input its light comes in by: the sky's sun
@@ -2773,11 +2849,24 @@ def changes_for(stem, listing, show):
     if stem in PROPS:
         changes += [with_ambient_relief, without_cut]
         preamble += ours("look.hlsl") + ours("bake.hlsl")
+        if "smpEmissiveMask" in listing:
+            changes.append(with_window_glass)
+            preamble += ours("glass.hlsl")
     if takes_baked_light(listing):
-        changes += [with_shaped_bake, with_baked_light, without_cut]
+        # A window's daylight in the bake, by the effects' window lights
+        # (effect_lights.hlsl, which every such shader takes below).
+        relit = relit_night_room(listing, preamble)
+        changes += [
+            with_shaped_bake,
+            *([with_relit_night] if relit else []),
+            lambda s: with_baked_light(s, windows=True),
+            without_cut,
+        ]
         if "DaoShapedBake" not in preamble:
             preamble += ours("look.hlsl") + ours("bake.hlsl")
         preamble += ours("night_sky.hlsl")
+        if relit:
+            preamble += ours("relit_night.hlsl")
     # The level's farther versions lay a lightmap too, with no engine lights
     # (bakedlowlod, vista3, static2, static3, terrain3): left out of the
     # hour's light, the hills behind Redcliffe's lake stayed day-lit at night
@@ -2785,7 +2874,7 @@ def changes_for(stem, listing, show):
     if (
         "smpLightmap" in listing
         and "ps_3_0" in listing
-        and with_baked_light not in changes
+        and not takes_baked_light(listing)
     ):
         changes.append(with_baked_light)
         if "DAO_LOOK_HLSL" not in preamble:
@@ -3097,6 +3186,10 @@ def main(argv):
             print(f"build_shaders: {name}: {e}", file=sys.stderr)
     print(f"build_shaders: {built} shaders in {out}, {failed} failed")
     print(f"build_shaders: the fills' strength in {len(FILLS_KEPT)} shaders")
+    if RELIT_NIGHT_NONE:
+        print(
+            f"build_shaders: no sampler left for the night lightmap in {len(RELIT_NIGHT_NONE)} shaders"
+        )
     by_light = collections.Counter(place for place, _, _ in EFFECT_LIT)
     print(
         f"build_shaders: effects' lights in {len(EFFECT_LIT)} shaders, by the reckoning of light "

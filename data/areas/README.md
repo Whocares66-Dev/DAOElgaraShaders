@@ -6,7 +6,7 @@ One file an area, named by its tag (`lot100ar_lothering.ini`), read as the plugi
 |---|---|
 | `level` | the area's level (its day level), as its `.are` names it |
 | `night` | the level its night is taken from: its moon, its sky and its sky's light |
-| `day` | in place of `night`, for an area whose own level is a night (made so, its bake the makers' night): the level its day is taken from, its sun, its sky and its sky's light; the area's own level is then its night, its moon the level's own sun. Not both `night` and `day` |
+| `day` | out of doors, in place of `night`, for an area whose own level is a night (made so, its bake the makers' night): the level its day is taken from, its sun, its sky and its sky's light; the area's own level is then its night, its moon the level's own sun. Not both `night` and `day` |
 | `latitude` | degrees, or a level: the latitude at which that level's sun is an equinox's noon (90 less its height) |
 | `moon_height` | degrees up at midnight, or `own` for the night level's own moon's; defaults.ini's 60 |
 | `moon_turn` | degrees about the upright from the night level's own moon; default 0 |
@@ -20,6 +20,14 @@ One file an area, named by its tag (`lot100ar_lothering.ini`), read as the plugi
 | `effects_moonlit` | how much moonlight the area's light-catching effects (spray, mist, smoke, rain: effects.ini's `lit`) get at night, 0 to 1: 0 for effects under trees, where the moon doesn't reach, 1 for effects out in the open; default 0 |
 | `water_moonlit` | how much moonlight the area's water (the water shaders' lakes, rivers and falls) gets at night, 0 to 1: 0 for water under trees, where the moon doesn't reach, 1 for water out in the open; default 1 |
 | `move_lamp` | `x y z > x y z`: a lamp named as a fire that the level puts at the first place (to a tenth of a metre) lit at the second, where its lantern or fire is; a flame there is then lit by the lamp alone. Several keys may start `move_lamp` |
+| `outside` | an interior's: the area out of doors (its file's name) whose clock and sky its windows see. Its own level keeps its makers' light whole by day and `fill` of it by night, going between as the light out of doors does, in its bake's colour at the end its makers lit and at the other its `day`'s fill colour or the night's out of doors; where a window sees the bake, its daylight goes by the light out of doors of the hour |
+| `baked` | (an interior's) `day` where its makers lit it as a day, its night then the light out of doors at midnight's colour; otherwise a night |
+| `day` | (an interior lit as a night) the level its makers lit by day whose rooms' fill is the colour its own takes by day |
+| `windows` | an interior's: the materials of its windows' models, each window a light of the hour aimed into the room |
+| `beams` | an interior's: the starts of the names of its beams of light's effects, each an opening lit as a window is; defaults.ini's |
+| `fill` | an interior's: how much of its makers' light it keeps at night, whole by day (its bake, ambient colour, probes, layouts' lamps that are not fires, figures' fills and key light), 0 to 1; defaults.ini's 0.5 |
+| `window` | an interior's: the light of a square metre of window, a share of the light out of doors at the hour; defaults.ini's |
+| `window_reach` | an interior's: how far a window's light reaches, metres; defaults.ini's |
 | `fire_strength` | (`defaults.ini` only) how bright the plugin lights fires and lamps, a share of their own light |
 | `fires` | (`defaults.ini` only) the starts of the names of layouts' lights that are fires, which keep their light by night; every other layout light goes with the sun |
 

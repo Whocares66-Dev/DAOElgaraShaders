@@ -11,6 +11,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 
 namespace probes
 {
@@ -28,5 +29,22 @@ void Want(bool on);
 // patches (Reflected.h), each giving back its own colour's share of it; 0 for
 // none. The game thread's word (Outdoors.cpp).
 void SunBounce(const std::array<float, 3> &sent);
+
+// Whether a light manager is the area's scene's, not a portrait's, the
+// record's or the inventory's, which have managers of their own; false while
+// no area is (a load). The one test of it: the probes, the ambient light and
+// the effects' lights ask it alike. Any thread, the area as of this frame.
+bool OfArea(const void *manager);
+
+// The scene the player's area is drawn as, as of this frame, or null.
+void *AreaScene();
+
+// Whether a light state is of a figure in another scene than the area's: a
+// portrait's, the record's or the inventory's, which have light managers and
+// lights of their own and are lit as made at every hour (the user, 2026-10-30,
+// of the portraits and the record dark and blue at night indoors: "should also
+// avoid the lighting change on portraits & char page"). False for one not yet
+// seen chosen. Any thread.
+bool OfOtherScene(std::uintptr_t state);
 
 } // namespace probes

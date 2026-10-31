@@ -49,6 +49,7 @@
 #include "MaterialLearn.h"
 #include "MaterialPatch.h"
 #include "NightCubes.h"
+#include "NightLightmaps.h"
 #include "Outdoors.h"
 #include "Probes.h"
 #include "ResourceDump.h"
@@ -204,7 +205,10 @@ constexpr std::size_t kBakedLight = 8;
 // after the shadows' (c193 to c213: LevelShadows.cpp's kFadeRegister and
 // kReceiverRegister).
 constexpr UINT kDiscRegister = 214;
-constexpr UINT kNightSkyRegister = 215; // night_sky.hlsl's daoNightSky
+constexpr UINT kNightSkyRegister = 215;   // night_sky.hlsl's daoNightSky
+constexpr UINT kBakeHueRegister = 155;    // night_sky.hlsl's daoBakeHue
+constexpr UINT kBakeWindowRegister = 156; // night_sky.hlsl's daoBakeWindow
+constexpr UINT kGlassRegister = 158;      // glass.hlsl's daoGlass
 // Water's light (water_light.hlsl's daoWaterLight), under the effects' lights':
 // the game's pixel shaders reach c55 at the most (their listings, 2026-10-22).
 constexpr UINT kWaterLightRegister = 159;
@@ -808,6 +812,7 @@ HRESULT __stdcall CreatePixelShader(IDirect3DDevice9 *device, const DWORD *code,
         levelshadows::CreatedPixel(code, static_cast<IDirect3DPixelShader9 *>(*shader));
         const std::vector<std::byte> bytes = shadercode::CodeOf(code);
         skybodies::CreatedPixel(bytes, static_cast<IDirect3DPixelShader9 *>(*shader));
+        nightlightmaps::CreatedPixel(bytes, static_cast<IDirect3DPixelShader9 *>(*shader));
         g_hair.erase(*shader);
         if (shadercode::RegisterOf(bytes, "smpHairTexture"))
         {
@@ -1012,6 +1017,15 @@ void HandFills(IDirect3DDevice9 *device)
         night = {daynight::EvenShare(), sky[0], sky[1], sky[2]};
     }
     device->SetPixelShaderConstantF(kNightSkyRegister, night.data(), 1);
+    // An interior's bake by day, in the frame's own picture alone.
+    const std::array<float, 4> hue = g_drawsPicture ? daynight::BakeHue() : std::array<float, 4>{1, 1, 1, 0};
+    device->SetPixelShaderConstantF(kBakeHueRegister, hue.data(), 1);
+    const std::array<float, 3> window = g_drawsPicture ? daynight::BakeWindow() : std::array<float, 3>{1, 1, 1};
+    const std::array<float, 4> bakeWindow{window[0], window[1], window[2], 1};
+    device->SetPixelShaderConstantF(kBakeWindowRegister, bakeWindow.data(), 1);
+    const std::array<float, 3> glassBy = g_drawsPicture ? daynight::Glass() : std::array<float, 3>{1, 1, 1};
+    const std::array<float, 4> glass{glassBy[0], glassBy[1], glassBy[2], 1};
+    device->SetPixelShaderConstantF(kGlassRegister, glass.data(), 1);
     // Water's on every target: no portrait or inventory scene has water.
     const std::array<float, 2> water = daynight::Water();
     const std::array<float, 4> waterLight{water[0], water[1], 0, 0};
@@ -1117,8 +1131,10 @@ HRESULT __stdcall DrawIndexed(IDirect3DDevice9 *device, D3DPRIMITIVETYPE type, I
         DrawExtraPasses(device, type, base, least, vertices, first, count);
     }
     HoldHairBack(device);
+    nightlightmaps::Drawing(device, g_drawsPicture);
     skybodies::Drawing(device);
     const HRESULT result = g_drawIndexed.Original()(device, type, base, least, vertices, first, count);
+    nightlightmaps::Drawn(device);
     skybodies::Drawn(device);
     GiveHairBack(device);
     levelshadows::Drawn(device);
@@ -1529,7 +1545,14 @@ void KeepLookRegisters()
     effectlights::WantCulled(outdoors::Tune("LightCull", 1) > 0);
     // How bright the plugin lights fires (data/areas/defaults.ini's
     // fire_strength); outdoors.tune's FireStrength, a developer's, to try one.
-    effectlights::FireStrength(outdoors::Tune("FireStrength", daynight::FireStrength()));
+    // In an interior with a night of the relighter's (NightLightmaps.h) its
+    // flames are in that night, and the plugin's lights of them go as it
+    // comes (RelitNight's share, 0 elsewhere): by night the lamps were lit
+    // three times over, the bake, the makers' fire lights and these, white
+    // pillars by a candle (the user, 2026-10-30: "lights are really bright
+    // ... are we maybe double-counting").
+    const float baked = daynight::RelitNight()[0];
+    effectlights::FireStrength(outdoors::Tune("FireStrength", daynight::FireStrength()) * (1 - baked));
     // outdoors.tune's EffectShadows = 0, a developer's: their cost without them
     // (issue 30).
     levelshadows::WantEffectShadows(lighting && outdoors::Tune("EffectShadows", 1) > 0);
@@ -1897,6 +1920,7 @@ extern "C" __declspec(dllexport) bool __cdecl DAOLib_Load(const dao::LoaderInfo 
     probes::Install();
     daynight::Install();
     nightcubes::Install();
+    nightlightmaps::Install();
     effectlights::Install();
     drawdistance::Install();
     if (!g_setPartitions.Attach(dao::addr::kShadowMaps_SetPartitions, &SetPartitions))

@@ -66,14 +66,20 @@ struct Light
     dao::core::Sky sky;
     std::array<float, 3> baked{1, 1, 1};
     std::array<float, 3> sunOverDay{1, 1, 1};
-    std::array<float, 3> disc{1, 1, 1}; // the sun's hue through the air, the moon's white
-    bool moon = false;                  // the disc is the moon's: the engine's sun is the moon (SkyBodies.h)
-    float nightShare = 0;               // how far the hour is from the day's bake to the night sky's light
-    std::array<float, 3> nightSky{};    // the night sky's light, as the lightmaps keep light (night_sky.hlsl)
-    std::array<float, 2> water{1, 1};   // water's light over the level's own, and its colour kept (Water)
-    std::array<float, 3> lit{1, 1, 1};  // the light on what is lit about, over the level's own (Lit)
-    float evenShare = 0;                // how far the bake gives way to the even light (EvenShare)
-    std::array<float, 3> even{};        // that light, as the lightmaps keep light (EvenLight)
+    std::array<float, 3> disc{1, 1, 1};       // the sun's hue through the air, the moon's white
+    bool moon = false;                        // the disc is the moon's: the engine's sun is the moon (SkyBodies.h)
+    float nightShare = 0;                     // how far the hour is from the day's bake to the night sky's light
+    std::array<float, 3> nightSky{};          // the night sky's light, as the lightmaps keep light (night_sky.hlsl)
+    std::array<float, 2> water{1, 1};         // water's light over the level's own, and its colour kept (Water)
+    std::array<float, 3> lit{1, 1, 1};        // the light on what is lit about, over the level's own (Lit)
+    float evenShare = 0;                      // how far the bake gives way to the even light (EvenShare)
+    std::array<float, 3> even{};              // that light, as the lightmaps keep light (EvenLight)
+    std::array<float, 3> outdoor{};           // the sun's or the moon's light and the sky's together, out of doors
+    std::array<float, 3> window{};            // an interior's: its windows' light a square metre (WindowLight)
+    std::array<float, 4> bakeHue{1, 1, 1, 0}; // an interior's: its bake's hue, and how far each texel takes it
+    std::array<float, 3> bakeWindow{1, 1, 1}; // an interior's: its bake where a window sees it, over the rest
+    std::array<float, 3> glass{1, 1, 1};      // an interior's: its windows' glass by the hour (Glass)
+    float relitNight = 0;                     // an interior's: how far its bake goes to its night lightmaps
 };
 
 // Reads data/areas (a file for each area the clock runs in, from the plugin's
@@ -126,6 +132,11 @@ float Hour();
 // lights by them itself (EffectLights.cpp). Any thread, once Install has run.
 bool FireLamp(std::wstring_view model, std::wstring_view name);
 
+// Whether a layout's light is a lamp: a fire (FireLamp) or named as
+// defaults.ini's `lamps` say (candle, lamp, lantern). Lamps burn by night as
+// by day. Any thread, once Install has run.
+bool Lamp(std::wstring_view model, std::wstring_view name);
+
 // How bright the plugin lights fires, a share of what the level or
 // effects.ini says (data/areas/defaults.ini's `fire_strength`). Any thread,
 // once Install has run.
@@ -153,9 +164,77 @@ struct Borrowed
 };
 std::optional<Borrowed> BorrowedBy(std::wstring_view level);
 
-// Whether the clock runs in an area (its tag): it has a file in data/areas.
-// Any thread, once Install has run.
+// Whether the clock runs in an area (its tag) out of doors: it has a file in
+// data/areas that is not an interior's. Any thread, once Install has run.
 bool Cycles(std::wstring_view area);
+
+// Whether an area (its tag) is an interior the clock runs in: its file says
+// the area out of doors its windows look on (`outside`). Its own level keeps
+// its makers' light, a share of it (`fill`), by the hour's light out of doors
+// over midnight's, and its windows are lights of the hour (WindowLight).
+// Any thread, once Install has run.
+bool Indoors(std::wstring_view area);
+
+// The materials of a level's windows, as the file of an interior on it names
+// them (`windows`); none where no interior's file names the level. Any
+// thread, once Install has run.
+std::vector<std::wstring> WindowMaterials(std::wstring_view level);
+
+// The starts of the names of the beams of light a level's interior's file
+// takes for openings (`beams`, defaults.ini's), none where no interior's file
+// names the level. Any thread, once Install has run.
+std::vector<std::wstring> BeamModels(std::wstring_view level);
+
+// An interior's windows' light as of the last Now: a square metre of opening's
+// colour, the area's `window` times the light out of doors (Light's outdoor),
+// and how far it reaches, metres; nothing where the clock is not running
+// indoors. Any thread.
+struct Windows
+{
+    std::array<float, 3> colour{};
+    float reach = 0;
+};
+Windows WindowLight();
+
+// An interior's bake's mean colour at a luminance of 1, and how far each
+// texel of its lightmaps takes that colour at its own luminance (night_sky.hlsl's
+// daoBakeHue): at the other of day and night from its makers' wholly, so
+// that the other's colour (by Baked) lights a violet moonlit stone and an
+// orange candle's pool alike; at the makers' own none. 0 where the clock is not running indoors. Any
+// thread.
+std::array<float, 4> BakeHue();
+
+// An interior's bake where a window sees it, over the rest of it
+// (night_sky.hlsl's daoBakeWindow, effect_lights.hlsl's DaoWindowSeen): by
+// day the light out of doors against the day level's own hour's, in each
+// colour, so that the windows' share of the makers' day darkens and warms at
+// dusk (the user, 2026-10-25: "Let's try with the windows carrying daylight");
+// at night 1. 1 where the clock is not running indoors. Any thread.
+std::array<float, 3> BakeWindow();
+
+// An interior's night by its lamps (NightLightmaps.h, relit_night.hlsl): x
+// how far its bake goes to the night lightmaps of the plugin's, as the
+// daylight goes (1 less the daylight against noon's, IndoorsAt); y what their
+// light is multiplied by. x 0 where the clock is not running indoors.
+// Any thread.
+std::array<float, 4> RelitNight();
+
+// An interior's window glass by the hour (glass.hlsl): the light out of
+// doors at the hour against the day's, each colour; 1 where the clock is not
+// running indoors. Any thread.
+std::array<float, 3> Glass();
+
+// Whether a material object (its file's name, lower case, with or without
+// .mao) is an interior's window pane that glows by daylight, as its file's
+// `glass` says. Any thread.
+bool IsGlassMaterial(std::wstring_view name);
+
+// An interior's share of its makers' light, its windows' light and their
+// reach to try in place of its file's `fill`, `window` and `window_reach`
+// (outdoors.tune's Fill, Window and WindowReach, a developer's), none for the
+// file's; and the night lightmaps' strength (RelitNight), none for 1. Call on the game's thread, before Now.
+void TryIndoors(std::optional<float> fill, std::optional<float> window, std::optional<float> reach,
+                std::optional<float> relit = std::nullopt);
 
 // A moon to try in place of the area's file's (outdoors.tune's MoonTurn and
 // MoonHeight, a developer's): its turn and its height in degrees, none for the
