@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0
+
+- Day / night cycle indoors: interiors with windows take the hour of the place outside. By day they are lit as the game lights them, as bright as the daylight outside; by night their candles, lamps and fires light the rooms, the stained glass goes pale with moonlight and the sunbeams become moonbeams. The Circle tower (all four floors, and Witch Hunt's), the chantries of Lothering, Redcliffe and Haven, Haven's shop, the Gnawed Noble, Arl Eamon's estate and Redcliffe castle. Places the story sets the hour for keep it.
+- Draw distance: a new option on the Video tab, 1x (the game's), 2x, 4x or Max: how far the land, trees, creatures and effects are drawn in full detail.
+- The sun's disc by day and the moon's by night: Redcliffe's moon was drawn with the sun's picture, the Circle's docks' sun with the moon's (#62).
+- By night the Brecilian forests' streams no longer glow white, and spray and mist are no longer deep blue (#63).
+- Day and night in a mod's own levels, such as Dragon Age Evolved's Redcliffe castle (#66).
+- Cancel on the options screen now undoes changes to these options too, as it does the game's own.
+- Needs DAOLib 0.8.0 or newer.
+
 ## 0.4.1
 
 Performance: 0.4.0 was slower than 0.3.0 indoors, and its shadows were slow under a low sun or moon (#61).

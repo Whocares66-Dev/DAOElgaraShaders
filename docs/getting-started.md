@@ -7,7 +7,7 @@ nav_order: 1
 
 ## Install
 
-1. Install [DAOLib](https://www.nexusmods.com/dragonage/mods/7052) 0.3.0 or newer.
+1. Install [DAOLib](https://www.nexusmods.com/dragonage/mods/7052) 0.8.0 or newer.
 2. Extract the zip into the game's folder, so that `bin_ship\daolib\plugins\elgarashaders` is there.
 
 ## Mods
