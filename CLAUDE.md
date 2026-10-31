@@ -61,7 +61,7 @@ A test deploys nothing: `game_launch` takes a `plugins` folder to load from in p
 - **Several areas.** Indoors, underground, outdoors; a dark place and a lit one.
 - Find which level a save is really in before testing a level's files (an area's level is named in its `.are`, not by the area's name).
 - A change that touches the Vanilla look is checked against the game with the plugin removed.
-- A setting the options screen holds (the five options) is switched through the options screen in a test (`build\scratch\elgara-opt.py`), never through a file. Improved shadows' finer maps are made only as the game starts. And the game's own anti-aliasing changes how a frame is drawn (the distance in a pass of its own, no second target): say which it was, and try both for anything that reads or writes a target.
+- A setting the options screen holds is switched through the options screen in a test, as a player switches it: `python -I tools\set_option.py <instance> "Draw distance=2x"` opens the screen from the Escape menu, shows the tab by its button, sets each control as a click does and presses OK (`--cancel` for Cancel), through Eluvian's `options` (#68). Never through a file, and never the screen's movie (`SceneManager.PlayScene` showed a tab's page under the Game tab's highlight, with no panel). Improved shadows' finer maps are made only as the game starts. And the game's own anti-aliasing changes how a frame is drawn (the distance in a pass of its own, no second target): say which it was, and try both for anything that reads or writes a target.
 - Findings worth keeping go on the issue with a before/after picture of the same frame.
 
 ## Style
