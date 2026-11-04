@@ -54,36 +54,24 @@ float3 DaoRolled(float3 light)
     return min(light, knee) + (1 - knee) * saturate(over * (1 + over / (white * white)) / (1 + over));
 }
 
-// How bright a colour keeps its hue as it is rolled off, and from how bright
-// it burns out towards white, in whites: from 0.8 of white to 2.2. A flame
-// held to its hue whole is a flat deep orange where vanilla's, cut at white
-// a channel at a time, is yellow at its heart (the user, 2026-10-11: "fire
-// looks too orange").
-static const float kDaoBurnFrom = 0.8;
-static const float kDaoBurnTo = 2.2;
-
 // A colour of the scene as the picture can hold it. With the scene drawn
 // into a 16-bit target (Graphics.cpp's own scene target) a colour may be
 // brighter than white, and this is the one place it comes down: the game's
 // grade after this reads a table by the colour and knows nothing above 1.
-// Cut at white a channel at a time, as eight bits cut it, a bright gold goes
-// pale: red and green both stop at 1 and blue catches up. So a colour a
-// little over white keeps its hue: its strongest channel is rolled off and
-// the others keep their share of it. A colour far over white is another
-// thing, a fire or a spell, layer on layer of light added up: held to its
-// hue, all of it comes down to one flat colour, and the fires of Denerim's
-// market were pale boxes (the user, 2026-10-11). Such a colour burns out to
-// white as it does on film and as eight bits made it, each channel rolled
-// off on its own. At fDaoHighlights of 0 it is the cut.
+// Each channel is rolled off on its own (DaoRolled), as film does and as
+// eight bits made it, cut a channel at a time: a color far over white
+// burns out towards white, which is how vanilla's fire and lava are yellow
+// at their hearts. A color was held to its hue up to 2.2 whites, so that a
+// bright gold would not go pale, and lava, which its shader draws at twice
+// its texture (Lava0.psh, mml_fLavaBrightness 2), stayed a dim orange: of
+// the Commons' lava lake 3% of the pixels yellow-white against vanilla's 16%
+// (issue 74, 2026-11-04: "lava etc. aren't glowing like they are in
+// vanilla"); before that a flame held to its hue whole was a flat deep
+// orange (2026-10-11: "fire looks too orange") and the fires of Denerim's
+// market pale boxes. At fDaoHighlights of 0 it is the cut.
 float3 DaoShoulder(float3 colour)
 {
-    colour = max(colour, 0);
-    const float peak = max(colour.r, max(colour.g, colour.b));
-    const float3 hued = peak > DaoKnee() ? colour * (DaoRolled(peak).x / peak) : colour;
-    const float3 burnt = DaoRolled(colour);
-    // From its hue at kDaoBurnFrom whites to burnt out at kDaoBurnTo.
-    const float3 kept = lerp(hued, burnt, saturate((peak - kDaoBurnFrom) / (kDaoBurnTo - kDaoBurnFrom)));
-    return lerp(saturate(colour), kept, fDaoHighlights);
+    return lerp(saturate(colour), DaoRolled(max(colour, 0)), fDaoHighlights);
 }
 
 // How much brighter the shade is made, in stops: a value of the chain
