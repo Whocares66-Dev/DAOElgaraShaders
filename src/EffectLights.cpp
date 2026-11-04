@@ -1013,7 +1013,7 @@ std::array<float, 3> Eye()
     const dao::CClientExoApp *app = dao::CClientExoApp::Get();
     const dao::GameModeController *modes = app != nullptr ? app->GameModes() : nullptr;
     const dao::CameraController *controller = modes != nullptr ? modes->Camera() : nullptr;
-    const dao::SceneCamera *camera = controller != nullptr ? controller->Scene() : nullptr;
+    const dao::CameraRig *camera = controller != nullptr ? controller->Rig() : nullptr;
     if (camera == nullptr)
     {
         return {};

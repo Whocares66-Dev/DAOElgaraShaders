@@ -265,14 +265,16 @@ using CreateDeviceFn = HRESULT(__stdcall *)(IDirect3D9 *, UINT, D3DDEVTYPE, HWND
                                             IDirect3DDevice9 **);
 using BeginSceneFn = HRESULT(__stdcall *)(IDirect3DDevice9 *);
 dao::Detour<CreateFn> g_create;
-dao::Detour<CreateDeviceFn> g_createDevice;
-dao::Detour<BeginSceneFn> g_beginScene;
+dao::VtableHook<CreateDeviceFn> g_createDevice;
+dao::VtableHook<BeginSceneFn> g_beginScene;
 
-// A COM object's method by its place in the vtable.
-template <class Fn> Fn Method(void *object, std::size_t slot)
-{
-    return reinterpret_cast<Fn>((*static_cast<void ***>(object))[slot]);
-}
+// Direct3D's methods are hooked in their objects' vtables, not in d3d9's code
+// (issue 73). RTSS patches the two Presents' code, and when it lets the game
+// go mid-session (shut off, or closed with Afterburner) it writes d3d9's
+// original bytes back, which erased the detours placed on top of its own: no
+// frame ended for us again, and the shadows' draws of every frame were kept
+// until the address space ran out (seen 2026-11-04). A vtable slot is not
+// code, and the game calls every method through it.
 
 constexpr std::size_t kCreateDeviceSlot = 16; // IDirect3D9::CreateDevice
 constexpr std::size_t kBeginSceneSlot = 41;   // IDirect3DDevice9::BeginScene
@@ -289,8 +291,8 @@ using CreateTextureFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, UINT, UINT, UIN
                                              IDirect3DTexture9 **, HANDLE *);
 using CreateRenderTargetFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, UINT, UINT, D3DFORMAT, D3DMULTISAMPLE_TYPE, DWORD,
                                                   BOOL, IDirect3DSurface9 **, HANDLE *);
-dao::Detour<CreateTextureFn> g_createTexture;
-dao::Detour<CreateRenderTargetFn> g_createRenderTarget;
+dao::VtableHook<CreateTextureFn> g_createTexture;
+dao::VtableHook<CreateRenderTargetFn> g_createRenderTarget;
 
 // The drawing thread's own: whether targets are logged, the format our scene
 // target has in place of the back buffer's (D3DFMT_UNKNOWN for the back
@@ -368,13 +370,13 @@ using SetRenderStateFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, D3DRENDERSTATE
 using ClearFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, DWORD, const D3DRECT *, DWORD, D3DCOLOR, float, DWORD);
 using DrawFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, D3DPRIMITIVETYPE, UINT, UINT);
 using DrawIndexedFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, D3DPRIMITIVETYPE, INT, UINT, UINT, UINT, UINT);
-dao::Detour<PresentFn> g_present;
-dao::Detour<StretchRectFn> g_stretchRect;
-dao::Detour<SetRenderTargetFn> g_setRenderTarget;
-dao::Detour<SetRenderStateFn> g_setRenderState;
-dao::Detour<ClearFn> g_clear;
-dao::Detour<DrawFn> g_draw;
-dao::Detour<DrawIndexedFn> g_drawIndexed;
+dao::VtableHook<PresentFn> g_present;
+dao::VtableHook<StretchRectFn> g_stretchRect;
+dao::VtableHook<SetRenderTargetFn> g_setRenderTarget;
+dao::VtableHook<SetRenderStateFn> g_setRenderState;
+dao::VtableHook<ClearFn> g_clear;
+dao::VtableHook<DrawFn> g_draw;
+dao::VtableHook<DrawIndexedFn> g_drawIndexed;
 // The drawing thread's own: the frames presented, whether this one is logged,
 // and the draws since the last line.
 int g_presented = 0;
@@ -400,8 +402,8 @@ constexpr std::size_t kResetSlot = 16;           // IDirect3DDevice9::Reset
 constexpr std::size_t kGetRenderTargetSlot = 38; // IDirect3DDevice9::GetRenderTarget
 using ResetFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, D3DPRESENT_PARAMETERS *);
 using GetRenderTargetFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, DWORD, IDirect3DSurface9 **);
-dao::Detour<ResetFn> g_reset;
-dao::Detour<GetRenderTargetFn> g_getRenderTarget;
+dao::VtableHook<ResetFn> g_reset;
+dao::VtableHook<GetRenderTargetFn> g_getRenderTarget;
 
 // The drawing thread's own.
 struct Scene
@@ -670,8 +672,8 @@ void DrawExtraPasses(IDirect3DDevice9 *device, D3DPRIMITIVETYPE type, INT base, 
 // code as it is made, so that a traced frame's draws can be named by the
 // shaders' files (build/scratch/trace-names.py). Only with the trace asked for.
 using CreateShaderFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, const DWORD *, void **);
-dao::Detour<CreateShaderFn> g_createVertexShader;
-dao::Detour<CreateShaderFn> g_createPixelShader;
+dao::VtableHook<CreateShaderFn> g_createVertexShader;
+dao::VtableHook<CreateShaderFn> g_createPixelShader;
 
 std::uint64_t HashOfCode(const DWORD *code)
 {
@@ -902,7 +904,7 @@ void FramePresented(std::string_view by)
         NoteCostFrame();
     }
     // Only where it is asked for: the scene target stands on the same
-    // detours, and without this the trace went to every player's log, sixty
+    // hooks, and without this the trace went to every player's log, sixty
     // lines every ten seconds (seen 2026-10-14).
     g_tracing = g_traceAsked && g_presented % kTraceEvery == kTraceFirst;
     if (g_tracing)
@@ -926,7 +928,7 @@ HRESULT __stdcall Present(IDirect3DDevice9 *device, const RECT *from, const RECT
 constexpr std::size_t kChainPresentSlot = 3; // IDirect3DSwapChain9::Present
 using ChainPresentFn = HRESULT(__stdcall *)(IDirect3DSwapChain9 *, const RECT *, const RECT *, HWND, const RGNDATA *,
                                             DWORD);
-dao::Detour<ChainPresentFn> g_chainPresent;
+dao::VtableHook<ChainPresentFn> g_chainPresent;
 
 HRESULT __stdcall ChainPresent(IDirect3DSwapChain9 *chain, const RECT *from, const RECT *to, HWND window,
                                const RGNDATA *dirty, DWORD flags)
@@ -1180,7 +1182,7 @@ void DrawExtraPasses(IDirect3DDevice9 *device, D3DPRIMITIVETYPE type, INT base, 
     }
 }
 
-// Places the detours the frame's trace and our own scene target both stand
+// Places the hooks the frame's trace and our own scene target both stand
 // on, and makes that target if it is asked for.
 void WatchFramesOf(IDirect3DDevice9 *device)
 {
@@ -1221,29 +1223,29 @@ void WatchFramesOf(IDirect3DDevice9 *device)
     if (ownScene)
     {
         g_wideFormat = word == "8bit" ? D3DFMT_UNKNOWN : D3DFMT_A16B16G16R16F;
-        g_createTexture.AttachTo(Method<CreateTextureFn>(device, kCreateTextureSlot), &CreateTexture);
+        g_createTexture.Attach(device, kCreateTextureSlot, &CreateTexture);
     }
-    g_present.AttachTo(Method<PresentFn>(device, kPresentSlot), &Present);
+    g_present.Attach(device, kPresentSlot, &Present);
     IDirect3DSwapChain9 *chain = nullptr;
     if (SUCCEEDED(device->GetSwapChain(0, &chain)) && chain != nullptr)
     {
-        g_chainPresent.AttachTo(Method<ChainPresentFn>(chain, kChainPresentSlot), &ChainPresent);
+        g_chainPresent.Attach(chain, kChainPresentSlot, &ChainPresent);
         chain->Release();
     }
-    g_stretchRect.AttachTo(Method<StretchRectFn>(device, kStretchRectSlot), &StretchRect);
-    g_setRenderTarget.AttachTo(Method<SetRenderTargetFn>(device, kSetRenderTargetSlot), &SetRenderTarget);
-    g_setRenderState.AttachTo(Method<SetRenderStateFn>(device, kSetRenderStateSlot), &SetRenderState);
-    g_clear.AttachTo(Method<ClearFn>(device, kClearSlot), &Clear);
-    g_draw.AttachTo(Method<DrawFn>(device, kDrawSlot), &Draw);
-    g_drawIndexed.AttachTo(Method<DrawIndexedFn>(device, kDrawIndexedSlot), &DrawIndexed);
+    g_stretchRect.Attach(device, kStretchRectSlot, &StretchRect);
+    g_setRenderTarget.Attach(device, kSetRenderTargetSlot, &SetRenderTarget);
+    g_setRenderState.Attach(device, kSetRenderStateSlot, &SetRenderState);
+    g_clear.Attach(device, kClearSlot, &Clear);
+    g_draw.Attach(device, kDrawSlot, &Draw);
+    g_drawIndexed.Attach(device, kDrawIndexedSlot, &DrawIndexed);
     levelshadows::Start(dao::Module::OwnFolder() / "override", GameFolder(), g_drawIndexed.Original());
-    g_createVertexShader.AttachTo(Method<CreateShaderFn>(device, kCreateVertexShaderSlot), &CreateVertexShader);
+    g_createVertexShader.Attach(device, kCreateVertexShaderSlot, &CreateVertexShader);
     // Always: the sun's shadows know their receivers by it (LevelShadows.h).
-    g_createPixelShader.AttachTo(Method<CreateShaderFn>(device, kCreatePixelShaderSlot), &CreatePixelShader);
+    g_createPixelShader.Attach(device, kCreatePixelShaderSlot, &CreatePixelShader);
     if (ownScene)
     {
-        g_getRenderTarget.AttachTo(Method<GetRenderTargetFn>(device, kGetRenderTargetSlot), &GetRenderTarget);
-        g_reset.AttachTo(Method<ResetFn>(device, kResetSlot), &Reset);
+        g_getRenderTarget.Attach(device, kGetRenderTargetSlot, &GetRenderTarget);
+        g_reset.Attach(device, kResetSlot, &Reset);
         MakeScene(device);
     }
 }
@@ -1262,8 +1264,8 @@ void LogTargetsOf(IDirect3DDevice9 *device, const D3DPRESENT_PARAMETERS *paramet
                      static_cast<int>(parameters->MultiSampleType), parameters->MultiSampleQuality);
     }
     g_logTargets = true;
-    g_createTexture.AttachTo(Method<CreateTextureFn>(device, kCreateTextureSlot), &CreateTexture);
-    g_createRenderTarget.AttachTo(Method<CreateRenderTargetFn>(device, kCreateRenderTargetSlot), &CreateRenderTarget);
+    g_createTexture.Attach(device, kCreateTextureSlot, &CreateTexture);
+    g_createRenderTarget.Attach(device, kCreateRenderTargetSlot, &CreateRenderTarget);
 }
 
 // Anisotropic filtering, which the game has no setting for: a texture seen at
@@ -1277,7 +1279,7 @@ void LogTargetsOf(IDirect3DDevice9 *device, const D3DPRESENT_PARAMETERS *paramet
 constexpr std::size_t kSamplers = 16;            // the pixel shader's
 constexpr std::size_t kSetSamplerStateSlot = 69; // IDirect3DDevice9::SetSamplerState
 using SetSamplerStateFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, DWORD, D3DSAMPLERSTATETYPE, DWORD);
-dao::Detour<SetSamplerStateFn> g_setSamplerState;
+dao::VtableHook<SetSamplerStateFn> g_setSamplerState;
 std::atomic<int> g_anisotropy{0}; // the slider's degree, 0 or 1 for the game's own filtering
 // The drawing thread's own: what the game last asked of each sampler
 // (Direct3D's defaults until it does), and the degree in force.
@@ -1351,10 +1353,10 @@ HRESULT __stdcall CreateDevice(IDirect3D9 *direct3d, UINT adapter, D3DDEVTYPE ty
     const HRESULT result = g_createDevice.Original()(direct3d, adapter, type, window, behaviour, parameters, device);
     if (SUCCEEDED(result) && device != nullptr && *device != nullptr && !g_beginScene.IsAttached())
     {
-        const bool placed = g_beginScene.AttachTo(Method<BeginSceneFn>(*device, kBeginSceneSlot), &BeginScene);
+        const bool placed = g_beginScene.Attach(*device, kBeginSceneSlot, &BeginScene);
         spdlog::info("the game's Direct3D device: {}",
-                     placed ? "the options' registers are set every scene" : "no detour, the registers stay 0");
-        g_setSamplerState.AttachTo(Method<SetSamplerStateFn>(*device, kSetSamplerStateSlot), &SetSamplerState);
+                     placed ? "the options' registers are set every scene" : "no hook, the registers stay 0");
+        g_setSamplerState.Attach(*device, kSetSamplerStateSlot, &SetSamplerState);
         if (g_setSamplerState.IsAttached())
         {
             levelshadows::UseSamplerState(g_setSamplerState.Original());
@@ -1369,9 +1371,9 @@ IDirect3D9 *__stdcall Create(UINT version)
 {
     IDirect3D9 *direct3d = g_create.Original()(version);
     if (direct3d != nullptr && !g_createDevice.IsAttached() &&
-        !g_createDevice.AttachTo(Method<CreateDeviceFn>(direct3d, kCreateDeviceSlot), &CreateDevice))
+        !g_createDevice.Attach(direct3d, kCreateDeviceSlot, &CreateDevice))
     {
-        spdlog::warn("Direct3D's CreateDevice: no detour, the registers stay 0");
+        spdlog::warn("Direct3D's CreateDevice: no hook, the registers stay 0");
     }
     return direct3d;
 }
@@ -1674,7 +1676,7 @@ void KeepLens()
     const dao::CClientExoApp *app = dao::CClientExoApp::Get();
     const dao::GameModeController *modes = app != nullptr ? app->GameModes() : nullptr;
     const dao::CameraController *controller = modes != nullptr ? modes->Camera() : nullptr;
-    const dao::SceneCamera *camera = controller != nullptr ? controller->Scene() : nullptr;
+    const dao::CameraRig *camera = controller != nullptr ? controller->Rig() : nullptr;
     if (!size || camera == nullptr || size->width <= 0 || size->height <= 0)
     {
         return;
