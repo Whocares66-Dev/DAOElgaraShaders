@@ -1,15 +1,15 @@
-"""The frame time of two builds of the plugin on the same saves with the same options, one launch per build per save,
-in the game copy `elgara-agent` (dev/RELEASING.md's step 3; written 2026-10-28 after 0.4.0 shipped slower than 0.3.0).
+"""The frame time of two builds of the plugin on the same saves with the same options, one launch per build, in the
+game copy `elgara-agent` (dev/RELEASING.md's step 3; written 2026-10-28 after 0.4.0 shipped slower than 0.3.0).
 
     python -I tools/perf_compare.py stage [OLD] [NEW]   stage the builds: a version (dist/DAOElgaraShaders-<v>.zip) or
                                                         `build` (build/release's plugin); default the last two zips
-    python -I tools/perf_compare.py run [rounds]        every save x every stage, the order turned each round
+    python -I tools/perf_compare.py run [rounds]        every stage, the order turned each round; one round by default
     python -I tools/perf_compare.py report              the mean per save and stage
 
 The stages are build/perf/stage-<name>/plugins: `off` (the new DLL, every option off, no override/: the control), the
 old and the new with the options of build/stage's graphics.chosen (the user's), and the new with Day and night off.
-Each launch loads a save of Lyna's, pauses, and reads the plugin's frame timer (Graphics.cpp's `shadow-cost` test:
-the mean of every 300 frames, logged). A window during which the game was not in front is dropped: leave the machine
+Each stage is launched once and loads the saves of Lyna's in turn; each is paused, left SETTLE seconds and timed by
+the plugin's frame timer (Graphics.cpp's `shadow-cost` test: the mean of every 300 frames, logged). A window during which the game was not in front is dropped: leave the machine
 alone while it runs. VSync is turned off in the copy's DragonAge.ini for the run and back on after.
 """
 
@@ -179,25 +179,48 @@ def vsync(on):
     )
 
 
-def one(stage, save):
+# How long after a load a save is timed from. Under Day and night the first minute after a load is slower
+# (Redcliffe, 2026-10-28: 9.8 ms a frame falling to 8.0 at about 55 s, in 0.3.0 and 0.4.0 alike; 5.4 throughout
+# with it off), and a run timed after it took an hour and a half; the same settle for every build keeps the
+# comparison fair, which is what the run is for (the user, 2026-11-05: "Start the game, do some measurements,
+# quit").
+SETTLE = 20.0
+
+
+def one(stage):
+    """One launch of a stage, every save loaded in it in turn and timed."""
     if bridge("game_status", {}).get("running"):
         sys.exit(f"{INSTANCE} is running: not launching")
     _eluvian["url"] = None
+    saves = list(SAVES)
     args = {
         "owner": OWNER,
         "plugins": os.path.join(OUT, "stage-" + stage, "plugins"),
         "seed": "save",
-        "load": {"character": "Lyna", "kind": "manual", "number": SAVES[save]},
+        "load": {"character": "Lyna", "kind": "manual", "number": SAVES[saves[0]]},
         "waitSeconds": 300,
     }
     bridge("game_launch", args)
-    time.sleep(5)
-    front()
-    call("pause", {"paused": True})
-    # Under Day and night the first minute after a load is slower (Redcliffe, 2026-10-28: 9.8 ms a frame
-    # falling to 8.0 at about 55 s, in 0.3.0 and 0.4.0 alike; 5.4 throughout with it off): timed after it.
-    time.sleep(75)
-    measure(f"{stage}/{save}")
+    for n, save in enumerate(saves):
+        if n:
+            asked = {
+                "action": "load",
+                "character": "Lyna",
+                "kind": "manual",
+                "number": SAVES[save],
+            }
+            call("pause", {"paused": False})
+            cursor = call("saves", asked).get("cursor")
+            call(
+                "wait_for",
+                {"topic": "eluvian.game.loaded", "since": cursor, "timeoutMs": 180000},
+                timeout=200,
+            )
+        time.sleep(3)
+        front()
+        call("pause", {"paused": True})
+        time.sleep(SETTLE)
+        measure(f"{stage}/{save}", n=5, settle=0)
     bridge("game_quit", {"force": True})
     for _ in range(60):
         if not bridge("game_status", {}).get("running"):
@@ -275,9 +298,8 @@ def run(rounds):
     vsync(False)
     try:
         for r in range(rounds):
-            for save in SAVES:
-                for name in names if r % 2 == 0 else names[::-1]:
-                    one(name, save)
+            for name in names if r % 2 == 0 else names[::-1]:
+                one(name)
     finally:
         vsync(True)
 
@@ -309,6 +331,6 @@ if __name__ == "__main__":
             sys.argv[3] if len(sys.argv) > 3 else known[-1],
         )
     elif command == "run":
-        run(int(sys.argv[2]) if len(sys.argv) > 2 else 2)
+        run(int(sys.argv[2]) if len(sys.argv) > 2 else 1)
     elif command == "report":
         report()
