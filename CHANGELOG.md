@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.1
+
+- Lava glows as it does in vanilla again: Orzammar's lava had gone a dim orange where vanilla's is yellow-white at its heart. Fire and spell flashes get the same yellow-white heat, and none of them burns out to white (#74).
+- Leather, cloth, skin and stone shine as they do in vanilla again, and their normal maps show in the shine; with Improved materials on, everything that isn't metal had a fraction of vanilla's highlight since 0.1.0. Metal is unchanged (#72).
+- No more crashes and slowdowns with RivaTuner Statistics Server (RTSS, MSI Afterburner's overlay) running: when RTSS let the game go, the plugin's hooks were erased with its own and the game ran out of memory (#73).
+- Needs DAOLib 0.10.0 or newer.
+
 ## 0.5.0
 
 - Day / night cycle indoors: interiors with windows take the hour of the place outside. By day they are lit as the game lights them, as bright as the daylight outside; by night their candles, lamps and fires light the rooms, the stained glass goes pale with moonlight and the sunbeams become moonbeams. The Circle tower (all four floors, and Witch Hunt's), the chantries of Lothering, Redcliffe and Haven, Haven's shop, the Gnawed Noble, Arl Eamon's estate and Redcliffe castle. Places the story sets the hour for keep it.
