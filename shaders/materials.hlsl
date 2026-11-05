@@ -25,28 +25,26 @@
 //   a shield's painted face dark, a bench a mirror, gilt armour foil (the
 //   user, 2026-10-12: "shouldn't all this be driven by materials? are we
 //   just adding in hacks?").
-// - A surface that is no metal scatters its colour and mirrors a few parts
-//   in a hundred of what falls on it: a third of the mask's colour
-//   (kDaoMirrorOfMask). The mask says how shiny on the game's own scale, and
-//   the scale is measured: over the 638 masks of the game's stone, wood,
-//   cloth, leather and skin the median of a mask's brightness is 0.12 (0.13,
-//   0.13, 0.10, 0.11, 0.08 by class; the table's classes,
-//   counted 2026-10-12), and an ordinary surface that is no metal mirrors
-//   four parts in a hundred, so the one is taken for the other. It was 0.08
-//   times the mask first, the common reading of a "specular" input that is a
-//   half for an ordinary surface (Burley's and Unreal's), which these masks
-//   are not: stone then mirrored one part in a hundred and less, and the
-//   tower's hall was a third darker than by the game's formula.
+// - A surface that is no metal scatters its colour and mirrors what its mask
+//   says, as the game has it: the mask's colour face on (kDaoMirrorOfMask),
+//   and each light's highlight the game's own lobe, pow(N.H, power) times 3
+//   (DaoLobe). It was a third of the mask and the lobe below, taking the
+//   median mask, 0.12, for the four parts in a hundred an ordinary surface
+//   mirrors (2026-10-12): a leather's or a cloth's broad highlight was then a
+//   tenth of the game's and less, and a mod's leather lost the gloss its
+//   normal map shows in (issue 72, a player's pictures of 2026-11-04). The
+//   game's masks are painted for the game's formula; with it, Orzammar's
+//   floors and the Hall of Heroes' stone are as vanilla's (seen 2026-11-04).
 // - A metal scatters nothing and mirrors in its own colour, which is the
 //   surface's colour and the mask's together: the game paints a metal's
 //   colour into both (gilt's yellow in its diffuse texture, dragonbone's red
 //   in its mask's tint), and all a metal sends back, it sends back as a
 //   mirror does. Where the two together are more than all that falls on it
 //   (a sixth of the tower's iron gates), it is all of it, in their colour.
-// - Roughness is the highlight's power: alpha squared is 2 / (power + 2),
-//   the width at which a GGX lobe matches a Blinn-Phong lobe of that power
-//   (Walter et al. 2007). The lobe is the whole of it, so a narrow one is as
-//   bright as it is narrow. The cube is read at the mip that roughness
+// - A metal's roughness is the highlight's power: alpha squared is
+//   2 / (power + 2), the width at which a GGX lobe matches a Blinn-Phong lobe
+//   of that power (Walter et al. 2007). The lobe is the whole of it, so a
+//   narrow one is as bright as it is narrow. The cube is read at the mip that roughness
 //   blurs to (Lagarde and de Rousiers 2014).
 // - How much is mirrored grows towards the edge (Schlick 1994), at each
 //   pixel, in place of the game's falloff at each vertex. A light's
@@ -114,8 +112,9 @@ float DaoPower(float masks)
     return lerp(masks, mml_vDaoClear.y, step(1e-6, mml_vDaoClear.y) * saturate(DAO_MATERIALS));
 }
 
-// What a surface that is no metal mirrors face on, of its mask's colour.
-static const float kDaoMirrorOfMask = 0.04 / 0.12;
+// What a surface that is no metal mirrors face on, of its mask's colour: all
+// of it, as the game has it (issue 72).
+static const float kDaoMirrorOfMask = 1.0;
 
 // How much of the surface at `uv` mirrors as a metal does, 0 to 1: what of
 // it is metal (the material's word and its map), times what the material
@@ -200,16 +199,21 @@ float DaoCalmed(float power, float3 normal, float bumps)
     return calmed;
 }
 
-// A light's highlight, in place of the game's pow(N.H, power): the GGX lobe
-// of that width, whole (D over four, in the game's own measure of a light,
-// by which a white light makes a white surface facing it white). It is 3,
-// the game's own number, at a power of 22. `facing` is N.H.
-float DaoLobe(float facing, float power)
+// A light's highlight. On a metal, in place of the game's pow(N.H, power):
+// the GGX lobe of that width, whole (D over four, in the game's own measure
+// of a light, by which a white light makes a white surface facing it white),
+// which is 3, the game's own number, at a power of 22. On what is no metal,
+// the game's own, times its 3 (DaoTripled is 1 with Improved materials): a
+// broad lobe made whole is dim, a tenth of the game's at a power of 4, and
+// the game's leather, cloth and skin are painted for theirs (issue 72).
+// `facing` is N.H; `metal` is DaoMetal's.
+float DaoLobe(float facing, float power, float metal)
 {
     const float theirs = pow(facing, power);
     const float width = 2 / (power + 2);
     const float under = facing * facing * (width - 1) + 1;
-    const float ours = facing > 0 ? width / (4 * under * under) : 0;
+    const float whole = facing > 0 ? width / (4 * under * under) : 0;
+    const float ours = lerp(3 * theirs, whole, saturate(metal));
     return lerp(theirs, ours, saturate(DAO_MATERIALS));
 }
 

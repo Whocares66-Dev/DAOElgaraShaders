@@ -1078,7 +1078,7 @@ def with_materials(shader):
         if not written:
             continue
         changes.append(
-            (lobe, "set", f"{written.group(1)} = DaoLobe({written.group(2)}, {lobed});")
+            (lobe, "set", f"{written.group(1)} = DaoLobe({written.group(2)}, {lobed}, daoMetal);")
         )
         since = lobes[count - 1] if count else power
         half = next(
