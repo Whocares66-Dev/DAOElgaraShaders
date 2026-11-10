@@ -68,6 +68,7 @@
 #include "dao/Module.h"
 #include "dao/Options.h"
 #include "dao/Plugin.h"
+#include "dao/RenderFrame.h"
 #include "dao/World.h"
 
 #include <spdlog/spdlog.h>
@@ -353,7 +354,6 @@ HRESULT __stdcall CreateRenderTarget(IDirect3DDevice9 *device, UINT width, UINT 
 constexpr std::string_view kLogFrameFile = "log-frame";
 constexpr int kTraceEvery = 600; // frames from one logged frame to the next
 constexpr int kTraceFirst = 300;
-constexpr std::size_t kPresentSlot = 17;            // IDirect3DDevice9::Present
 constexpr std::size_t kStretchRectSlot = 34;        // IDirect3DDevice9::StretchRect
 constexpr std::size_t kSetRenderTargetSlot = 37;    // IDirect3DDevice9::SetRenderTarget
 constexpr std::size_t kSetRenderStateSlot = 57;     // IDirect3DDevice9::SetRenderState
@@ -362,7 +362,6 @@ constexpr std::size_t kDrawSlot = 81;               // IDirect3DDevice9::DrawPri
 constexpr std::size_t kDrawIndexedSlot = 82;        // IDirect3DDevice9::DrawIndexedPrimitive
 constexpr std::size_t kCreateVertexShaderSlot = 91; // IDirect3DDevice9::CreateVertexShader
 constexpr std::size_t kCreatePixelShaderSlot = 106; // IDirect3DDevice9::CreatePixelShader
-using PresentFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, const RECT *, const RECT *, HWND, const RGNDATA *);
 using StretchRectFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, IDirect3DSurface9 *, const RECT *, IDirect3DSurface9 *,
                                            const RECT *, D3DTEXTUREFILTERTYPE);
 using SetRenderTargetFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, DWORD, IDirect3DSurface9 *);
@@ -370,7 +369,6 @@ using SetRenderStateFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, D3DRENDERSTATE
 using ClearFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, DWORD, const D3DRECT *, DWORD, D3DCOLOR, float, DWORD);
 using DrawFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, D3DPRIMITIVETYPE, UINT, UINT);
 using DrawIndexedFn = HRESULT(__stdcall *)(IDirect3DDevice9 *, D3DPRIMITIVETYPE, INT, UINT, UINT, UINT, UINT);
-dao::VtableHook<PresentFn> g_present;
 dao::VtableHook<StretchRectFn> g_stretchRect;
 dao::VtableHook<SetRenderTargetFn> g_setRenderTarget;
 dao::VtableHook<SetRenderStateFn> g_setRenderState;
@@ -417,7 +415,6 @@ struct Scene
     UINT height = 0;
 };
 Scene g_scene;
-IDirect3DDevice9 *g_device = nullptr; // the game's, for the swap chain's Present, which is handed none
 
 template <class T> void Released(T *&object)
 {
@@ -913,35 +910,19 @@ void FramePresented(std::string_view by)
     }
 }
 
-HRESULT __stdcall Present(IDirect3DDevice9 *device, const RECT *from, const RECT *to, HWND window, const RGNDATA *dirty)
+// #80, 2026-11-10: watch the engine's presentation boundary, not Direct3D's Present
+// vtables. Steam's GetSwapChain rehooked our replacement and then recursed into it.
+// Both engine paths are needed (loading screens use the device, gameplay the chain).
+void FrameEnding(IDirect3DDevice9 *device, bool bySwapChain)
 {
-    gputimer::Begin(device, "show scene");
-    ShowScene(device);
-    gputimer::End(device);
-    gputimer::Presented(device);
-    FramePresented("the device");
-    return g_present.Original()(device, from, to, window, dirty);
-}
-
-// The game shows its frames by its swap chain, not the device (seen
-// 2026-10-11: with the device's Present alone detoured no frame was counted).
-constexpr std::size_t kChainPresentSlot = 3; // IDirect3DSwapChain9::Present
-using ChainPresentFn = HRESULT(__stdcall *)(IDirect3DSwapChain9 *, const RECT *, const RECT *, HWND, const RGNDATA *,
-                                            DWORD);
-dao::VtableHook<ChainPresentFn> g_chainPresent;
-
-HRESULT __stdcall ChainPresent(IDirect3DSwapChain9 *chain, const RECT *from, const RECT *to, HWND window,
-                               const RGNDATA *dirty, DWORD flags)
-{
-    if (g_device != nullptr)
+    if (device != nullptr)
     {
-        gputimer::Begin(g_device, "show scene");
-        ShowScene(g_device);
-        gputimer::End(g_device);
-        gputimer::Presented(g_device);
+        gputimer::Begin(device, "show scene");
+        ShowScene(device);
+        gputimer::End(device);
+        gputimer::Presented(device);
     }
-    FramePresented("the swap chain");
-    return g_chainPresent.Original()(chain, from, to, window, dirty, flags);
+    FramePresented(bySwapChain ? "the swap chain" : "the device");
 }
 
 HRESULT __stdcall StretchRect(IDirect3DDevice9 *device, IDirect3DSurface9 *from, const RECT *part,
@@ -1219,18 +1200,16 @@ void WatchFramesOf(IDirect3DDevice9 *device)
     {
         return;
     }
-    g_device = device;
+    static const bool watched = dao::render::OnFrameEnd(&FrameEnding);
+    if (!watched)
+    {
+        spdlog::error("the engine's frame end is not watched; the scene target is disabled");
+        return;
+    }
     if (ownScene)
     {
         g_wideFormat = word == "8bit" ? D3DFMT_UNKNOWN : D3DFMT_A16B16G16R16F;
         g_createTexture.Attach(device, kCreateTextureSlot, &CreateTexture);
-    }
-    g_present.Attach(device, kPresentSlot, &Present);
-    IDirect3DSwapChain9 *chain = nullptr;
-    if (SUCCEEDED(device->GetSwapChain(0, &chain)) && chain != nullptr)
-    {
-        g_chainPresent.Attach(chain, kChainPresentSlot, &ChainPresent);
-        chain->Release();
     }
     g_stretchRect.Attach(device, kStretchRectSlot, &StretchRect);
     g_setRenderTarget.Attach(device, kSetRenderTargetSlot, &SetRenderTarget);
