@@ -107,6 +107,8 @@ def main():
                 if value.startswith("#") and value[1:].isdigit()
                 else value
             )
+            if isinstance(asked, str) and asked.lower() in ("true", "false"):
+                asked = asked.lower() == "true"
             answer = tool(
                 port, "options", {"action": "set", "name": label, "value": asked}
             )
