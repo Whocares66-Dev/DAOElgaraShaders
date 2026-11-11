@@ -30,11 +30,17 @@ float fFocalPlane;
 // Written where nothing wrote a distance (the sky): further than anything.
 static const float kDaoNoDepth = 10000.0;
 
+// A distance whose alpha is a half is a hair card's (build_shaders.py's
+// HAIR_MARK, #78): the game's depth of field is to have it, and here it is
+// nothing, as the hair is no surface to shade or to shade by. Every other
+// shader writes that alpha as 1, and a blended pass of ours leaves it 0
+// where the game does not anti-alias; a pixel the anti-aliasing mixed is the
+// card's where it is nearer the half than either.
 float DaoPackedDepth(float2 uv)
 {
-    const float3 bytes = tex2Dlod(smpDepth, float4(uv, 0, 0)).xyz;
-    const float metres = (bytes.z + bytes.y / 256 + bytes.x / 65536) * fFocalPlane;
-    return metres < 0.05 ? kDaoNoDepth : metres;
+    const float4 texel = tex2Dlod(smpDepth, float4(uv, 0, 0));
+    const float metres = (texel.z + texel.y / 256 + texel.x / 65536) * fFocalPlane;
+    return metres < 0.05 || abs(texel.w - 0.5) < 0.25 ? kDaoNoDepth : metres;
 }
 
 // `centre` if it is within `apart` of `a` or of `b`, or not between them;

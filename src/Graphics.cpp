@@ -91,7 +91,6 @@
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <unordered_map>
 #include <utility>
 
 namespace
@@ -720,74 +719,6 @@ HRESULT __stdcall CreateVertexShader(IDirect3DDevice9 *device, const DWORD *code
     return result;
 }
 
-// Hair, and which of its targets holds the distance it writes. The ambient
-// occlusion reads the game's distances (shaders/occlusion_depth.hlsl), and a
-// lock of hair, a card a centimeter before the face and mostly gaps, was read
-// as a wall pressed to the skin: the face was shaded dark along every strand
-// over it (the user, 2026-10-17, of Leliana: "something fucked up about hair
-// due to ao"). So hair writes no distance, and the face's is kept under it.
-// A hair shader reads smpHairTexture; the lit ones and the game's first pass
-// write the distance in oC1, beside the picture, and the pass the distance
-// has of its own under the game's anti-aliasing (hair0_pass1_depth, which
-// reads the focal plane and writes no oC1) writes it in oC0 (read from the
-// shaders, 2026-10-17).
-enum class HairDistance : std::uint8_t
-{
-    Second, // the second target, beside the picture
-    First,  // the first: a pass that draws distances only
-};
-std::unordered_map<void *, HairDistance> g_hair;
-
-// What a hair draw had of what it holds back from, given back after it: the
-// distance's target, and the picture's alpha where that is the ambient share
-// (ShareAsked): hair says no share of its own (build_shaders.py's
-// SHARE_SHADERS) and keeps the head's under it. Under the game's
-// anti-aliasing its opaque pass wrote a share over each card's whole
-// quad, gaps and all, and the face under a lock was shaded in its cards'
-// rectangles (seen 2026-10-17). In a portrait's or the inventory's target the
-// alpha is what the figure covers, and hair writes it there.
-std::vector<std::pair<D3DRENDERSTATETYPE, DWORD>> g_hairHeld;
-
-void Hold(IDirect3DDevice9 *device, D3DRENDERSTATETYPE state, DWORD keep)
-{
-    DWORD had = 0;
-    device->GetRenderState(state, &had);
-    g_hairHeld.emplace_back(state, had);
-    g_setRenderState.Original()(device, state, had & keep);
-}
-
-void HoldHairBack(IDirect3DDevice9 *device)
-{
-    IDirect3DPixelShader9 *pixel = nullptr;
-    device->GetPixelShader(&pixel);
-    const auto found = g_hair.find(pixel);
-    Released(pixel);
-    if (found == g_hair.end() || !g_setRenderState.IsAttached())
-    {
-        return;
-    }
-    constexpr DWORD kColour = D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE;
-    if (found->second == HairDistance::First)
-    {
-        Hold(device, D3DRS_COLORWRITEENABLE, 0);
-        return;
-    }
-    Hold(device, D3DRS_COLORWRITEENABLE1, 0);
-    if (g_drawsPicture && ShareAsked())
-    {
-        Hold(device, D3DRS_COLORWRITEENABLE, kColour);
-    }
-}
-
-void GiveHairBack(IDirect3DDevice9 *device)
-{
-    for (const auto &[state, had] : g_hairHeld)
-    {
-        g_setRenderState.Original()(device, state, had);
-    }
-    g_hairHeld.clear();
-}
-
 HRESULT __stdcall CreatePixelShader(IDirect3DDevice9 *device, const DWORD *code, void **shader)
 {
     const HRESULT result = g_createPixelShader.Original()(device, code, shader);
@@ -812,26 +743,6 @@ HRESULT __stdcall CreatePixelShader(IDirect3DDevice9 *device, const DWORD *code,
         const std::vector<std::byte> bytes = shadercode::CodeOf(code);
         skybodies::CreatedPixel(bytes, static_cast<IDirect3DPixelShader9 *>(*shader));
         nightlightmaps::CreatedPixel(bytes, static_cast<IDirect3DPixelShader9 *>(*shader));
-        g_hair.erase(*shader);
-        if (shadercode::RegisterOf(bytes, "smpHairTexture"))
-        {
-            if (shadercode::WritesColour(bytes, 1))
-            {
-                g_hair[*shader] = HairDistance::Second;
-            }
-            else if (shadercode::RegisterOf(bytes, "g_fFocalPlane"))
-            {
-                g_hair[*shader] = HairDistance::First;
-            }
-            const auto held = g_hair.find(*shader);
-            const char *said = "not written";
-            if (held != g_hair.end())
-            {
-                said = held->second == HairDistance::Second ? "beside the picture, held back"
-                                                            : "its whole output, held back";
-            }
-            spdlog::info("hair's shader {:016x}: its distance {}", hash, said);
-        }
     }
     return result;
 }
@@ -942,7 +853,8 @@ HRESULT __stdcall StretchRect(IDirect3DDevice9 *device, IDirect3DSurface9 *from,
 // a pass that blends is given one that leaves in the picture's alpha what
 // share of the surface under it still shows (build_shaders.py's
 // with_share_kept: nothing of the drawn thing's alpha, and the alpha there
-// by what the thing leaves clear). That is for the frame's own picture. In a
+// by what the thing leaves clear), and hair's solid passes one that leaves
+// none (with_share_covered). That is for the frame's own picture. In a
 // target the interface lays on the screen by its alpha it rubs a blended
 // thing out: Cailan's helm, blended whole for its plume, was not in the
 // inventory's figure, and the head under it hidden as it is under any helm
@@ -1113,13 +1025,11 @@ HRESULT __stdcall DrawIndexed(IDirect3DDevice9 *device, D3DPRIMITIVETYPE type, I
     {
         DrawExtraPasses(device, type, base, least, vertices, first, count);
     }
-    HoldHairBack(device);
     nightlightmaps::Drawing(device, g_drawsPicture);
     skybodies::Drawing(device);
     const HRESULT result = g_drawIndexed.Original()(device, type, base, least, vertices, first, count);
     nightlightmaps::Drawn(device);
     skybodies::Drawn(device);
-    GiveHairBack(device);
     levelshadows::Drawn(device);
     return result;
 }

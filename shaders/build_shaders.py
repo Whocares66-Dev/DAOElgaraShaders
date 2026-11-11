@@ -697,8 +697,8 @@ CUTS = {}
 # The shaders that can say an ambient share: those of the materials' model,
 # and a face's, hair's and an eye's, which say it of what they scatter
 # (with_scattered_share).
-# Hair says no share of its own: it lies on the head, takes the head's
-# occlusion, and leaves the share under it (Graphics.cpp's HoldHairBack).
+# Hair says no share of its own, and takes the share under it away by its
+# opacity (with_hair_share).
 SHARE_SHADERS = MATERIAL_SHADERS[: -len(r")\.psh$")] + r"|face[02]|eye0)\.psh$"
 
 
@@ -2314,6 +2314,241 @@ def without_depth_pass(material):
     return material
 
 
+# Hair's cards in the depth pass (#78, 2026-11-10). HairAlpha's DepthWrite has
+# two passes for shader model 3, Hair0_Pass1_Depth (the cards' solid strands,
+# cut by the texture) and the skin's Skin_Depth with HairAlphaPass4_Depth.sta
+# (every card whole), and neither state writes the depth buffer: of a
+# figure's meshes the one drawn last leaves its distance under the hair. The
+# engine does not draw a figure's meshes in one order. Frames captured of a
+# paused view in Haven had the hero's face, cards and armor in three orders in
+# 50 frames with occlusion culling, and in others in the frames DAOLib's
+# dynamic occlusion culls by the view alone, so the ambient occlusion's shade
+# on her hair changed every few seconds, and once a second with the probes
+# (131, 110 and 150 of 300 shots of the head, dynamic occlusion on, off and
+# on). The plugin held back the first pass's writes (#28) and did not know the
+# second for hair's, which reads no smpHairTexture.
+#
+# Hair with no depth pass at all was tried first and is not it: none of 900
+# shots changed, but the depth of field then takes a lock beyond the head's
+# outline for the wall behind it and blurs it into the wall (a conversation's
+# close-up in Redcliffe's tavern, the same line with no plugin, before and
+# after, the game's anti-aliasing 8x).
+#
+# One pass alone, the whole cards', was tried next and is not it either: that
+# pass draws only the cards that face the eye (HairAlphaPass4_Depth.sta culls
+# the others), and the solid strands' pass is the one that draws a card from
+# behind. Without it the hair on the far side of a head, seen from within, had
+# no distance and was blurred into the wall (the user, 2026-11-10, of the same
+# close-up: "conversation hair looks fucked up"; so it was on master since
+# #28, which held that pass's writes back).
+#
+# So the cards keep both passes, as vanilla draws them, and are tested against
+# the depth buffer HAIR_BEHIND further off than they are: where the figure's own
+# face or armor is within that of a card, the card is not written if they were
+# drawn before it and is written over by them if they come after, and their
+# distance stays under the hair either way, which is what #28 wants there. A
+# lock that hangs clear of the figure has only the level behind it, drawn
+# before every creature (in each frame captured, both ways of culling), and
+# is written as vanilla writes it. The distance written is the card's own.
+#
+# A card so written is marked for the occlusion, which is not to take it for a
+# surface: its pixel shader writes the distance's alpha as HAIR_MARK, and
+# occlusion_depth.hlsl reads a marked distance as nothing there. Every other
+# shader writes that alpha as 1 (all 189 of the game's and ours that write a
+# distance beside the picture, and the four of the depth pass, read
+# 2026-11-10), and where the game does not anti-alias a blended pass of ours
+# leaves it 0 (with_share_kept's blend is the second target's too, and what
+# it is blended by is the 1 its shader writes there): a half is neither, so
+# a blended cloak's or the water's distance is read as it was. Left as a
+# surface, a card clear of the head stood a few centimeters before the skin
+# beside it and the occlusion drew the head's outline in the hair (the user,
+# 2026-11-10, of the pass tested behind itself alone: "we're still seeing ao
+# issues when aa is on").
+HAIR_MARK = 0.5
+# Each pass's two shaders, the game's and ours made from it, with the state
+# the pass is known by: the solid strands', and the whole cards'.
+HAIR_DEPTH_PASSES = [
+    (
+        ("hair_pass1_depth.vsh.fxo", "daohair_pass1_depth.vsh.fxo"),
+        ("hair0_pass1_depth.psh.fxo", "daohair0_pass1_depth.psh.fxo"),
+        "HairAlphaPass1_Depth.sta",
+    ),
+    (
+        ("skin_depth.vsh.fxo", "daohair_depth.vsh.fxo"),
+        ("skin_depth.psh.fxo", "daohair_depth.psh.fxo"),
+        "HairAlphaPass4_Depth.sta",
+    ),
+]
+# Meters. More than hair stands off the head, neck and shoulders under it;
+# less than the room a figure keeps to a wall, where a nearer wall behind a
+# lock is no sharper or softer than the lock in the depth of field anyway.
+HAIR_BEHIND = 0.5
+
+
+def depth_vertex_behind_figure(shader):
+    """Test a skinned depth pass's vertex against the depth buffer
+    HAIR_BEHIND further from the eye than it is. Only its depth is moved: its
+    place on the screen and the distance its pixel shader is handed are its
+    own. The projection's z is w times its scale plus its offset, and the
+    scale is 1 to a part in ten thousand (far over far less near), so the
+    offset is z less w, and the depth of a point d further is z less the
+    offset times d over (w + d)."""
+    placed = shader.find(r"^add o0, r\d+, c\d+$")
+    shader.insert(
+        placed,
+        [f"o0.z += (o0.w - o0.z) * {HAIR_BEHIND} / max(o0.w + {HAIR_BEHIND}, 0.001);"],
+    )
+
+
+def distance_marked(shader, written):
+    """Write the distance a pixel shader packs into `written` (oC0 in the
+    depth pass, oC1 beside the picture) with an alpha of HAIR_MARK: a hair
+    card's, which the occlusion is to read as nothing there
+    (occlusion_depth.hlsl)."""
+    alpha = shader.find(rf"^mov {written}\.w, ")
+    shader.replace(alpha, alpha, [f"{written}.w = {HAIR_MARK};"])
+
+
+def depth_pixel_marked(shader):
+    """distance_marked for a depth pass's shader."""
+    distance_marked(shader, "oC0")
+
+
+# Where the game does not anti-alias there is no creature in the depth pass,
+# and hair's distance is what its solid strands write beside the picture as
+# they are drawn into it (Hair0_Pass1.psh's oC1; the blended passes write
+# none). #28 had the plugin hold that write back, which left hair with no
+# distance there at all. It is written again, marked as the depth pass's is,
+# and the plugin holds nothing of hair's back.
+HAIR_STRANDS = "hair0_pass1.psh.fxo"
+
+
+def hair_strands(shader):
+    """Hair's solid strands as they are drawn into the picture: their
+    distance marked (distance_marked), and their alpha rounded to a 255th.
+    The pass is tested at an alpha of 255 (HairAlphaPass1.sta), and vanilla's
+    picture of eight bits rounded the alpha first; in the 16-bit scene nothing
+    does, so a texel at 254.6 failed, and the strands were left out in dots
+    wherever the texture is not quite solid. It showed as a speckle in the
+    hair on the far side of a head in a conversation's close-up, once the
+    depth of field no longer blurred it (#78, 2026-11-10: gone with this, the
+    same shot)."""
+    distance_marked(shader, "oC1")
+    alpha = shader.find(r"^mul(_pp)? oC0\.w, ")
+    shader.insert(alpha, ["oC0.w = floor(oC0.w * 255 + 0.5) / 255;"])
+
+
+def with_hair_depth(material):
+    """HairAlpha's definition as text, the two passes of its DepthWrite for
+    shader model 3 drawn by our shaders (HAIR_DEPTH_PASSES)."""
+    semantic = re.search(
+        r'<Semantic\s+Name\s*=\s*"DepthWrite".*?</Semantic>', material, re.DOTALL
+    )
+    if not semantic:
+        raise shader_hlsl.ShaderError("the game's material has no DepthWrite")
+    block = semantic.group(0)
+    for (vertex, ours), (pixel, marked), state in HAIR_DEPTH_PASSES:
+        block, pointed = re.subn(
+            rf'(<Pass\b[^>]*VertexShader\s*=\s*"){re.escape(vertex[: -len(".fxo")])}'
+            rf'("\s*PixelShader\s*=\s*"){re.escape(pixel[: -len(".fxo")])}'
+            rf'("\s*State\s*=\s*"{re.escape(state)}")',
+            rf"\g<1>{ours[: -len('.fxo')]}\g<2>{marked[: -len('.fxo')]}\g<3>",
+            block,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        if pointed != 1:
+            raise shader_hlsl.ShaderError(
+                f"the game's hair is not drawn into the depth pass with {state}"
+            )
+    return material[: semantic.start()] + block + material[semantic.end() :]
+
+
+# Hair's passes in the picture, which are to take the ambient share under them
+# away by their opacity and say none of their own (#78, 2026-11-10). The share
+# is the picture's alpha (with_ambient_share), and vanilla's states left
+# hair's alpha in it: 1 where the hair is solid, so the occlusion reckoned for
+# the head under the hair was laid on the hair in full, and the shade behind
+# an ear and under the nape showed through it as dark shapes (the user's
+# picture of the hero from above, 2026-11-10; in the test's shots of Haven
+# with hair out of the depth altogether too). #28 had hair keep the share
+# under it, for a lock across the face; what a lock hides is not shaded on
+# the lock.
+HAIR_PICTURE = r"hair[02]\.psh$"
+
+
+def with_share_covered(state):
+    """A render state's file that does not blend, under our name for it, with
+    the picture's alpha written as 0: a solid thing's, which leaves no share
+    of what it covers, whatever alpha its shader writes (a far figure's hair,
+    Hair2.psh under Character.sta, is drawn whole where its texture is not
+    solid). The color is written as it was (one times the source). Nothing
+    (None) for a state that blends."""
+    values = state_values(state)
+    if values.get("DS_ALPHABLENDENABLE", "TRUE").upper() != "FALSE" or any(
+        name in values
+        for name in ("DS_SRCBLEND", "DS_DESTBLEND", "DS_SEPARATEALPHABLENDENABLE")
+    ):
+        return None
+    state, count = re.subn(
+        r'<DeviceState\s+State\s*=\s*"DS_ALPHABLENDENABLE"[^>]*>',
+        """<DeviceState State="DS_ALPHABLENDENABLE" Value="TRUE" />
+    <DeviceState State="DS_SRCBLEND" Value="BLEND_ONE" />
+    <DeviceState State="DS_DESTBLEND" Value="BLEND_ZERO" />
+    <DeviceState State="DS_SEPARATEALPHABLENDENABLE" Value="TRUE" />
+    <DeviceState State="DS_SRCBLENDALPHA" Value="BLEND_ZERO" />
+    <DeviceState State="DS_DESTBLENDALPHA" Value="BLEND_ZERO" />
+    <DeviceState State="DS_BLENDOPALPHA" Value="BLENDOP_ADD" />""",
+        state,
+        count=1,
+    )
+    if count != 1:
+        return None
+    return re.sub(
+        r'(<MaterialState\s+Name\s*=\s*")', r"\g<1>DaoCovered", state, count=1
+    )
+
+
+def with_hair_share(material, states, made):
+    """HairAlpha's definition as text, each pass of the picture's that hair's
+    own shader draws (HAIR_PICTURE) pointed at a copy of its state that takes
+    the share under the hair away: with_share_kept's for a blended pass,
+    with_share_covered's for a solid one. The copies are put in `made` by
+    their files' names."""
+
+    def pointed(found):
+        text = found.group(0)
+        drawn_by = re.search(r'PixelShader\s*=\s*"([^"]+)"', text)
+        state = re.search(r'State\s*=\s*"([^"]+)"', text)
+        if not (
+            drawn_by
+            and state
+            and re.match(HAIR_PICTURE, drawn_by.group(1), re.IGNORECASE)
+        ):
+            return text
+        theirs = state_text(states, state.group(1))
+        if theirs is None:
+            raise shader_hlsl.ShaderError(f"hair's {state.group(1)} is not to be had")
+        for prefix, ours_ in (
+            ("Dao", with_share_kept(theirs)),
+            ("DaoCovered", with_share_covered(theirs)),
+        ):
+            if ours_ is not None:
+                made[prefix.lower() + state.group(1).lower() + ".xml"] = ours_
+                return text.replace(
+                    f'"{state.group(1)}"', f'"{prefix}{state.group(1)}"', 1
+                )
+        raise shader_hlsl.ShaderError(
+            f"hair's {state.group(1)} neither blends the common way nor is solid"
+        )
+
+    before = len(made)
+    material = re.sub(r"<Pass\b[^>]*>", pointed, material)
+    if len(made) == before:
+        raise shader_hlsl.ShaderError("no pass of hair's own in the picture was found")
+    return material
+
+
 def depth_vertex_with_coordinates(shader):
     """Hand the depth pass's pixel shader the surface's texture coordinates:
     the game's hands it the depth alone."""
@@ -3059,6 +3294,8 @@ def main(argv):
                 states,
                 solid_states,
             )
+            if name == "hairalpha.mat.xml":
+                ours_ = with_hair_share(with_hair_depth(ours_), states, solid_states)
             if ours_ != theirs:
                 with open(
                     os.path.join(out, name), "w", encoding="utf-8", newline=""
@@ -3091,6 +3328,15 @@ def main(argv):
                 for theirs, ours_, _, change in DEPTH_VERTICES
             ]
             + [(DEPTH_PIXEL, depth_pixel_by_texture, "sampler2D smpDecal;\n")]
+            + [
+                (shaders_, change, "")
+                for vertex, pixel, _ in HAIR_DEPTH_PASSES
+                for shaders_, change in (
+                    (vertex, depth_vertex_behind_figure),
+                    (pixel, depth_pixel_marked),
+                )
+            ]
+            + [((HAIR_STRANDS, HAIR_STRANDS), hair_strands, "")]
             # The plants' own vertex shaders, built under their own names.
             + [
                 ((name + ".vsh.fxo", name + ".vsh.fxo"), with_world_out, "")
