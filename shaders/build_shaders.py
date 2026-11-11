@@ -2321,12 +2321,10 @@ def without_depth_pass(material):
 # figure's meshes the one drawn last leaves its distance under the hair. The
 # engine does not draw a figure's meshes in one order. Frames captured of a
 # paused view in Haven had the hero's face, cards and armor in three orders in
-# 50 frames with occlusion culling, and in others in the frames DAOLib's
-# dynamic occlusion culls by the view alone, so the ambient occlusion's shade
-# on her hair changed every few seconds, and once a second with the probes
-# (131, 110 and 150 of 300 shots of the head, dynamic occlusion on, off and
-# on). The plugin held back the first pass's writes (#28) and did not know the
-# second for hair's, which reads no smpHairTexture.
+# 50 frames, so the ambient occlusion's shade on her hair changed every few
+# seconds (110 of 300 shots of the head). The plugin held back the first
+# pass's writes (#28) and did not know the second for hair's, which reads no
+# smpHairTexture.
 #
 # Hair with no depth pass at all was tried first and is not it: none of 900
 # shots changed, but the depth of field then takes a lock beyond the head's
@@ -2348,8 +2346,8 @@ def without_depth_pass(material):
 # drawn before it and is written over by them if they come after, and their
 # distance stays under the hair either way, which is what #28 wants there. A
 # lock that hangs clear of the figure has only the level behind it, drawn
-# before every creature (in each frame captured, both ways of culling), and
-# is written as vanilla writes it. The distance written is the card's own.
+# before every creature (in each frame captured), and is written as vanilla
+# writes it. The distance written is the card's own.
 #
 # A card so written is marked for the occlusion, which is not to take it for a
 # surface: its pixel shader writes the distance's alpha as HAIR_MARK, and
